@@ -861,7 +861,8 @@ select {
 
 @media (max-width: 960px) {
   .desk,
-  .desk.is-pen-open {
+  .desk.is-pen-open,
+  .desk.is-diagnose {
     grid-template-columns: 1fr;
     grid-template-rows: auto minmax(0, 1fr);
   }

@@ -26,6 +26,7 @@ export function App() {
   viewRef.current = view;
 
   const openDiagnose = useCallback(() => {
+    selGen.current += 1;
     window.getSelection()?.removeAllRanges();
     setSel(null);
     setSection(null);
@@ -194,12 +195,16 @@ export function App() {
         {err && <p className="banner">{err}</p>}
         {loading ? (
           <p className="banner">正在摊开手册…</p>
-        ) : diagnosing && current ? (
-          <ReportPanel
-            handbookId={current.handbook_id}
-            onBack={openReader}
-            onJump={jumpToLine}
-          />
+        ) : diagnosing ? (
+          current ? (
+            <ReportPanel
+              handbookId={current.handbook_id}
+              onBack={openReader}
+              onJump={jumpToLine}
+            />
+          ) : (
+            <p className="banner">没有可诊断的手册。先选一本，或看上面的错误。</p>
+          )
         ) : (
           <div className="paper">
             <div className="paper-rule" />

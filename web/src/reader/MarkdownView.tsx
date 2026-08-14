@@ -63,11 +63,9 @@ export function MarkdownView({ markdown, onSelect }: Props) {
       later = window.setTimeout(readSel, 16);
     };
     document.addEventListener("pointerup", onUp);
-    document.addEventListener("mouseup", onUp);
     return () => {
       window.clearTimeout(later);
       document.removeEventListener("pointerup", onUp);
-      document.removeEventListener("mouseup", onUp);
     };
   }, []);
 
