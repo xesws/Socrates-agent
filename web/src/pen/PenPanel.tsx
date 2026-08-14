@@ -15,9 +15,16 @@ type Props = {
   chips: Chip[];
   anchor: SelectionAnchor;
   section: Section | null;
+  docked: boolean;
+  onFloat: () => void;
   onClose: () => void;
   onWrote: () => void;
 };
+
+function excerpt(text: string, n = 160): string {
+  const one = text.replace(/\s+/g, " ").trim();
+  return one.length <= n ? one : `${one.slice(0, n - 1)}…`;
+}
 
 const OPACITY_KEY = "pen-opacity";
 const MARGIN = 12;
@@ -61,6 +68,8 @@ export function PenPanel({
   chips,
   anchor,
   section,
+  docked,
+  onFloat,
   onClose,
   onWrote,
 }: Props) {
@@ -127,11 +136,13 @@ export function PenPanel({
     const applyDrag = (e: PointerEvent) => {
       const d = dragRef.current;
       if (!d || d.id !== e.pointerId) return;
+      if (Math.abs(e.clientX - d.x) < 6 && Math.abs(e.clientY - d.y) < 6) return;
       const el = panelRef.current;
       const w = el?.offsetWidth ?? panelWidth();
       const h = el?.offsetHeight ?? DEFAULT_H;
       userMoved.current = true;
       setDragging(true);
+      if (docked) onFloat();
       setPos(clampPos(d.left + e.clientX - d.x, d.top + e.clientY - d.y, w, h));
     };
     const endDrag = (e: PointerEvent) => {
@@ -152,7 +163,7 @@ export function PenPanel({
       window.removeEventListener("pointerup", endDrag);
       window.removeEventListener("pointercancel", endDrag);
     };
-  }, []);
+  }, [docked, onFloat]);
 
   useEffect(() => {
     const el = panelRef.current;
@@ -335,8 +346,10 @@ export function PenPanel({
     const el = panelRef.current;
     const w = el?.offsetWidth ?? panelWidth(vw);
     const h = el?.offsetHeight ?? DEFAULT_H;
+    if (Math.abs(e.clientX - d.x) < 6 && Math.abs(e.clientY - d.y) < 6) return;
     userMoved.current = true;
     setDragging(true);
+    if (docked) onFloat();
     setPos(clampPos(d.left + e.clientX - d.x, d.top + e.clientY - d.y, w, h));
   }
 
@@ -348,22 +361,25 @@ export function PenPanel({
   }
 
   const width = panelWidth(vw);
-  const style: CSSProperties = {
-    left: pos.left,
-    top: pos.top,
-    width,
-    maxHeight: window.innerHeight - MARGIN * 2,
-    ["--pen-alpha" as string]: String(opacity),
-  };
+  const style: CSSProperties = docked
+    ? { ["--pen-alpha" as string]: String(opacity) }
+    : {
+        left: pos.left,
+        top: pos.top,
+        width,
+        maxHeight: window.innerHeight - MARGIN * 2,
+        ["--pen-alpha" as string]: String(opacity),
+      };
+  const cls = [
+    "pen",
+    docked ? "is-docked" : "is-float",
+    dragging ? "is-dragging" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
-    <aside
-      ref={panelRef}
-      className={dragging ? "pen is-dragging" : "pen"}
-      style={style}
-      role="dialog"
-      aria-label="点读笔"
-    >
+    <aside ref={panelRef} className={cls} style={style} role="dialog" aria-label="点读笔">
       <header
         className="pen-bar"
         onPointerDown={onBarPointerDown}
@@ -376,24 +392,13 @@ export function PenPanel({
           <strong>点读笔</strong>
           <em title={sourceLine}>{sourceLine}</em>
         </div>
-        <label className="pen-opacity">
-          透明度
-          <input
-            type="range"
-            min={0.45}
-            max={1}
-            step={0.01}
-            value={opacity}
-            onChange={(e) => setOpacity(Number(e.target.value))}
-          />
-        </label>
-        <button className="ghost" onClick={onClose} aria-label="关闭">
+        <button className="ghost pen-close" onClick={onClose} aria-label="关闭">
           ×
         </button>
       </header>
 
       <blockquote className="pen-quote" title={anchor.text}>
-        {anchor.text}
+        {excerpt(anchor.text)}
       </blockquote>
 
       <div className="pen-log" ref={logRef}>
@@ -454,6 +459,17 @@ export function PenPanel({
       </form>
 
       <footer className="pen-foot">
+        <label className="pen-opacity">
+          透明度
+          <input
+            type="range"
+            min={0.45}
+            max={1}
+            step={0.01}
+            value={opacity}
+            onChange={(e) => setOpacity(Number(e.target.value))}
+          />
+        </label>
         <button className="ghost" disabled={busy} onClick={() => void doRollback()}>
           撤销上次写回
         </button>

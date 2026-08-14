@@ -16,6 +16,7 @@ export function App() {
   const [sel, setSel] = useState<SelectionAnchor | null>(null);
   const [section, setSection] = useState<Section | null>(null);
   const [llm, setLlm] = useState<LlmStatus | null>(null);
+  const [penFloat, setPenFloat] = useState(false);
   const selGen = useRef(0);
 
   const loadBook = useCallback(async (id: string) => {
@@ -58,10 +59,13 @@ export function App() {
     })();
   }, [loadBook]);
 
+  const onPenFloat = useCallback(() => setPenFloat(true), []);
+
   const onSelect = useCallback(
     async (anchor: SelectionAnchor) => {
       const gen = ++selGen.current;
       setSel(anchor);
+      setPenFloat(false);
       setSection(null);
       if (!current) return;
       try {
@@ -75,7 +79,7 @@ export function App() {
   );
 
   return (
-    <div className="desk">
+    <div className={sel && !penFloat ? "desk is-pen-open" : "desk"}>
       <aside className="rail">
         <p className="eyebrow">师傅的工作台</p>
         <h1>点读笔</h1>
@@ -140,7 +144,12 @@ export function App() {
           chips={chips}
           anchor={sel}
           section={section}
-          onClose={() => setSel(null)}
+          docked={!penFloat}
+          onFloat={onPenFloat}
+          onClose={() => {
+            setSel(null);
+            setPenFloat(false);
+          }}
           onWrote={() => void loadBook(current.handbook_id)}
         />
       )}
