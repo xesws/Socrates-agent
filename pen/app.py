@@ -1,0 +1,280 @@
+"""FastAPI：阅读原文、就地问、确认后原地写回 original_path。"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+from pen import gitops
+from pen import insert as insertmod
+from pen import libraries, snapshots
+from pen.config import DEFAULT_HANDBOOK_ID, llm_public_status
+from pen.session import FIXED_CHIPS, STORE
+from pen.tutor import build_user_packet, propose_fold_md, stream_chat
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    libraries.ensure_default()
+    yield
+
+
+app = FastAPI(title="Socratic Pen", version="0.1.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+        "http://127.0.0.1:4173",
+        "http://localhost:4173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+_proposals: dict[str, dict[str, Any]] = {}
+
+
+class ImportBody(BaseModel):
+    original_path: str
+    handbook_id: str | None = None
+
+
+class SessionBody(BaseModel):
+    handbook_id: str = DEFAULT_HANDBOOK_ID
+
+
+class ChatBody(BaseModel):
+    session_id: str
+    selected_text: str
+    start_line: int
+    end_line: int
+    chip: str = "socratic"
+    user_text: str = ""
+
+
+class ProposeBody(BaseModel):
+    session_id: str
+    summary_hint: str | None = None
+
+
+class ApplyBody(BaseModel):
+    session_id: str
+    proposal_id: str
+    commit: bool = False
+    commit_message: str | None = None
+
+
+class RollbackBody(BaseModel):
+    handbook_id: str
+
+
+def _meta_or_404(handbook_id: str):
+    meta = libraries.get(handbook_id)
+    if meta is None:
+        raise HTTPException(404, f"未知手册 {handbook_id}")
+    return libraries.refresh_if_stale(handbook_id)
+
+
+@app.get("/v1/health")
+def health() -> dict[str, Any]:
+    return {"status": "ok", "llm": llm_public_status()}
+
+
+@app.get("/v1/handbooks")
+def list_handbooks() -> dict[str, Any]:
+    libraries.ensure_default()
+    return {"handbooks": [m.__dict__ for m in libraries.list_handbooks()]}
+
+
+@app.post("/v1/handbooks/import")
+def import_handbook(body: ImportBody) -> dict[str, Any]:
+    try:
+        meta = libraries.register(body.original_path, body.handbook_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return meta.__dict__
+
+
+@app.get("/v1/handbooks/{handbook_id}")
+def get_handbook(handbook_id: str) -> dict[str, Any]:
+    meta = _meta_or_404(handbook_id)
+    idx = libraries.load_index(handbook_id)
+    return {
+        **meta.__dict__,
+        "n_lines": idx.n_lines,
+        "toc": [t.__dict__ for t in idx.toc],
+    }
+
+
+@app.get("/v1/handbooks/{handbook_id}/content")
+def get_content(handbook_id: str) -> dict[str, Any]:
+    meta = _meta_or_404(handbook_id)
+    path = Path(meta.original_path)
+    return {
+        "original_path": str(path),
+        "text": path.read_text(encoding="utf-8"),
+        "mtime": path.stat().st_mtime,
+    }
+
+
+@app.get("/v1/handbooks/{handbook_id}/locate")
+def locate(handbook_id: str, line: int) -> dict[str, Any]:
+    idx = libraries.load_index(handbook_id)
+    try:
+        sec = idx.locate(line)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return sec.__dict__
+
+
+@app.post("/v1/sessions")
+def create_session(body: SessionBody) -> dict[str, Any]:
+    _meta_or_404(body.handbook_id)
+    sess = STORE.create(body.handbook_id)
+    return {"session_id": sess.session_id, "handbook_id": sess.handbook_id, "chips": FIXED_CHIPS}
+
+
+@app.post("/v1/chat")
+def chat(body: ChatBody) -> StreamingResponse:
+    try:
+        sess = STORE.get(body.session_id)
+    except KeyError as exc:
+        raise HTTPException(404, "未知会话") from exc
+    if body.chip == "search":
+        raise HTTPException(400, "论文检索尚未开放")
+    meta = _meta_or_404(sess.handbook_id)
+    idx = libraries.load_index(sess.handbook_id)
+    path = Path(meta.original_path)
+    try:
+        packet, anchor = build_user_packet(
+            idx,
+            path,
+            selected_text=body.selected_text,
+            start_line=body.start_line,
+            end_line=body.end_line,
+            chip=body.chip,
+            user_text=body.user_text,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    sess.last_anchor = anchor
+
+    def gen():
+        for ev in stream_chat(sess, path, packet):
+            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.post("/v1/writeback/propose")
+def propose(body: ProposeBody) -> dict[str, Any]:
+    try:
+        sess = STORE.get(body.session_id)
+    except KeyError as exc:
+        raise HTTPException(404, "未知会话") from exc
+    if not sess.last_assistant:
+        raise HTTPException(400, "还没有可写回的解答")
+    if not sess.last_anchor:
+        raise HTTPException(400, "缺少框选锚点")
+    meta = _meta_or_404(sess.handbook_id)
+    idx = libraries.load_index(sess.handbook_id)
+    path = Path(meta.original_path)
+    try:
+        fold = propose_fold_md(sess)
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    try:
+        plan = insertmod.plan_insert(
+            idx,
+            path,
+            line=int(sess.last_anchor["start_line"]),
+            fold_md=fold,
+            summary_hint=body.summary_hint,
+        )
+    except insertmod.InsertError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    old = path.read_text(encoding="utf-8")
+    new = insertmod.render_new_text(old, plan)
+    diff = insertmod.unified_diff(old, new, path.name)
+    pid = uuid.uuid4().hex
+    _proposals[pid] = {
+        "handbook_id": sess.handbook_id,
+        "session_id": sess.session_id,
+        "plan": plan,
+        "diff": diff,
+        "original_path": str(path),
+    }
+    return {
+        "proposal_id": pid,
+        "original_path": str(path),
+        "mode": plan.mode,
+        "level": plan.level,
+        "q_title": plan.q_title,
+        "instance_n": plan.instance_n,
+        "fold_md": plan.fold_md,
+        "diff": diff,
+    }
+
+
+@app.post("/v1/writeback/apply")
+def apply(body: ApplyBody) -> dict[str, Any]:
+    prop = _proposals.get(body.proposal_id)
+    if prop is None:
+        raise HTTPException(404, "提议不存在或已过期")
+    try:
+        sess = STORE.get(body.session_id)
+    except KeyError as exc:
+        raise HTTPException(404, "未知会话") from exc
+    if prop["session_id"] != sess.session_id:
+        raise HTTPException(403, "提议不属于这个会话")
+    path = Path(prop["original_path"])
+    snap = snapshots.take_snapshot(sess.handbook_id, path, "pre-insert")
+    try:
+        insertmod.apply_insert(path, prop["plan"])
+    except insertmod.InsertError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    libraries.refresh_if_stale(sess.handbook_id)
+    commit_out = None
+    if body.commit:
+        msg = body.commit_message or (
+            f"pen: 写回 {prop['plan'].level} {prop['plan'].q_title or prop['plan'].beat}"
+        )
+        try:
+            commit_out = gitops.commit_original(path, msg)
+        except gitops.GitError as exc:
+            raise HTTPException(400, f"原文已写入，但 commit 失败：{exc}") from exc
+    del _proposals[body.proposal_id]
+    return {
+        "ok": True,
+        "original_path": str(path),
+        "snapshot": str(snap),
+        "commit": commit_out,
+        "bytes": path.stat().st_size,
+    }
+
+
+@app.post("/v1/writeback/rollback")
+def rollback(body: RollbackBody) -> dict[str, Any]:
+    meta = _meta_or_404(body.handbook_id)
+    path = Path(meta.original_path)
+    try:
+        snap = snapshots.rollback(body.handbook_id, path)
+    except FileNotFoundError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    libraries.refresh_if_stale(body.handbook_id)
+    return {"ok": True, "restored_from": str(snap), "original_path": str(path)}
+
+
+@app.get("/v1/chips")
+def chips() -> dict[str, Any]:
+    return {"chips": FIXED_CHIPS}
