@@ -92,8 +92,17 @@ export async function hydrateMermaid(root: HTMLElement): Promise<void> {
     try {
       const { svg } = await mermaid.render(host.id + "-svg", code);
       host.innerHTML = svg;
-    } catch (err) {
-      host.textContent = String(err);
+    } catch {
+      host.classList.add("is-failed");
+      const pre = document.createElement("pre");
+      pre.className = "hljs";
+      const codeEl = document.createElement("code");
+      codeEl.textContent = code;
+      pre.appendChild(codeEl);
+      const note = document.createElement("p");
+      note.className = "mermaid-err";
+      note.textContent = "这张图画不出来，先看源码。常见原因是节点文字里有未转义的引号。";
+      host.replaceChildren(pre, note);
     }
   }
 }

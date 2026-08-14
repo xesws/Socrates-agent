@@ -4,14 +4,35 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type Dispatch,
   type PointerEvent as ReactPointerEvent,
+  type SetStateAction,
 } from "react";
 import { api, streamChat } from "../api";
-import { renderMarkdown } from "../reader/markdown";
+import { hydrateMermaid, renderMarkdown } from "../reader/markdown";
 import type { ChatMessage, Chip, Proposal, Section, SelectionAnchor } from "../types";
 
 function visibleReply(text: string): string {
   return text.replace(/<!--pen:chips[\s\S]*?-->/g, "").trim();
+}
+
+function AssistantBubble({ text }: { text: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.innerHTML = renderMarkdown(visibleReply(text));
+    const onToggle = (ev: Event) => {
+      const t = ev.target;
+      if (t instanceof HTMLDetailsElement && t.open) {
+        void hydrateMermaid(t);
+      }
+    };
+    el.addEventListener("toggle", onToggle, true);
+    void hydrateMermaid(el);
+    return () => el.removeEventListener("toggle", onToggle, true);
+  }, [text]);
+  return <div ref={ref} className="bubble assistant" />;
 }
 
 type Props = {
@@ -24,6 +45,10 @@ type Props = {
   onFloat: () => void;
   onClose: () => void;
   onWrote: () => void;
+  msgs: ChatMessage[];
+  onMsgs: Dispatch<SetStateAction<ChatMessage[]>>;
+  substantive: boolean;
+  onSubstantive: (v: boolean) => void;
 };
 
 function excerpt(text: string, n = 160): string {
@@ -77,6 +102,10 @@ export function PenPanel({
   onFloat,
   onClose,
   onWrote,
+  msgs,
+  onMsgs,
+  substantive,
+  onSubstantive,
 }: Props) {
   const [opacity, setOpacity] = useState(() => {
     const n = Number(localStorage.getItem(OPACITY_KEY));
@@ -84,13 +113,11 @@ export function PenPanel({
   });
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [msgs, setMsgs] = useState<ChatMessage[]>([]);
   const [dyn, setDyn] = useState<string[]>([]);
   const [usage, setUsage] = useState<string>("");
   const [err, setErr] = useState<string>("");
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [commit, setCommit] = useState(false);
-  const [substantive, setSubstantive] = useState(false);
   const [pos, setPos] = useState<Pos>(() =>
     placeFromAnchor(anchor, panelWidth(), DEFAULT_H),
   );
@@ -207,9 +234,9 @@ export function PenPanel({
     setErr("");
     const shown =
       userText.trim() || liveChips.find((c) => c.id === chip)?.label || chip;
-    setMsgs((m) => [...m, { role: "user", text: shown }]);
+    onMsgs((m) => [...m, { role: "user", text: shown }]);
     let acc = "";
-    setMsgs((m) => [...m, { role: "assistant", text: "" }]);
+    onMsgs((m) => [...m, { role: "assistant", text: "" }]);
     try {
       await streamChat(
         {
@@ -224,7 +251,7 @@ export function PenPanel({
           if (ev.type === "token") {
             acc += String(ev.text || "");
             const snapshot = acc;
-            setMsgs((m) => {
+            onMsgs((m) => {
               const copy = m.slice();
               for (let i = copy.length - 1; i >= 0; i--) {
                 if (copy[i].role === "assistant") {
@@ -243,7 +270,7 @@ export function PenPanel({
               ok,
               text: `read_file ${ok ? "成功" : "拒绝"} → ${path}${preview ? " · " + preview.replace(/\s+/g, " ").slice(0, 80) : ""}`,
             };
-            setMsgs((m) => {
+            onMsgs((m) => {
               const copy = m.slice();
               const last = copy.length - 1;
               if (last >= 0 && copy[last].role === "assistant") {
@@ -259,7 +286,7 @@ export function PenPanel({
               `prompt ${u?.prompt_tokens ?? "?"} · completion ${u?.completion_tokens ?? "?"}`,
             );
             setDyn((ev.dynamic_chips as string[]) || []);
-            setSubstantive(Boolean(ev.has_substantive));
+            onSubstantive(Boolean(ev.has_substantive));
           } else if (ev.type === "error") {
             setErr(String(ev.message));
           }
@@ -293,7 +320,7 @@ export function PenPanel({
       const r = await api.apply(sessionId, proposal.proposal_id, commit);
       setProposal(null);
       onWrote();
-      setMsgs((m) => [
+      onMsgs((m) => [
         ...m,
         {
           role: "assistant",
@@ -312,7 +339,7 @@ export function PenPanel({
     try {
       const r = await api.rollback(handbookId);
       onWrote();
-      setMsgs((m) => [
+      onMsgs((m) => [
         ...m,
         { role: "assistant", text: `已用快照覆盖回原文 ${r.original_path}` },
       ]);
@@ -412,13 +439,7 @@ export function PenPanel({
         )}
         {msgs.map((m, i) =>
           m.role === "assistant" ? (
-            <div
-              key={i}
-              className="bubble assistant"
-              dangerouslySetInnerHTML={{
-                __html: renderMarkdown(visibleReply(m.text)),
-              }}
-            />
+            <AssistantBubble key={i} text={m.text} />
           ) : (
             <div key={i} className={`bubble ${m.role}`}>
               {m.text}

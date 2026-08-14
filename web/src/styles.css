@@ -681,6 +681,58 @@ select {
 .bubble.assistant {
   background: #2a221c;
   border-left: 2px solid var(--phosphor);
+  white-space: normal;
+}
+
+.bubble.assistant .mermaid-drawn {
+  overflow-x: auto;
+  margin: 0.8em 0;
+  background: #efe4cc;
+  padding: 8px;
+}
+
+.bubble.assistant .mermaid-drawn svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.bubble.assistant .mermaid-drawn.is-failed,
+.paper-body .mermaid-drawn.is-failed {
+  background: #16110d;
+}
+
+.bubble.assistant .mermaid-err,
+.paper-body .mermaid-err {
+  margin: 0.4em 0 0;
+  font-size: 12px;
+  color: #d48a6a;
+}
+
+.bubble.assistant .hljs-keyword,
+.paper-body .hljs-keyword {
+  color: #e8b86d;
+}
+
+.bubble.assistant .hljs-string,
+.paper-body .hljs-string {
+  color: #8fd4a8;
+}
+
+.bubble.assistant .hljs-comment,
+.paper-body .hljs-comment {
+  color: #8a7b66;
+}
+
+.bubble.assistant .hljs-number,
+.paper-body .hljs-number {
+  color: #d48a6a;
+}
+
+.bubble.assistant .hljs-built_in,
+.bubble.assistant .hljs-title,
+.paper-body .hljs-built_in,
+.paper-body .hljs-title {
+  color: #7eb8e8;
 }
 
 .bubble.assistant p {

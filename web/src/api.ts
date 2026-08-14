@@ -1,4 +1,4 @@
-import type { Chip, DiagnosisReport, HandbookMeta, Proposal, Section } from "./types";
+import type { DiagnosisReport, HandbookMeta, Proposal, Section, SessionView } from "./types";
 
 async function j<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -35,11 +35,12 @@ export const api = {
     ),
   locate: (id: string, line: number) =>
     j<Section>(`/v1/handbooks/${id}/locate?line=${line}`),
-  createSession: (handbook_id: string) =>
-    j<{ session_id: string; handbook_id: string; chips: Chip[] }>(
-      "/v1/sessions",
-      { method: "POST", body: JSON.stringify({ handbook_id }) },
-    ),
+  createSession: (handbook_id: string, session_id?: string) =>
+    j<SessionView>("/v1/sessions", {
+      method: "POST",
+      body: JSON.stringify({ handbook_id, session_id }),
+    }),
+  getSession: (session_id: string) => j<SessionView>(`/v1/sessions/${session_id}`),
   propose: (session_id: string) =>
     j<Proposal>("/v1/writeback/propose", {
       method: "POST",

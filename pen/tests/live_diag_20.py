@@ -251,7 +251,8 @@ def main() -> int:
         search_code = exc.code
         search_detail = exc.read()[:200].decode()
     after = jsonl_len()
-    search_ok = search_code == 400 and after == before
+    friendly = "P2" in search_detail or "没开" in search_detail or "尚未" in search_detail
+    search_ok = search_code == 200 and after == before and friendly
     print(f"\nT21 search HTTP {search_code} jsonl {before}->{after} ok={search_ok}", flush=True)
     print(search_detail, flush=True)
 
@@ -267,7 +268,7 @@ def main() -> int:
     )
     fails = check_oracle(report)
     if not search_ok:
-        fails.append("T21 search should 400 and not append jsonl")
+        fails.append("T21 search should 200 SSE P2 and not append jsonl")
     (OUT / "oracle.txt").write_text(
         "PASS\n" if not fails else "FAIL\n" + "\n".join(fails) + "\n",
         encoding="utf-8",

@@ -46,6 +46,24 @@ export type ChatMessage = {
   ok?: boolean;
 };
 
+export type SessionView = {
+  session_id: string;
+  handbook_id: string;
+  chips: Chip[];
+  has_substantive: boolean;
+  last_anchor: {
+    selected_text?: string;
+    start_line?: number;
+    end_line?: number;
+    level?: string;
+    q_title?: string | null;
+    kind?: string;
+    beat?: string | null;
+  } | null;
+  ui_messages: ChatMessage[];
+  last_assistant?: string;
+};
+
 export type DiagnosisSpot = {
   key: string;
   level: string;

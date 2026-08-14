@@ -3,9 +3,31 @@ import { api, type LlmStatus } from "./api";
 import { ReportPanel } from "./diagnose/ReportPanel";
 import { MarkdownView } from "./reader/MarkdownView";
 import { PenPanel } from "./pen/PenPanel";
-import type { Chip, HandbookMeta, Section, SelectionAnchor, TocEntry } from "./types";
+import type {
+  ChatMessage,
+  Chip,
+  HandbookMeta,
+  Section,
+  SelectionAnchor,
+  SessionView,
+  TocEntry,
+} from "./types";
 
 type View = "reader" | "diagnose";
+
+const sessionKey = (handbookId: string) => `pen-session:${handbookId}`;
+
+function anchorFromSession(sess: SessionView): SelectionAnchor | null {
+  const a = sess.last_anchor;
+  if (!a?.start_line || !a.selected_text) return null;
+  return {
+    text: a.selected_text,
+    startLine: a.start_line,
+    endLine: a.end_line || a.start_line,
+    x: 24,
+    y: 120,
+  };
+}
 
 export function App() {
   const [books, setBooks] = useState<HandbookMeta[]>([]);
@@ -21,15 +43,16 @@ export function App() {
   const [llm, setLlm] = useState<LlmStatus | null>(null);
   const [penFloat, setPenFloat] = useState(false);
   const [view, setView] = useState<View>("reader");
+  const [penMsgs, setPenMsgs] = useState<ChatMessage[]>([]);
+  const [substantive, setSubstantive] = useState(false);
   const selGen = useRef(0);
   const viewRef = useRef<View>("reader");
+  const createLocks = useRef<Record<string, Promise<SessionView>>>({});
   viewRef.current = view;
 
   const openDiagnose = useCallback(() => {
     selGen.current += 1;
     window.getSelection()?.removeAllRanges();
-    setSel(null);
-    setSection(null);
     setPenFloat(false);
     setView("diagnose");
   }, []);
@@ -39,28 +62,72 @@ export function App() {
     setView("reader");
   }, []);
 
+  const adoptSession = useCallback(async (id: string, sess: SessionView) => {
+    localStorage.setItem(sessionKey(id), sess.session_id);
+    setSessionId(sess.session_id);
+    setChips(sess.chips);
+    setPenMsgs(sess.ui_messages || []);
+    setSubstantive(Boolean(sess.has_substantive));
+    const restored = anchorFromSession(sess);
+    setSel(restored);
+    if (restored) {
+      try {
+        setSection(await api.locate(id, restored.startLine));
+      } catch {
+        setSection(null);
+      }
+    } else {
+      setSection(null);
+    }
+  }, []);
+
+  const resumeOrCreate = useCallback(async (id: string): Promise<SessionView> => {
+    const stored = localStorage.getItem(sessionKey(id));
+    if (stored) {
+      try {
+        const existing = await api.getSession(stored);
+        if (existing.handbook_id === id) return existing;
+      } catch {
+        /* mint below */
+      }
+    }
+    if (!createLocks.current[id]) {
+      createLocks.current[id] = api
+        .createSession(id, stored || undefined)
+        .finally(() => {
+          delete createLocks.current[id];
+        });
+    }
+    return createLocks.current[id];
+  }, []);
+
+  const reloadContent = useCallback(async (id: string) => {
+    const [meta, content] = await Promise.all([api.handbook(id), api.content(id)]);
+    setCurrent(meta);
+    setText(content.text);
+    setToc(meta.toc || []);
+  }, []);
+
   const loadBook = useCallback(async (id: string) => {
     setLoading(true);
     setErr("");
-    setSel(null);
     setView("reader");
     try {
       const [meta, content, sess] = await Promise.all([
         api.handbook(id),
         api.content(id),
-        api.createSession(id),
+        resumeOrCreate(id),
       ]);
       setCurrent(meta);
       setText(content.text);
       setToc(meta.toc || []);
-      setSessionId(sess.session_id);
-      setChips(sess.chips);
+      await adoptSession(id, sess);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [adoptSession, resumeOrCreate]);
 
   useEffect(() => {
     void (async () => {
@@ -227,7 +294,11 @@ export function App() {
             setPenFloat(false);
             window.getSelection()?.removeAllRanges();
           }}
-          onWrote={() => void loadBook(current.handbook_id)}
+          msgs={penMsgs}
+          onMsgs={setPenMsgs}
+          substantive={substantive}
+          onSubstantive={setSubstantive}
+          onWrote={() => void reloadContent(current.handbook_id)}
         />
       )}
     </div>

@@ -18,10 +18,16 @@ from pen import gitops
 from pen import insert as insertmod
 from pen import libraries, snapshots
 from pen import diagnose as diagnosemod
+from pen import proposals as proposalsmod
 from pen import trajectory
 from pen.config import DEFAULT_HANDBOOK_ID, llm_public_status
-from pen.session import FIXED_CHIPS, STORE
+from pen.session import FIXED_CHIPS, STORE, chip_label
 from pen.tutor import build_user_packet, propose_fold_md, stream_chat
+
+SEARCH_REPLY = (
+    "论文检索还没开。这是诚实挂起：P2 才有联网，"
+    "现在不会假装搜过，也不会往诊断轨迹里记一笔假检索。"
+)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -53,6 +59,7 @@ class ImportBody(BaseModel):
 
 class SessionBody(BaseModel):
     handbook_id: str = DEFAULT_HANDBOOK_ID
+    session_id: str | None = None
 
 
 class ChatBody(BaseModel):
@@ -85,6 +92,30 @@ def _meta_or_404(handbook_id: str):
     if meta is None:
         raise HTTPException(404, f"未知手册 {handbook_id}")
     return libraries.refresh_if_stale(handbook_id)
+
+
+def _sse(ev: dict[str, Any]) -> str:
+    return f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+
+def _proposal_put(pid: str, rec: dict[str, Any]) -> None:
+    _proposals[pid] = rec
+    proposalsmod.put(pid, rec)
+
+
+def _proposal_get(pid: str) -> dict[str, Any] | None:
+    rec = _proposals.get(pid)
+    if rec is not None:
+        return rec
+    rec = proposalsmod.get(pid)
+    if rec is not None:
+        _proposals[pid] = rec
+    return rec
+
+
+def _proposal_del(pid: str) -> None:
+    _proposals.pop(pid, None)
+    proposalsmod.delete(pid)
 
 
 @app.get("/v1/health")
@@ -142,8 +173,24 @@ def locate(handbook_id: str, line: int) -> dict[str, Any]:
 @app.post("/v1/sessions")
 def create_session(body: SessionBody) -> dict[str, Any]:
     _meta_or_404(body.handbook_id)
+    if body.session_id:
+        try:
+            sess = STORE.get(body.session_id)
+            if sess.handbook_id == body.handbook_id:
+                return sess.to_public()
+        except KeyError:
+            pass
     sess = STORE.create(body.handbook_id)
-    return {"session_id": sess.session_id, "handbook_id": sess.handbook_id, "chips": FIXED_CHIPS}
+    return sess.to_public()
+
+
+@app.get("/v1/sessions/{session_id}")
+def get_session(session_id: str) -> dict[str, Any]:
+    try:
+        sess = STORE.get(session_id)
+    except KeyError as exc:
+        raise HTTPException(404, "未知会话") from exc
+    return sess.to_public()
 
 
 @app.post("/v1/chat")
@@ -153,7 +200,18 @@ def chat(body: ChatBody) -> StreamingResponse:
     except KeyError as exc:
         raise HTTPException(404, "未知会话") from exc
     if body.chip == "search":
-        raise HTTPException(400, "论文检索尚未开放")
+        def search_gen() -> Any:
+            yield _sse({"type": "token", "text": SEARCH_REPLY})
+            yield _sse(
+                {
+                    "type": "done",
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+                    "dynamic_chips": [],
+                    "has_substantive": False,
+                }
+            )
+
+        return StreamingResponse(search_gen(), media_type="text/event-stream")
     meta = _meta_or_404(sess.handbook_id)
     idx = libraries.load_index(sess.handbook_id)
     path = Path(meta.original_path)
@@ -170,6 +228,10 @@ def chat(body: ChatBody) -> StreamingResponse:
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     sess.last_anchor = anchor
+    shown = (body.user_text or "").strip() or chip_label(body.chip)
+    sess.ui_messages.append({"role": "user", "text": shown})
+    prior_assistant = sess.last_assistant
+    STORE.save(sess)
 
     def gen():
         ok = True
@@ -180,8 +242,14 @@ def chat(body: ChatBody) -> StreamingResponse:
                     has_sub = bool(ev.get("has_substantive"))
                 elif ev.get("type") == "error":
                     ok = False
-                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+                yield _sse(ev)
         finally:
+            if sess.last_assistant and sess.last_assistant != prior_assistant:
+                sess.ui_messages.append({"role": "assistant", "text": sess.last_assistant})
+            try:
+                STORE.save(sess)
+            except Exception:
+                pass
             try:
                 preview = (sess.last_assistant or "")[:200]
                 trajectory.append_turn(
@@ -234,13 +302,16 @@ def propose(body: ProposeBody) -> dict[str, Any]:
     new = insertmod.render_new_text(old, plan)
     diff = insertmod.unified_diff(old, new, path.name)
     pid = uuid.uuid4().hex
-    _proposals[pid] = {
-        "handbook_id": sess.handbook_id,
-        "session_id": sess.session_id,
-        "plan": plan,
-        "diff": diff,
-        "original_path": str(path),
-    }
+    _proposal_put(
+        pid,
+        {
+            "handbook_id": sess.handbook_id,
+            "session_id": sess.session_id,
+            "plan": plan,
+            "diff": diff,
+            "original_path": str(path),
+        },
+    )
     return {
         "proposal_id": pid,
         "original_path": str(path),
@@ -255,7 +326,7 @@ def propose(body: ProposeBody) -> dict[str, Any]:
 
 @app.post("/v1/writeback/apply")
 def apply(body: ApplyBody) -> dict[str, Any]:
-    prop = _proposals.get(body.proposal_id)
+    prop = _proposal_get(body.proposal_id)
     if prop is None:
         raise HTTPException(404, "提议不存在或已过期")
     try:
@@ -280,7 +351,7 @@ def apply(body: ApplyBody) -> dict[str, Any]:
             commit_out = gitops.commit_original(path, msg)
         except gitops.GitError as exc:
             raise HTTPException(400, f"原文已写入，但 commit 失败：{exc}") from exc
-    del _proposals[body.proposal_id]
+    _proposal_del(body.proposal_id)
     return {
         "ok": True,
         "original_path": str(path),

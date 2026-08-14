@@ -38,6 +38,8 @@ class LLMConfig:
 def ensure_pen_dirs() -> None:
     LIBRARIES_DIR.mkdir(parents=True, exist_ok=True)
     (PEN_DIR / "trajectories").mkdir(parents=True, exist_ok=True)
+    (PEN_DIR / "sessions").mkdir(parents=True, exist_ok=True)
+    (PEN_DIR / "proposals").mkdir(parents=True, exist_ok=True)
 
 
 def parse_dotenv(path: Path | None = None) -> dict[str, str]:

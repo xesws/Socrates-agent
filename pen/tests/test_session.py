@@ -1,0 +1,56 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from pen import config
+from pen.session import PenSession, SessionStore, load_session, save_session
+
+
+@pytest.fixture()
+def pen_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(config, "PEN_DIR", tmp_path)
+    return tmp_path
+
+
+def test_create_then_reload_from_disk(pen_home: Path) -> None:
+    store = SessionStore()
+    sess = store.create("swe-agent-v2")
+    sess.ui_messages.append({"role": "user", "text": "先别揭晓，问我一个问题"})
+    sess.ui_messages.append({"role": "assistant", "text": "你觉得 shell 是一类还是一个？"})
+    sess.last_anchor = {
+        "start_line": 695,
+        "end_line": 695,
+        "selected_text": "chmod +x hello.sh",
+        "kind": "q",
+        "level": "Level 0",
+    }
+    sess.has_substantive = True
+    sess.last_assistant = "你觉得 shell 是一类还是一个？"
+    store.save(sess)
+
+    disk = pen_home / "sessions" / f"{sess.session_id}.json"
+    assert disk.is_file()
+
+    other = SessionStore()
+    loaded = other.get(sess.session_id)
+    assert loaded.handbook_id == "swe-agent-v2"
+    assert loaded.has_substantive is True
+    assert loaded.ui_messages[0]["text"].startswith("先别揭晓")
+    assert loaded.last_anchor is not None
+    assert loaded.last_anchor["start_line"] == 695
+    assert any(m.get("role") == "system" for m in loaded.messages)
+
+
+def test_missing_session_raises(pen_home: Path) -> None:
+    store = SessionStore()
+    with pytest.raises(KeyError):
+        store.get("deadbeefdeadbeefdeadbeefdeadbeef")
+
+
+def test_corrupt_json_is_missing(pen_home: Path) -> None:
+    sess = PenSession(session_id="ab" * 16, handbook_id="swe-agent-v2")
+    dest = save_session(sess)
+    dest.write_text("{not-json", encoding="utf-8")
+    assert load_session(sess.session_id) is None
