@@ -7,7 +7,12 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { api, streamChat } from "../api";
+import { renderMarkdown } from "../reader/markdown";
 import type { ChatMessage, Chip, Proposal, Section, SelectionAnchor } from "../types";
+
+function visibleReply(text: string): string {
+  return text.replace(/<!--pen:chips[\s\S]*?-->/g, "").trim();
+}
 
 type Props = {
   handbookId: string;
@@ -405,11 +410,21 @@ export function PenPanel({
         {msgs.length === 0 && (
           <p className="pen-hint">先选一条芯片。默认是苏格拉底：我先问你。</p>
         )}
-        {msgs.map((m, i) => (
-          <div key={i} className={`bubble ${m.role}`}>
-            {m.text}
-          </div>
-        ))}
+        {msgs.map((m, i) =>
+          m.role === "assistant" ? (
+            <div
+              key={i}
+              className="bubble assistant"
+              dangerouslySetInnerHTML={{
+                __html: renderMarkdown(visibleReply(m.text)),
+              }}
+            />
+          ) : (
+            <div key={i} className={`bubble ${m.role}`}>
+              {m.text}
+            </div>
+          ),
+        )}
       </div>
 
       {err && <p className="pen-err">{err}</p>}

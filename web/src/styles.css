@@ -440,6 +440,61 @@ select {
   border-left: 2px solid var(--phosphor);
 }
 
+.bubble.assistant p {
+  margin: 0 0 0.7em;
+}
+
+.bubble.assistant p:last-child {
+  margin-bottom: 0;
+}
+
+.bubble.assistant h1,
+.bubble.assistant h2,
+.bubble.assistant h3 {
+  font-family: Syne, sans-serif;
+  font-size: 14px;
+  margin: 0.9em 0 0.4em;
+}
+
+.bubble.assistant ul,
+.bubble.assistant ol {
+  margin: 0.3em 0 0.8em;
+  padding-left: 1.2em;
+}
+
+.bubble.assistant li {
+  margin: 0.2em 0;
+}
+
+.bubble.assistant code {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.86em;
+  background: #16110d;
+  padding: 0 4px;
+}
+
+.bubble.assistant pre {
+  background: #16110d;
+  padding: 8px 10px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0.5em 0 0.8em;
+}
+
+.bubble.assistant table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+  margin: 0.5em 0 0.8em;
+}
+
+.bubble.assistant th,
+.bubble.assistant td {
+  border: 1px solid #4a3b2a;
+  padding: 4px 6px;
+}
+
 .bubble.tool {
   font-family: "IBM Plex Mono", monospace;
   font-size: 11px;
