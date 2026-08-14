@@ -46,6 +46,35 @@ export type ChatMessage = {
   ok?: boolean;
 };
 
+export type DiagnosisSpot = {
+  key: string;
+  level: string;
+  kind: string;
+  label: string;
+  q_title?: string | null;
+  beat?: string | null;
+  hits: number;
+  weight: number;
+  pct: number;
+  keywords: string[];
+  start_line?: number | null;
+};
+
+export type DiagnosisLevel = {
+  level: string;
+  hits: number;
+  pct: number;
+};
+
+export type DiagnosisReport = {
+  handbook_id: string;
+  n_turns: number;
+  n_curriculum: number;
+  levels: DiagnosisLevel[];
+  weak: DiagnosisSpot[];
+  footprints: DiagnosisSpot[];
+};
+
 export type Proposal = {
   proposal_id: string;
   original_path: string;

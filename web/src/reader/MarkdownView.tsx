@@ -52,7 +52,11 @@ export function MarkdownView({ markdown, onSelect }: Props) {
     };
     const onUp = (e: Event) => {
       const t = e.target;
-      if (t instanceof Node && document.querySelector(".pen")?.contains(t)) {
+      if (
+        t instanceof Node &&
+        (document.querySelector(".pen")?.contains(t) ||
+          document.querySelector(".report")?.contains(t))
+      ) {
         return;
       }
       readSel();

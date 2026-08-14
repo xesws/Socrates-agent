@@ -1,4 +1,4 @@
-import type { Chip, HandbookMeta, Proposal, Section } from "./types";
+import type { Chip, DiagnosisReport, HandbookMeta, Proposal, Section } from "./types";
 
 async function j<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -57,6 +57,13 @@ export const api = {
     j<{ ok: boolean; restored_from: string; original_path: string }>(
       "/v1/writeback/rollback",
       { method: "POST", body: JSON.stringify({ handbook_id }) },
+    ),
+  diagnosis: (handbook_id: string) =>
+    j<DiagnosisReport>(`/v1/handbooks/${handbook_id}/diagnosis`),
+  narrateDiagnosis: (handbook_id: string) =>
+    j<{ handbook_id: string; narrative: string }>(
+      `/v1/handbooks/${handbook_id}/diagnosis/narrate`,
+      { method: "POST" },
     ),
 };
 

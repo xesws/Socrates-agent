@@ -108,6 +108,24 @@ select {
   text-overflow: ellipsis;
 }
 
+.diag-open {
+  display: block;
+  width: 100%;
+  margin: 0 0 16px;
+  background: #2a211a;
+  color: #f3ead8;
+  border: 1px solid var(--brass);
+  padding: 8px 10px;
+  cursor: pointer;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  text-align: left;
+}
+
+.diag-open:hover {
+  background: #33281f;
+}
+
 .toc {
   display: flex;
   flex-direction: column;
@@ -284,6 +302,112 @@ select {
   border: 0;
   border-left: 1px solid #3a2e22;
   box-shadow: none;
+}
+
+.report {
+  background: var(--rail);
+}
+
+.diag-sum {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  color: #9a8b74;
+  margin: 0 0 12px;
+}
+
+.diag-block h3 {
+  font-family: Syne, sans-serif;
+  font-size: 14px;
+  margin: 0 0 6px;
+}
+
+.diag-levels {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 16px;
+}
+
+.diag-levels li {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+  margin: 6px 0;
+}
+
+.diag-bar {
+  display: block;
+  height: 6px;
+  background: #2a211a;
+  border-radius: 99px;
+  overflow: hidden;
+}
+
+.diag-bar i {
+  display: block;
+  height: 100%;
+  background: var(--phosphor);
+}
+
+.diag-spots {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 16px;
+}
+
+.diag-spot {
+  border: 1px solid #3a2e22;
+  margin: 0 0 8px;
+  background: #16110d;
+}
+
+.diag-spot-foot {
+  opacity: 0.72;
+}
+
+.diag-spot-head {
+  display: grid;
+  grid-template-columns: 48px 1fr auto;
+  gap: 8px;
+  align-items: start;
+  width: 100%;
+  background: none;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  padding: 8px 10px 4px;
+  cursor: pointer;
+}
+
+.diag-pct {
+  font-family: Syne, sans-serif;
+  color: var(--phosphor);
+  font-size: 16px;
+}
+
+.diag-label {
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.diag-label em {
+  display: block;
+  font-style: normal;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  color: #b8a88e;
+  margin-bottom: 2px;
+}
+
+.diag-hits {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  color: #9a8b74;
+}
+
+.diag-spot .chips {
+  padding: 0 10px 10px;
 }
 
 .pen.is-float {

@@ -17,6 +17,8 @@ from pydantic import BaseModel
 from pen import gitops
 from pen import insert as insertmod
 from pen import libraries, snapshots
+from pen import diagnose as diagnosemod
+from pen import trajectory
 from pen.config import DEFAULT_HANDBOOK_ID, llm_public_status
 from pen.session import FIXED_CHIPS, STORE
 from pen.tutor import build_user_packet, propose_fold_md, stream_chat
@@ -170,8 +172,33 @@ def chat(body: ChatBody) -> StreamingResponse:
     sess.last_anchor = anchor
 
     def gen():
-        for ev in stream_chat(sess, path, packet):
-            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+        ok = True
+        has_sub = False
+        try:
+            for ev in stream_chat(sess, path, packet):
+                if ev.get("type") == "done":
+                    has_sub = bool(ev.get("has_substantive"))
+                elif ev.get("type") == "error":
+                    ok = False
+                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+        finally:
+            try:
+                preview = (sess.last_assistant or "")[:200]
+                trajectory.append_turn(
+                    sess.handbook_id,
+                    {
+                        "session_id": sess.session_id,
+                        "chip": body.chip,
+                        "user_text": (body.user_text or "")[:240],
+                        "anchor": anchor,
+                        "assistant_chars": len(sess.last_assistant or ""),
+                        "assistant_preview": preview,
+                        "has_substantive": has_sub or sess.has_substantive,
+                        "ok": ok,
+                    },
+                )
+            except Exception:
+                pass
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -278,3 +305,25 @@ def rollback(body: RollbackBody) -> dict[str, Any]:
 @app.get("/v1/chips")
 def chips() -> dict[str, Any]:
     return {"chips": FIXED_CHIPS}
+
+
+@app.get("/v1/handbooks/{handbook_id}/diagnosis")
+def get_diagnosis(handbook_id: str) -> dict[str, Any]:
+    _meta_or_404(handbook_id)
+    turns = trajectory.load_turns(handbook_id)
+    report = diagnosemod.aggregate(turns)
+    report["handbook_id"] = handbook_id
+    return report
+
+
+@app.post("/v1/handbooks/{handbook_id}/diagnosis/narrate")
+def narrate_diagnosis(handbook_id: str) -> dict[str, Any]:
+    _meta_or_404(handbook_id)
+    turns = trajectory.load_turns(handbook_id)
+    report = diagnosemod.aggregate(turns)
+    report["handbook_id"] = handbook_id
+    try:
+        text = diagnosemod.narrate(report)
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"handbook_id": handbook_id, "narrative": text}

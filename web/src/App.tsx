@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type LlmStatus } from "./api";
 import { MarkdownView } from "./reader/MarkdownView";
+import { ReportPanel } from "./diagnose/ReportPanel";
 import { PenPanel } from "./pen/PenPanel";
 import type { Chip, HandbookMeta, Section, SelectionAnchor, TocEntry } from "./types";
 
@@ -17,12 +18,14 @@ export function App() {
   const [section, setSection] = useState<Section | null>(null);
   const [llm, setLlm] = useState<LlmStatus | null>(null);
   const [penFloat, setPenFloat] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
   const selGen = useRef(0);
 
   const loadBook = useCallback(async (id: string) => {
     setLoading(true);
     setErr("");
     setSel(null);
+    setReportOpen(false);
     try {
       const [meta, content, sess] = await Promise.all([
         api.handbook(id),
@@ -66,6 +69,7 @@ export function App() {
       const gen = ++selGen.current;
       setSel(anchor);
       setPenFloat(false);
+      setReportOpen(false);
       setSection(null);
       if (!current) return;
       try {
@@ -79,7 +83,11 @@ export function App() {
   );
 
   return (
-    <div className={sel && !penFloat ? "desk is-pen-open" : "desk"}>
+    <div
+      className={
+        reportOpen || (sel && !penFloat) ? "desk is-pen-open" : "desk"
+      }
+    >
       <aside className="rail">
         <p className="eyebrow">师傅的工作台</p>
         <h1>点读笔</h1>
@@ -107,6 +115,17 @@ export function App() {
             ? `模型 ${llm.model} · ${llm.key_source}`
             : "模型未配置（需要 DEEPSEEK_API_KEY 或 OPENAI_*）"}
         </p>
+        <button
+          className="diag-open"
+          type="button"
+          onClick={() => {
+            setReportOpen(true);
+            setSel(null);
+            setPenFloat(false);
+          }}
+        >
+          诊断 · 看我的短板
+        </button>
         <nav className="toc">
           {toc.map((t) => (
             <button
@@ -137,7 +156,18 @@ export function App() {
         )}
       </main>
 
-      {sel && sessionId && current && (
+      {reportOpen && current && (
+        <ReportPanel
+          handbookId={current.handbook_id}
+          onClose={() => setReportOpen(false)}
+          onJump={(line) => {
+            const node = document.querySelector(`[data-source-line="${line}"]`);
+            node?.scrollIntoView({ block: "start", behavior: "smooth" });
+          }}
+        />
+      )}
+
+      {sel && sessionId && current && !reportOpen && (
         <PenPanel
           handbookId={current.handbook_id}
           sessionId={sessionId}
