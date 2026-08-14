@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type LlmStatus } from "./api";
 import { MarkdownView } from "./reader/MarkdownView";
 import { PenPanel } from "./pen/PenPanel";
@@ -16,6 +16,7 @@ export function App() {
   const [sel, setSel] = useState<SelectionAnchor | null>(null);
   const [section, setSection] = useState<Section | null>(null);
   const [llm, setLlm] = useState<LlmStatus | null>(null);
+  const selGen = useRef(0);
 
   const loadBook = useCallback(async (id: string) => {
     setLoading(true);
@@ -59,12 +60,15 @@ export function App() {
 
   const onSelect = useCallback(
     async (anchor: SelectionAnchor) => {
+      const gen = ++selGen.current;
       setSel(anchor);
+      setSection(null);
       if (!current) return;
       try {
-        setSection(await api.locate(current.handbook_id, anchor.startLine));
+        const sec = await api.locate(current.handbook_id, anchor.startLine);
+        if (selGen.current === gen) setSection(sec);
       } catch {
-        setSection(null);
+        if (selGen.current === gen) setSection(null);
       }
     },
     [current],

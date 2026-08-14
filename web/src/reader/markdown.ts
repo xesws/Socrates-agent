@@ -20,21 +20,37 @@ function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;");
 }
 
+/**
+ * Custom fence renderer: markdown-it's default drops token.attrs (including
+ * data-source-line) whenever highlight() returns a string that starts with
+ * `<pre`. Selecting inside a code block then fell back to line 1 → 封面.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function renderFence(tokens: any[], idx: number, _opts: unknown, _env: unknown, slf: any): string {
+  const token = tokens[idx];
+  const info = (token.info || "").trim();
+  const lang = info.split(/\s+/u)[0] || "";
+  const raw = token.content;
+  const attrs = slf.renderAttrs(token);
+  if (lang === "mermaid") {
+    return `<pre class="mermaid-hold"${attrs}><code>${escapeHtml(raw)}</code></pre>\n`;
+  }
+  const key = lang && hljs.getLanguage(lang) ? lang : "";
+  const html = key
+    ? hljs.highlight(raw, { language: key }).value
+    : escapeHtml(raw);
+  const langClass = lang ? `hljs language-${lang}` : "hljs";
+  return `<pre class="${langClass}"${attrs}><code>${html}</code></pre>\n`;
+}
+
 const md: MarkdownIt = new MarkdownIt({
   html: true,
   linkify: true,
   typographer: false,
-  highlight(str: string, lang: string): string {
-    if (lang === "mermaid") {
-      return `<pre class="mermaid-hold"><code>${escapeHtml(str)}</code></pre>`;
-    }
-    const key = lang && hljs.getLanguage(lang) ? lang : "";
-    const html = key
-      ? hljs.highlight(str, { language: key }).value
-      : escapeHtml(str);
-    return `<pre class="hljs"><code>${html}</code></pre>`;
-  },
 });
+
+md.renderer.rules.fence = renderFence;
+md.renderer.rules.code_block = renderFence;
 
 md.core.ruler.push("source-line", (state) => {
   for (const token of state.tokens) {
@@ -66,6 +82,12 @@ export async function hydrateMermaid(root: HTMLElement): Promise<void> {
     const host = document.createElement("div");
     host.className = "mermaid-drawn";
     host.id = `mmd-${Date.now()}-${i++}`;
+    if (hold.dataset.sourceLine) {
+      host.dataset.sourceLine = hold.dataset.sourceLine;
+    }
+    if (hold.dataset.sourceEnd) {
+      host.dataset.sourceEnd = hold.dataset.sourceEnd;
+    }
     hold.replaceWith(host);
     try {
       const { svg } = await mermaid.render(host.id + "-svg", code);

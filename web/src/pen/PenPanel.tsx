@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { api, streamChat } from "../api";
 import type { ChatMessage, Chip, Proposal, Section, SelectionAnchor } from "../types";
 
@@ -13,6 +20,40 @@ type Props = {
 };
 
 const OPACITY_KEY = "pen-opacity";
+const MARGIN = 12;
+const DEFAULT_H = 420;
+
+type Pos = { left: number; top: number };
+
+function panelWidth(vw = window.innerWidth): number {
+  return Math.min(400, Math.max(200, vw - MARGIN * 2));
+}
+
+function clampPos(left: number, top: number, w: number, h: number): Pos {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const maxLeft = Math.max(MARGIN, vw - w - MARGIN);
+  const maxTop = Math.max(MARGIN, vh - Math.min(h, vh - MARGIN * 2) - MARGIN);
+  return {
+    left: Math.min(Math.max(MARGIN, left), maxLeft),
+    top: Math.min(Math.max(MARGIN, top), maxTop),
+  };
+}
+
+function placeFromAnchor(anchor: SelectionAnchor, w: number, h: number): Pos {
+  const left = anchor.x - w / 2;
+  const below = anchor.y + 10;
+  const top =
+    below + h > window.innerHeight - MARGIN ? anchor.y - h - 10 : below;
+  return clampPos(left, top, w, h);
+}
+
+function formatSection(section: Section): string {
+  const q = section.q_title?.replace(/^\*\*|\*\*$/g, "") ?? "";
+  if (q) return `${section.level} · ${q}`;
+  if (section.beat) return `${section.level} · ${section.beat}`;
+  return section.level;
+}
 
 export function PenPanel({
   handbookId,
@@ -36,7 +77,23 @@ export function PenPanel({
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [commit, setCommit] = useState(false);
   const [substantive, setSubstantive] = useState(false);
+  const [pos, setPos] = useState<Pos>(() =>
+    placeFromAnchor(anchor, panelWidth(), DEFAULT_H),
+  );
+  const [dragging, setDragging] = useState(false);
+  const [vw, setVw] = useState(() => window.innerWidth);
+
   const logRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  const userMoved = useRef(false);
+  const dragRef = useRef<{
+    id: number;
+    x: number;
+    y: number;
+    left: number;
+    top: number;
+  } | null>(null);
+  const selKey = `${anchor.startLine}:${anchor.endLine}:${anchor.text}:${anchor.x}:${anchor.y}`;
 
   useEffect(() => {
     localStorage.setItem(OPACITY_KEY, String(opacity));
@@ -54,6 +111,66 @@ export function PenPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  useEffect(() => {
+    userMoved.current = false;
+    setPos(placeFromAnchor(anchor, panelWidth(), DEFAULT_H));
+  }, [selKey, anchor]);
+
+  useEffect(() => {
+    const onResize = () => {
+      setVw(window.innerWidth);
+      const el = panelRef.current;
+      const w = el?.offsetWidth ?? panelWidth();
+      const h = el?.offsetHeight ?? DEFAULT_H;
+      setPos((p) => clampPos(p.left, p.top, w, h));
+    };
+    const applyDrag = (e: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d || d.id !== e.pointerId) return;
+      const el = panelRef.current;
+      const w = el?.offsetWidth ?? panelWidth();
+      const h = el?.offsetHeight ?? DEFAULT_H;
+      userMoved.current = true;
+      setDragging(true);
+      setPos(clampPos(d.left + e.clientX - d.x, d.top + e.clientY - d.y, w, h));
+    };
+    const endDrag = (e: PointerEvent) => {
+      if (dragRef.current?.id === e.pointerId) {
+        dragRef.current = null;
+        setDragging(false);
+      }
+    };
+    window.addEventListener("resize", onResize);
+    window.visualViewport?.addEventListener("resize", onResize);
+    window.addEventListener("pointermove", applyDrag);
+    window.addEventListener("pointerup", endDrag);
+    window.addEventListener("pointercancel", endDrag);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.visualViewport?.removeEventListener("resize", onResize);
+      window.removeEventListener("pointermove", applyDrag);
+      window.removeEventListener("pointerup", endDrag);
+      window.removeEventListener("pointercancel", endDrag);
+    };
+  }, []);
+
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      const w = el.offsetWidth;
+      const h = el.offsetHeight;
+      setPos((p) => {
+        const next = userMoved.current
+          ? clampPos(p.left, p.top, w, h)
+          : placeFromAnchor(anchor, w, h);
+        return p.left === next.left && p.top === next.top ? p : next;
+      });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [anchor]);
+
   const liveChips = useMemo(() => {
     return chips.map((c) =>
       c.id === "writeback" ? { ...c, enabled: substantive } : c,
@@ -61,8 +178,8 @@ export function PenPanel({
   }, [chips, substantive]);
 
   const sourceLine = section
-    ? `${section.level}${section.q_title ? " · " + section.q_title.replace(/^\*\*|\*\*$/g, "") : section.beat ? " · " + section.beat : ""}`
-    : `L${anchor.startLine}`;
+    ? formatSection(section)
+    : `L${anchor.startLine} · 定位中`;
 
   async function send(chip: string, userText: string) {
     if (chip === "search") return;
@@ -190,33 +307,74 @@ export function PenPanel({
     }
   }
 
-  const style: CSSProperties = (() => {
-    const width = 400;
-    const estH = 420;
-    const left = Math.min(
-      Math.max(anchor.x - width / 2, 16),
-      window.innerWidth - width - 16,
-    );
-    const below = anchor.y + 12;
-    const top =
-      below + estH > window.innerHeight - 16
-        ? Math.max(16, anchor.y - estH - 8)
-        : below;
-    return {
-      left,
-      top,
-      opacity,
-      maxHeight: Math.min(640, window.innerHeight - 32),
+  function onBarPointerDown(e: ReactPointerEvent<HTMLElement>) {
+    if (e.button !== 0) return;
+    const t = e.target as HTMLElement;
+    if (t.closest("button, input, label, a")) return;
+    const el = panelRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    dragRef.current = {
+      id: e.pointerId,
+      x: e.clientX,
+      y: e.clientY,
+      left: r.left,
+      top: r.top,
     };
-  })();
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* synthetic events and lost pointers have no capture target */
+    }
+    e.preventDefault();
+  }
+
+  function onBarPointerMove(e: ReactPointerEvent<HTMLElement>) {
+    const d = dragRef.current;
+    if (!d || d.id !== e.pointerId) return;
+    const el = panelRef.current;
+    const w = el?.offsetWidth ?? panelWidth(vw);
+    const h = el?.offsetHeight ?? DEFAULT_H;
+    userMoved.current = true;
+    setDragging(true);
+    setPos(clampPos(d.left + e.clientX - d.x, d.top + e.clientY - d.y, w, h));
+  }
+
+  function onBarPointerUp(e: ReactPointerEvent<HTMLElement>) {
+    if (dragRef.current?.id === e.pointerId) {
+      dragRef.current = null;
+      setDragging(false);
+    }
+  }
+
+  const width = panelWidth(vw);
+  const style: CSSProperties = {
+    left: pos.left,
+    top: pos.top,
+    width,
+    maxHeight: window.innerHeight - MARGIN * 2,
+    ["--pen-alpha" as string]: String(opacity),
+  };
 
   return (
-    <aside className="pen" style={style} role="dialog" aria-label="点读笔">
-      <header className="pen-bar">
+    <aside
+      ref={panelRef}
+      className={dragging ? "pen is-dragging" : "pen"}
+      style={style}
+      role="dialog"
+      aria-label="点读笔"
+    >
+      <header
+        className="pen-bar"
+        onPointerDown={onBarPointerDown}
+        onPointerMove={onBarPointerMove}
+        onPointerUp={onBarPointerUp}
+        onPointerCancel={onBarPointerUp}
+      >
         <span className="pen-mark" />
         <div className="pen-meta">
           <strong>点读笔</strong>
-          <em>{sourceLine}</em>
+          <em title={sourceLine}>{sourceLine}</em>
         </div>
         <label className="pen-opacity">
           透明度
@@ -234,7 +392,9 @@ export function PenPanel({
         </button>
       </header>
 
-      <blockquote className="pen-quote">{anchor.text}</blockquote>
+      <blockquote className="pen-quote" title={anchor.text}>
+        {anchor.text}
+      </blockquote>
 
       <div className="pen-log" ref={logRef}>
         {msgs.length === 0 && (
@@ -308,7 +468,7 @@ export function PenPanel({
             <input
               type="checkbox"
               checked={commit}
-              onChange={(e) => setCommit(e.target.checked)}
+              onChange={(e) => setCommit(e.currentTarget.checked)}
             />
             一并 git commit 这一份原文（不 push）
           </label>
