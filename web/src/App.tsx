@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type LlmStatus } from "./api";
-import { MarkdownView } from "./reader/MarkdownView";
 import { ReportPanel } from "./diagnose/ReportPanel";
+import { MarkdownView } from "./reader/MarkdownView";
 import { PenPanel } from "./pen/PenPanel";
 import type { Chip, HandbookMeta, Section, SelectionAnchor, TocEntry } from "./types";
+
+type View = "reader" | "diagnose";
 
 export function App() {
   const [books, setBooks] = useState<HandbookMeta[]>([]);
@@ -18,14 +20,29 @@ export function App() {
   const [section, setSection] = useState<Section | null>(null);
   const [llm, setLlm] = useState<LlmStatus | null>(null);
   const [penFloat, setPenFloat] = useState(false);
-  const [reportOpen, setReportOpen] = useState(false);
+  const [view, setView] = useState<View>("reader");
   const selGen = useRef(0);
+  const viewRef = useRef<View>("reader");
+  viewRef.current = view;
+
+  const openDiagnose = useCallback(() => {
+    window.getSelection()?.removeAllRanges();
+    setSel(null);
+    setSection(null);
+    setPenFloat(false);
+    setView("diagnose");
+  }, []);
+
+  const openReader = useCallback(() => {
+    window.getSelection()?.removeAllRanges();
+    setView("reader");
+  }, []);
 
   const loadBook = useCallback(async (id: string) => {
     setLoading(true);
     setErr("");
     setSel(null);
-    setReportOpen(false);
+    setView("reader");
     try {
       const [meta, content, sess] = await Promise.all([
         api.handbook(id),
@@ -66,15 +83,17 @@ export function App() {
 
   const onSelect = useCallback(
     async (anchor: SelectionAnchor) => {
+      if (viewRef.current !== "reader") return;
       const gen = ++selGen.current;
       setSel(anchor);
       setPenFloat(false);
-      setReportOpen(false);
       setSection(null);
       if (!current) return;
       try {
         const sec = await api.locate(current.handbook_id, anchor.startLine);
-        if (selGen.current === gen) setSection(sec);
+        if (selGen.current === gen && viewRef.current === "reader") {
+          setSection(sec);
+        }
       } catch {
         if (selGen.current === gen) setSection(null);
       }
@@ -82,16 +101,36 @@ export function App() {
     [current],
   );
 
+  const jumpToLine = useCallback((line: number) => {
+    setView("reader");
+    setSel(null);
+    window.getSelection()?.removeAllRanges();
+    window.setTimeout(() => {
+      const node = document.querySelector(`[data-source-line="${line}"]`);
+      node?.scrollIntoView({ block: "start", behavior: "smooth" });
+    }, 40);
+  }, []);
+
+  const diagnosing = view === "diagnose";
+
   return (
     <div
-      className={
-        reportOpen || (sel && !penFloat) ? "desk is-pen-open" : "desk"
-      }
+      className={[
+        "desk",
+        diagnosing ? "is-diagnose" : "",
+        !diagnosing && sel && !penFloat ? "is-pen-open" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
     >
       <aside className="rail">
         <p className="eyebrow">师傅的工作台</p>
-        <h1>点读笔</h1>
-        <p className="lede">框选原文，就地追问。写回改的是磁盘上那一份。</p>
+        <h1>{diagnosing ? "诊断舱" : "点读笔"}</h1>
+        <p className="lede">
+          {diagnosing
+            ? "看轨迹、看短板、看关键词。这里不是点读笔。"
+            : "框选原文，就地追问。写回改的是磁盘上那一份。"}
+        </p>
         <label className="book-pick">
           手册
           <select
@@ -115,39 +154,52 @@ export function App() {
             ? `模型 ${llm.model} · ${llm.key_source}`
             : "模型未配置（需要 DEEPSEEK_API_KEY 或 OPENAI_*）"}
         </p>
-        <button
-          className="diag-open"
-          type="button"
-          onClick={() => {
-            setReportOpen(true);
-            setSel(null);
-            setPenFloat(false);
-          }}
-        >
-          诊断 · 看我的短板
-        </button>
-        <nav className="toc">
-          {toc.map((t) => (
-            <button
-              key={t.anchor_id}
-              className={t.beat ? "toc-beat" : "toc-h1"}
-              onClick={() => {
-                const node = document.querySelector(
-                  `[data-source-line="${t.start_line}"]`,
-                );
-                node?.scrollIntoView({ block: "start", behavior: "smooth" });
-              }}
-            >
-              {t.beat ? t.heading : t.heading}
-            </button>
-          ))}
-        </nav>
+        <div className="view-switch">
+          <button
+            type="button"
+            className={diagnosing ? "" : "is-on"}
+            onClick={openReader}
+          >
+            手册
+          </button>
+          <button
+            type="button"
+            className={diagnosing ? "is-on" : ""}
+            onClick={openDiagnose}
+          >
+            诊断
+          </button>
+        </div>
+        {!diagnosing && (
+          <nav className="toc">
+            {toc.map((t) => (
+              <button
+                key={t.anchor_id}
+                className={t.beat ? "toc-beat" : "toc-h1"}
+                onClick={() => {
+                  const node = document.querySelector(
+                    `[data-source-line="${t.start_line}"]`,
+                  );
+                  node?.scrollIntoView({ block: "start", behavior: "smooth" });
+                }}
+              >
+                {t.heading}
+              </button>
+            ))}
+          </nav>
+        )}
       </aside>
 
       <main className="stage">
         {err && <p className="banner">{err}</p>}
         {loading ? (
           <p className="banner">正在摊开手册…</p>
+        ) : diagnosing && current ? (
+          <ReportPanel
+            handbookId={current.handbook_id}
+            onBack={openReader}
+            onJump={jumpToLine}
+          />
         ) : (
           <div className="paper">
             <div className="paper-rule" />
@@ -156,18 +208,7 @@ export function App() {
         )}
       </main>
 
-      {reportOpen && current && (
-        <ReportPanel
-          handbookId={current.handbook_id}
-          onClose={() => setReportOpen(false)}
-          onJump={(line) => {
-            const node = document.querySelector(`[data-source-line="${line}"]`);
-            node?.scrollIntoView({ block: "start", behavior: "smooth" });
-          }}
-        />
-      )}
-
-      {sel && sessionId && current && !reportOpen && (
+      {view === "reader" && sel && sessionId && current && (
         <PenPanel
           handbookId={current.handbook_id}
           sessionId={sessionId}
@@ -179,6 +220,7 @@ export function App() {
           onClose={() => {
             setSel(null);
             setPenFloat(false);
+            window.getSelection()?.removeAllRanges();
           }}
           onWrote={() => void loadBook(current.handbook_id)}
         />

@@ -50,21 +50,22 @@ export function MarkdownView({ markdown, onSelect }: Props) {
         y: pt.y,
       });
     };
+    let later = 0;
     const onUp = (e: Event) => {
       const t = e.target;
-      if (
-        t instanceof Node &&
-        (document.querySelector(".pen")?.contains(t) ||
-          document.querySelector(".report")?.contains(t))
-      ) {
-        return;
+      if (t instanceof Element) {
+        if (t.closest(".pen, .dash, .rail, .view-switch, button, input, select, textarea, label")) {
+          return;
+        }
       }
       readSel();
-      window.setTimeout(readSel, 16);
+      window.clearTimeout(later);
+      later = window.setTimeout(readSel, 16);
     };
     document.addEventListener("pointerup", onUp);
     document.addEventListener("mouseup", onUp);
     return () => {
+      window.clearTimeout(later);
       document.removeEventListener("pointerup", onUp);
       document.removeEventListener("mouseup", onUp);
     };
