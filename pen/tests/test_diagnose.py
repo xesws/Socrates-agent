@@ -135,6 +135,70 @@ def test_diagnosis_endpoint_empty_and_no_handbook_write(tmp_path: Path, monkeypa
     assert DEFAULT_HANDBOOK.stat().st_mtime == mtime
 
 
+def test_start_line_keeps_first_hit() -> None:
+    a = _q(
+        level="Level 2",
+        title="**Q4. 为什么说 LLM 没有记忆？**",
+        selected="messages.append",
+        line=3994,
+    )
+    b = _q(
+        level="Level 2",
+        title="**Q4. 为什么说 LLM 没有记忆？**",
+        selected="再 append 一次",
+        line=4051,
+    )
+    report = diagnose.aggregate([a, b])
+    assert report["weak"][0]["start_line"] == 3994
+
+
+def test_junk_keywords_filtered() -> None:
+    report = diagnose.aggregate(
+        [
+            _q(
+                level="Level 2",
+                title="**Q4. 为什么说 LLM 没有记忆？**",
+                selected="if mode == plan then input prompt",
+                user="system prompt 呢",
+            ),
+            _q(
+                level="Level 2",
+                title="**Q4. 为什么说 LLM 没有记忆？**",
+                selected="if mode",
+            ),
+        ]
+    )
+    keys = report["weak"][0]["keywords"]
+    assert "Q4." not in keys
+    assert "if" not in keys
+    assert "mode" not in keys
+    assert "input" not in keys
+    assert "system" not in keys
+    assert "prompt" not in keys
+
+
+def test_keyword_provenance() -> None:
+    report = diagnose.aggregate(
+        [
+            _q(
+                level="Level 0",
+                title="**Q3. `chmod +x hello.sh` 和 `bash hello.sh`**",
+                selected="source ~/.bashrc 之后 export 才看得到",
+                user="export 写进谁",
+            ),
+            _q(
+                level="Level 0",
+                title="**Q3. `chmod +x hello.sh` 和 `bash hello.sh`**",
+                selected="source",
+            ),
+        ]
+    )
+    srcs = {k["token"]: k["src"] for k in report["weak"][0]["keyword_src"]}
+    assert srcs["chmod +x hello.sh"] == "title"
+    assert srcs["source"] == "selected"
+    assert srcs["export"] in {"selected", "user"}
+
+
 def test_narrate_prompt_excludes_user_text() -> None:
     report = diagnose.aggregate(
         [

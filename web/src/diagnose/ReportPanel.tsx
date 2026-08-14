@@ -27,10 +27,27 @@ function SpotCard({
         </div>
         <span className="dash-hits">问过 {spot.hits} 次</span>
       </header>
-      {spot.keywords.length > 0 && (
+      {(spot.keyword_src?.length ? spot.keyword_src : spot.keywords.map((token) => ({ token, src: "" }))).length >
+        0 && (
         <ul className="dash-keys">
-          {spot.keywords.map((k) => (
-            <li key={k}>{k}</li>
+          {(spot.keyword_src?.length
+            ? spot.keyword_src
+            : spot.keywords.map((token) => ({ token, src: "" }))
+          ).map((k) => (
+            <li
+              key={k.token}
+              title={
+                k.src === "title"
+                  ? "来自题干"
+                  : k.src === "selected"
+                    ? "来自框选"
+                    : k.src === "user"
+                      ? "来自追问"
+                      : undefined
+              }
+            >
+              {k.token}
+            </li>
           ))}
         </ul>
       )}

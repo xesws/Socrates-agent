@@ -57,6 +57,7 @@ export type DiagnosisSpot = {
   weight: number;
   pct: number;
   keywords: string[];
+  keyword_src?: { token: string; src: string }[];
   start_line?: number | null;
 };
 

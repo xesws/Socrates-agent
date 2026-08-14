@@ -18,6 +18,28 @@ CHIP_WEIGHT = {
 _SKIP_LEVELS = {"封面", "开篇", "Capstone", "附录"}
 _TICK = re.compile(r"`([^`]+)`")
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{1,40}")
+_Q_NUM = re.compile(r"^Q\d+\.?$", re.IGNORECASE)
+_JUNK = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "this",
+    "that",
+    "if",
+    "mode",
+    "input",
+    "system",
+    "prompt",
+    "then",
+    "else",
+    "not",
+    "yes",
+    "no",
+    "or",
+    "to",
+    "of",
+}
 _HINT_TOKENS = (
     "export",
     "source",
@@ -68,35 +90,62 @@ def label_of(anchor: dict[str, Any]) -> str:
     return level or "未定位"
 
 
-def extract_keywords(*texts: str) -> list[str]:
-    blob = "\n".join(t for t in texts if t)
-    found: list[str] = []
+def is_junk_keyword(token: str) -> bool:
+    t = token.strip().strip("`")
+    if not t or len(t) > 48:
+        return True
+    if _Q_NUM.match(t):
+        return True
+    if t.lower() in _JUNK:
+        return True
+    if len(t) <= 2 and t.isascii() and t.isalpha():
+        return True
+    return False
+
+
+def _pos_line(anchor: dict[str, Any]) -> int | None:
+    raw = anchor.get("start_line")
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def extract_keywords(
+    *,
+    title: str = "",
+    selected: str = "",
+    user: str = "",
+) -> list[dict[str, str]]:
+    found: list[dict[str, str]] = []
     seen: set[str] = set()
 
-    def add(raw: str) -> None:
+    def add(raw: str, src: str) -> None:
         token = raw.strip().strip("`")
-        if not token or len(token) > 48:
+        if is_junk_keyword(token):
             return
         key = token.lower()
         if key in seen:
             return
         seen.add(key)
-        found.append(token)
+        found.append({"token": token, "src": src})
 
-    for m in _TICK.finditer(blob):
-        add(m.group(1))
-    low = blob.lower()
-    for hint in _HINT_TOKENS:
-        if hint.lower() in low:
-            add(hint)
+    parts = (("title", title), ("selected", selected), ("user", user))
+    for src, text in parts:
+        for m in _TICK.finditer(text or ""):
+            add(m.group(1), src)
+    for src, text in parts:
+        low = (text or "").lower()
+        for hint in _HINT_TOKENS:
+            if hint.lower() in low:
+                add(hint, src)
     if not found:
-        for m in _IDENT.finditer(blob):
-            word = m.group(0)
-            if word.lower() in {"the", "and", "for", "with", "this", "that"}:
-                continue
-            add(word)
-            if len(found) >= 8:
-                break
+        for src, text in parts:
+            for m in _IDENT.finditer(text or ""):
+                add(m.group(0), src)
+                if len(found) >= 8:
+                    return found
     return found[:8]
 
 
@@ -114,9 +163,9 @@ def aggregate(turns: list[dict[str, Any]]) -> dict[str, Any]:
         chip = str(ev.get("chip") or "socratic")
         w = CHIP_WEIGHT.get(chip, 1)
         words = extract_keywords(
-            str(anchor.get("q_title") or ""),
-            str(anchor.get("selected_text") or ""),
-            str(ev.get("user_text") or ""),
+            title=str(anchor.get("q_title") or ""),
+            selected=str(anchor.get("selected_text") or ""),
+            user=str(ev.get("user_text") or ""),
         )
         slot = buckets.get(key)
         if slot is None:
@@ -130,16 +179,24 @@ def aggregate(turns: list[dict[str, Any]]) -> dict[str, Any]:
                 "hits": 0,
                 "weight": 0,
                 "keywords": [],
-                "start_line": anchor.get("start_line"),
+                "keyword_src": [],
+                "start_line": _pos_line(anchor),
             }
             buckets[key] = slot
         slot["hits"] += 1
         slot["weight"] += w
-        slot["start_line"] = anchor.get("start_line") or slot["start_line"]
-        for word in words:
-            if word not in slot["keywords"]:
-                slot["keywords"].append(word)
-        slot["keywords"] = slot["keywords"][:8]
+        if slot["start_line"] is None:
+            slot["start_line"] = _pos_line(anchor)
+        srcs: list[dict[str, str]] = slot["keyword_src"]
+        have = {k["token"].lower() for k in srcs}
+        for item in words:
+            low = item["token"].lower()
+            if low in have:
+                continue
+            have.add(low)
+            srcs.append(item)
+        slot["keyword_src"] = srcs[:8]
+        slot["keywords"] = [k["token"] for k in slot["keyword_src"]]
         level_hits[str(anchor.get("level") or "")] += 1
 
     denom = max(n_curriculum, 1)
