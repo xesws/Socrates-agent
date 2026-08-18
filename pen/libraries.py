@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,13 @@ from pen.config import (
     ensure_pen_dirs,
 )
 from pen.index import HandbookIndex, build_index, save_index
+from pen.sandbox import SandboxError, assert_handbook_path
+
+_SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+class RegisterError(ValueError):
+    """教材路径或 handbook_id 不合法。"""
 
 
 @dataclass
@@ -25,20 +33,29 @@ class HandbookMeta:
     mtime: float
 
 
+def _require_id(handbook_id: str) -> str:
+    if not _SAFE_ID.match(handbook_id):
+        raise RegisterError(f"非法 handbook_id：{handbook_id!r}")
+    return handbook_id
+
+
 def _meta_path(handbook_id: str) -> Path:
-    return LIBRARIES_DIR / handbook_id / "meta.json"
+    return LIBRARIES_DIR / _require_id(handbook_id) / "meta.json"
 
 
 def _index_path(handbook_id: str) -> Path:
-    return LIBRARIES_DIR / handbook_id / "index.json"
+    return LIBRARIES_DIR / _require_id(handbook_id) / "index.json"
 
 
 def register(original_path: str | Path, handbook_id: str | None = None) -> HandbookMeta:
     ensure_pen_dirs()
-    path = Path(original_path).expanduser().resolve()
+    try:
+        path = assert_handbook_path(original_path)
+    except SandboxError as exc:
+        raise RegisterError(str(exc)) from exc
     if not path.is_file():
         raise FileNotFoundError(f"找不到教材：{path}")
-    hid = handbook_id or _suggest_id(path)
+    hid = _require_id(handbook_id or _suggest_id(path))
     idx = build_index(path)
     meta = HandbookMeta(
         handbook_id=hid,
@@ -76,7 +93,10 @@ def list_handbooks() -> list[HandbookMeta]:
 
 
 def get(handbook_id: str) -> HandbookMeta | None:
-    p = _meta_path(handbook_id)
+    try:
+        p = _meta_path(handbook_id)
+    except RegisterError:
+        return None
     if not p.is_file():
         return None
     return HandbookMeta(**json.loads(p.read_text(encoding="utf-8")))

@@ -47,7 +47,14 @@ export const api = {
       body: JSON.stringify({ session_id }),
     }),
   apply: (session_id: string, proposal_id: string, commit: boolean) =>
-    j<{ ok: boolean; original_path: string; snapshot: string; commit: string | null }>(
+    j<{
+      ok: boolean;
+      original_path: string;
+      snapshot: string;
+      commit: string | null;
+      commit_error?: string | null;
+      bytes?: number;
+    }>(
       "/v1/writeback/apply",
       {
         method: "POST",

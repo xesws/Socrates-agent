@@ -21,6 +21,8 @@ from pen import diagnose as diagnosemod
 from pen import proposals as proposalsmod
 from pen import trajectory
 from pen.config import DEFAULT_HANDBOOK_ID, llm_public_status
+from pen.libraries import RegisterError
+from pen.sandbox import SandboxError, assert_handbook_path
 from pen.session import FIXED_CHIPS, STORE, chip_label
 from pen.tutor import build_user_packet, propose_fold_md, stream_chat
 
@@ -35,7 +37,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.1.1", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -135,6 +137,8 @@ def import_handbook(body: ImportBody) -> dict[str, Any]:
         meta = libraries.register(body.original_path, body.handbook_id)
     except FileNotFoundError as exc:
         raise HTTPException(400, str(exc)) from exc
+    except (RegisterError, SandboxError) as exc:
+        raise HTTPException(400, str(exc)) from exc
     return meta.__dict__
 
 
@@ -153,6 +157,10 @@ def get_handbook(handbook_id: str) -> dict[str, Any]:
 def get_content(handbook_id: str) -> dict[str, Any]:
     meta = _meta_or_404(handbook_id)
     path = Path(meta.original_path)
+    try:
+        assert_handbook_path(path)
+    except SandboxError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return {
         "original_path": str(path),
         "text": path.read_text(encoding="utf-8"),
@@ -336,6 +344,10 @@ def apply(body: ApplyBody) -> dict[str, Any]:
     if prop["session_id"] != sess.session_id:
         raise HTTPException(403, "提议不属于这个会话")
     path = Path(prop["original_path"])
+    try:
+        assert_handbook_path(path)
+    except SandboxError as exc:
+        raise HTTPException(400, str(exc)) from exc
     snap = snapshots.take_snapshot(sess.handbook_id, path, "pre-insert")
     try:
         insertmod.apply_insert(path, prop["plan"])
@@ -343,6 +355,7 @@ def apply(body: ApplyBody) -> dict[str, Any]:
         raise HTTPException(400, str(exc)) from exc
     libraries.refresh_if_stale(sess.handbook_id)
     commit_out = None
+    commit_error: str | None = None
     if body.commit:
         msg = body.commit_message or (
             f"pen: 写回 {prop['plan'].level} {prop['plan'].q_title or prop['plan'].beat}"
@@ -350,13 +363,14 @@ def apply(body: ApplyBody) -> dict[str, Any]:
         try:
             commit_out = gitops.commit_original(path, msg)
         except gitops.GitError as exc:
-            raise HTTPException(400, f"原文已写入，但 commit 失败：{exc}") from exc
+            commit_error = str(exc)
     _proposal_del(body.proposal_id)
     return {
         "ok": True,
         "original_path": str(path),
         "snapshot": str(snap),
         "commit": commit_out,
+        "commit_error": commit_error,
         "bytes": path.stat().st_size,
     }
 
@@ -365,6 +379,10 @@ def apply(body: ApplyBody) -> dict[str, Any]:
 def rollback(body: RollbackBody) -> dict[str, Any]:
     meta = _meta_or_404(body.handbook_id)
     path = Path(meta.original_path)
+    try:
+        assert_handbook_path(path)
+    except SandboxError as exc:
+        raise HTTPException(400, str(exc)) from exc
     try:
         snap = snapshots.rollback(body.handbook_id, path)
     except FileNotFoundError as exc:

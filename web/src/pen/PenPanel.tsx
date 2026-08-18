@@ -320,11 +320,16 @@ export function PenPanel({
       const r = await api.apply(sessionId, proposal.proposal_id, commit);
       setProposal(null);
       onWrote();
+      const commitNote = r.commit
+        ? "，并已 commit。"
+        : r.commit_error
+          ? `。原文已写入，但 commit 失败：${r.commit_error}`
+          : "。未 commit。";
       onMsgs((m) => [
         ...m,
         {
           role: "assistant",
-          text: `已写入原文 ${r.original_path}${r.commit ? "，并已 commit。" : "。未 commit。"}`,
+          text: `已写入原文 ${r.original_path}${commitNote}`,
         },
       ]);
     } catch (e) {

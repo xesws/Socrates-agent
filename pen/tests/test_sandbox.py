@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from pen.sandbox import SandboxError, assert_readable, assert_write_target
+from pen.config import DEFAULT_HANDBOOK, REPO_ROOT
+from pen.sandbox import SandboxError, assert_handbook_path, assert_readable, assert_write_target
 
 
 def test_write_only_original(tmp_path: Path) -> None:
@@ -41,3 +42,20 @@ def test_relative_not_tied_to_cwd(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path.parent)
     got = assert_readable(original, "book.md")
     assert got == original.resolve()
+
+
+def test_handbook_path_allows_default_and_rejects_outsiders(tmp_path: Path, monkeypatch) -> None:
+    assert assert_handbook_path(DEFAULT_HANDBOOK) == DEFAULT_HANDBOOK.resolve()
+    outsider = tmp_path / "secret.md"
+    outsider.write_text("# x\n", encoding="utf-8")
+    with pytest.raises(SandboxError, match="允许的根"):
+        assert_handbook_path(outsider)
+    py = REPO_ROOT / "pen" / "app.py"
+    with pytest.raises(SandboxError, match="Markdown"):
+        assert_handbook_path(py)
+    env = tmp_path / ".env"
+    env.write_text("K=1\n", encoding="utf-8")
+    with pytest.raises(SandboxError, match="受保护"):
+        assert_handbook_path(env)
+    monkeypatch.setenv("PEN_ALLOW_ROOTS", str(tmp_path))
+    assert assert_handbook_path(outsider) == outsider.resolve()

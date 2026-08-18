@@ -5,6 +5,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from pen.config import handbook_allow_roots
+
+HANDBOOK_SUFFIXES = {".md", ".markdown"}
+
 _WRAP = re.compile(r"^[`'\"](.*)[`'\"]$")
 _LINE_SUFFIX = re.compile(r":\d+(-\d+)?$")
 
@@ -42,6 +46,19 @@ def resolve_read_target(original_path: Path, target: str | Path) -> Path:
 
 def resolve_existing_or_new(path: str | Path) -> Path:
     return Path(path).expanduser().resolve()
+
+
+def assert_handbook_path(path: str | Path) -> Path:
+    """登记和写回共用：必须是允许根下的 Markdown，且不是 .env / .git。"""
+    got = Path(path).expanduser().resolve()
+    if got.name == ".env" or ".git" in got.parts:
+        raise SandboxError(f"拒绝受保护路径：{got}")
+    if got.suffix.lower() not in HANDBOOK_SUFFIXES:
+        raise SandboxError(f"只接受 Markdown 教材（.md / .markdown）：{got}")
+    roots = handbook_allow_roots()
+    if not any(got == root or root in got.parents for root in roots):
+        raise SandboxError(f"教材不在允许的根内：{got}")
+    return got
 
 
 def assert_write_target(original_path: Path, target: str | Path) -> Path:

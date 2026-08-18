@@ -19,6 +19,7 @@ SNAPSHOT_KEEP = 20
 ENV_BASE_URL = "OPENAI_BASE_URL"
 ENV_API_KEY = "OPENAI_API_KEY"
 ENV_MODEL = "MODEL_NAME"
+ENV_ALLOW_ROOTS = "PEN_ALLOW_ROOTS"
 
 # 钥匙只认 lab 三件套，以及 DeepSeek 自己的名字。不把 KIMI_API_KEY 当成默认供应商。
 _KEY_ALIASES = ("OPENAI_API_KEY", "DEEPSEEK_API_KEY")
@@ -33,6 +34,19 @@ class LLMConfig:
     api_key: str
     model: str
     key_source: str
+
+
+def handbook_allow_roots(env_file: Path | None = None) -> list[Path]:
+    """登记/写回教材必须落在这些根之下。默认只有仓库根；PEN_ALLOW_ROOTS 追加。"""
+    roots = [REPO_ROOT.resolve()]
+    file_vals = parse_dotenv(env_file)
+    raw = (os.environ.get(ENV_ALLOW_ROOTS) or file_vals.get(ENV_ALLOW_ROOTS) or "").strip()
+    for part in raw.split(os.pathsep):
+        piece = part.strip()
+        if not piece:
+            continue
+        roots.append(Path(piece).expanduser().resolve())
+    return roots
 
 
 def ensure_pen_dirs() -> None:
