@@ -135,6 +135,24 @@ select {
   background: #1e2a22;
 }
 
+.session-new {
+  display: block;
+  width: 100%;
+  margin: 0 0 16px;
+  background: #2a211a;
+  color: #cbbca3;
+  border: 1px solid #4a3b2a;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+}
+
+.session-new:hover {
+  border-color: var(--phosphor);
+  color: #f3ead8;
+}
+
 .toc {
   display: flex;
   flex-direction: column;
@@ -858,8 +876,9 @@ select {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px 12px;
   flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
 .preview {

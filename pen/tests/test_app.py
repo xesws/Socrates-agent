@@ -62,6 +62,19 @@ def test_session_get_and_resume() -> None:
         assert missing.status_code == 404
 
 
+def test_create_without_id_mints_fresh_and_keeps_old() -> None:
+    with TestClient(app) as client:
+        first = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()
+        second = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()
+        assert first["session_id"] != second["session_id"]
+        assert second["ui_messages"] == []
+        assert second["last_anchor"] is None
+        assert second["has_substantive"] is False
+        old = client.get(f"/v1/sessions/{first['session_id']}")
+        assert old.status_code == 200
+        assert old.json()["session_id"] == first["session_id"]
+
+
 def test_search_is_friendly_sse_and_skips_trajectory(tmp_path, monkeypatch) -> None:
     from pen import trajectory as trajmod
 

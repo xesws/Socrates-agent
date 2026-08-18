@@ -108,6 +108,25 @@ export function App() {
     setToc(meta.toc || []);
   }, []);
 
+  const startNewSession = useCallback(async () => {
+    if (!current) return;
+    const ok = window.confirm(
+      "新开会话会丢掉当前这场的模型记忆。框选还在，只是师傅不记得上一场了。确定？",
+    );
+    if (!ok) return;
+    setErr("");
+    try {
+      const sess = await api.createSession(current.handbook_id);
+      localStorage.setItem(sessionKey(current.handbook_id), sess.session_id);
+      setSessionId(sess.session_id);
+      setChips(sess.chips);
+      setPenMsgs([]);
+      setSubstantive(false);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }, [current]);
+
   const loadBook = useCallback(async (id: string) => {
     setLoading(true);
     setErr("");
@@ -238,6 +257,16 @@ export function App() {
             诊断
           </button>
         </div>
+        {current && !diagnosing && (
+          <button
+            type="button"
+            className="session-new"
+            onClick={() => void startNewSession()}
+            title="换一个 session_id，上一场不再进入模型上下文"
+          >
+            新开会话
+          </button>
+        )}
         {!diagnosing && (
           <nav className="toc">
             {toc.map((t) => (
@@ -299,6 +328,7 @@ export function App() {
           substantive={substantive}
           onSubstantive={setSubstantive}
           onWrote={() => void reloadContent(current.handbook_id)}
+          onNewSession={() => void startNewSession()}
         />
       )}
     </div>

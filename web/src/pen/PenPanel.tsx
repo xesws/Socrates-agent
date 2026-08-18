@@ -45,6 +45,7 @@ type Props = {
   onFloat: () => void;
   onClose: () => void;
   onWrote: () => void;
+  onNewSession: () => void;
   msgs: ChatMessage[];
   onMsgs: Dispatch<SetStateAction<ChatMessage[]>>;
   substantive: boolean;
@@ -102,6 +103,7 @@ export function PenPanel({
   onFloat,
   onClose,
   onWrote,
+  onNewSession,
   msgs,
   onMsgs,
   substantive,
@@ -143,6 +145,14 @@ export function PenPanel({
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
   }, [msgs]);
+
+  useEffect(() => {
+    setInput("");
+    setDyn([]);
+    setUsage("");
+    setErr("");
+    setProposal(null);
+  }, [sessionId]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -511,6 +521,15 @@ export function PenPanel({
             onChange={(e) => setOpacity(Number(e.target.value))}
           />
         </label>
+        <button
+          type="button"
+          className="ghost"
+          disabled={busy}
+          onClick={onNewSession}
+          title="换一个 session_id，上一场不再进入模型上下文"
+        >
+          新开会话
+        </button>
         <button className="ghost" disabled={busy} onClick={() => void doRollback()}>
           撤销上次写回
         </button>
