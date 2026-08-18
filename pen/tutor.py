@@ -122,11 +122,19 @@ def parse_dynamic_chips(reply: str) -> tuple[str, list[str]]:
     return visible, chips[:4]
 
 
+def usage_snapshot(prompt: int, completion: int) -> dict[str, int]:
+    """最后一次 LLM 调用的用量。context_tokens = 此刻喂进去的上下文。"""
+    p = int(prompt or 0)
+    c = int(completion or 0)
+    return {"context_tokens": p, "completion_tokens": c, "prompt_tokens": p}
+
+
 def _finish_text(session: PenSession, raw: str, usage: dict[str, int]) -> Iterator[dict[str, Any]]:
     visible, dyn = parse_dynamic_chips(raw)
     session.last_assistant = visible
     if len(visible) > 80:
         session.has_substantive = True
+    yield {"type": "status", "phase": "writing", "text": "在写…"}
     for i in range(0, len(visible), 48):
         yield {"type": "token", "text": visible[i : i + 48]}
     yield {
@@ -156,7 +164,7 @@ def stream_chat(session: PenSession, original_path: Path, user_packet: str) -> I
 
     extra_roots = [REPO_ROOT]
     tools = [READ_FILE_SCHEMA]
-    usage = {"prompt_tokens": 0, "completion_tokens": 0}
+    usage = usage_snapshot(0, 0)
 
     def _create(*, with_tools: bool) -> Any:
         kwargs: dict[str, Any] = {
@@ -168,11 +176,16 @@ def stream_chat(session: PenSession, original_path: Path, user_packet: str) -> I
             kwargs["tools"] = tools
         resp = client.chat.completions.create(**kwargs)
         if resp.usage:
-            usage["prompt_tokens"] += resp.usage.prompt_tokens or 0
-            usage["completion_tokens"] += resp.usage.completion_tokens or 0
+            usage.update(
+                usage_snapshot(
+                    resp.usage.prompt_tokens or 0,
+                    resp.usage.completion_tokens or 0,
+                )
+            )
         return resp.choices[0].message
 
     for _step in range(MAX_TOOL_ROUNDS):
+        yield {"type": "status", "phase": "thinking", "text": "师傅在想…"}
         msg = _create(with_tools=True)
         session.messages.append(msg.model_dump(exclude_none=True))
         if not msg.tool_calls:
@@ -185,6 +198,7 @@ def stream_chat(session: PenSession, original_path: Path, user_packet: str) -> I
                 return
             yield from _finish_text(session, raw, usage)
             return
+        yield {"type": "status", "phase": "reading", "text": "在翻手册…"}
         for tc in msg.tool_calls:
             try:
                 args = json.loads(tc.function.arguments or "{}")
@@ -237,6 +251,7 @@ def stream_chat(session: PenSession, original_path: Path, user_packet: str) -> I
             )
 
     session.messages.append({"role": "user", "content": FORCE_ANSWER})
+    yield {"type": "status", "phase": "thinking", "text": "师傅在想…"}
     msg = _create(with_tools=False)
     session.messages.append(msg.model_dump(exclude_none=True))
     raw = (msg.content or "").strip()

@@ -117,6 +117,7 @@ export function PenPanel({
   const [busy, setBusy] = useState(false);
   const [dyn, setDyn] = useState<string[]>([]);
   const [usage, setUsage] = useState<string>("");
+  const [status, setStatus] = useState("");
   const [err, setErr] = useState<string>("");
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [commit, setCommit] = useState(false);
@@ -150,6 +151,7 @@ export function PenPanel({
     setInput("");
     setDyn([]);
     setUsage("");
+    setStatus("");
     setErr("");
     setProposal(null);
   }, [sessionId]);
@@ -242,6 +244,8 @@ export function PenPanel({
     }
     setBusy(true);
     setErr("");
+    setUsage("");
+    setStatus("师傅在想…");
     const shown =
       userText.trim() || liveChips.find((c) => c.id === chip)?.label || chip;
     onMsgs((m) => [...m, { role: "user", text: shown }]);
@@ -258,7 +262,10 @@ export function PenPanel({
           user_text: userText,
         },
         (ev) => {
-          if (ev.type === "token") {
+          if (ev.type === "status") {
+            setStatus(String(ev.text || ""));
+          } else if (ev.type === "token") {
+            setStatus("在写…");
             acc += String(ev.text || "");
             const snapshot = acc;
             onMsgs((m) => {
@@ -272,6 +279,7 @@ export function PenPanel({
               return copy;
             });
           } else if (ev.type === "tool") {
+            setStatus("在翻手册…");
             const ok = Boolean(ev.ok);
             const path = String(ev.resolved || ev.detail || "");
             const preview = String(ev.preview || "");
@@ -291,21 +299,31 @@ export function PenPanel({
               return copy;
             });
           } else if (ev.type === "done") {
-            const u = ev.usage as { prompt_tokens?: number; completion_tokens?: number };
-            setUsage(
-              `prompt ${u?.prompt_tokens ?? "?"} · completion ${u?.completion_tokens ?? "?"}`,
-            );
+            setStatus("");
+            const u = ev.usage as {
+              context_tokens?: number;
+              prompt_tokens?: number;
+              completion_tokens?: number;
+            };
+            const ctx = u?.context_tokens ?? u?.prompt_tokens;
+            const out = u?.completion_tokens;
+            const fmt = (n: number | undefined) =>
+              typeof n === "number" ? n.toLocaleString("zh-CN") : "?";
+            setUsage(`上下文 ${fmt(ctx)} · 回复 ${fmt(out)}`);
             setDyn((ev.dynamic_chips as string[]) || []);
             onSubstantive(Boolean(ev.has_substantive));
           } else if (ev.type === "error") {
+            setStatus("");
             setErr(String(ev.message));
           }
         },
       );
     } catch (e) {
+      setStatus("");
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+      setStatus("");
       setInput("");
     }
   }
@@ -313,12 +331,14 @@ export function PenPanel({
   async function doPropose() {
     setBusy(true);
     setErr("");
+    setStatus("在收折叠块…");
     try {
       setProposal(await api.propose(sessionId));
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+      setStatus("");
     }
   }
 
@@ -326,6 +346,7 @@ export function PenPanel({
     if (!proposal) return;
     setBusy(true);
     setErr("");
+    setStatus("在写入…");
     try {
       const r = await api.apply(sessionId, proposal.proposal_id, commit);
       setProposal(null);
@@ -346,11 +367,13 @@ export function PenPanel({
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+      setStatus("");
     }
   }
 
   async function doRollback() {
     setBusy(true);
+    setStatus("在回滚…");
     try {
       const r = await api.rollback(handbookId);
       onWrote();
@@ -362,6 +385,7 @@ export function PenPanel({
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+      setStatus("");
     }
   }
 
@@ -434,7 +458,7 @@ export function PenPanel({
         onPointerUp={onBarPointerUp}
         onPointerCancel={onBarPointerUp}
       >
-        <span className="pen-mark" />
+        <span className={`pen-mark${busy ? " is-busy" : ""}`} />
         <div className="pen-meta">
           <strong>点读笔</strong>
           <em title={sourceLine}>{sourceLine}</em>
@@ -464,7 +488,8 @@ export function PenPanel({
       </div>
 
       {err && <p className="pen-err">{err}</p>}
-      {usage && <p className="pen-usage">{usage}</p>}
+      {busy && status && <p className="pen-status">{status}</p>}
+      {!busy && usage && <p className="pen-usage">{usage}</p>}
 
       <div className="chips">
         {liveChips.map((c) => (
