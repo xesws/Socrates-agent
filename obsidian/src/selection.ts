@@ -25,7 +25,9 @@ export function handbookIdFromPath(absPath: string): string {
       .toLowerCase()
       .replace(/[^a-z0-9._-]+/g, "-")
       .replace(/^-+|-+$/g, "") || "note";
-  return `${slug}-${h.toString(16)}`.slice(0, 80);
+  const hex = h.toString(16);
+  const short = slug.slice(0, 48).replace(/-+$/g, "") || "note";
+  return `${short}-${hex}`;
 }
 
 export function readEditorPick(app: App): EditorPick | null {

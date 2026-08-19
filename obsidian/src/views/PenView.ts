@@ -23,6 +23,10 @@ export class PenView extends ItemView {
   private substantive = false;
   private sessionId: string | null = null;
   private handbookId: string | null = null;
+  private capturedPath: string | null = null;
+  private sidecarReachable = false;
+  private paintGen = 0;
+  private painting = false;
   private quote = "";
   private startLine = 1;
   private endLine = 1;
@@ -94,7 +98,7 @@ export class PenView extends ItemView {
     };
     const chips = this.barEl.createDiv({ cls: "sp-chips" });
     for (const c of this.chips) {
-      const on = c.id === "writeback" ? this.substantive && c.enabled : c.enabled;
+      const on = c.id === "writeback" ? this.substantive : c.enabled;
       const b = chips.createEl("button", { text: c.label });
       b.disabled = !on || this.busy;
       if (c.hint) b.title = c.hint;
@@ -123,41 +127,70 @@ export class PenView extends ItemView {
   }
 
   private async paintLog(): Promise<void> {
+    const gen = ++this.paintGen;
+    if (!this.logEl || this.painting) return; // 在画的循环看到新 gen 会重画到最新
+    this.painting = true;
+    try {
+      let g = gen;
+      for (;;) {
+        const log = this.logEl;
+        if (!log) return;
+        log.empty();
+        if (this.msgs.length === 0) {
+          log.createEl("p", {
+            cls: "sp-hint",
+            text: "在笔记里框选至少 4 个字，点「用当前选区」，再选芯片。",
+          });
+          return;
+        }
+        for (const m of this.msgs) {
+          if (g !== this.paintGen || !this.logEl) break;
+          const el = log.createDiv({ cls: `sp-bubble is-${m.role}` });
+          const src = m.role === "assistant" ? visibleReply(m.text) : m.text;
+          await MarkdownRenderer.render(this.app, src || " ", el, "/", this);
+        }
+        if (g === this.paintGen && this.logEl) {
+          this.logEl.scrollTop = this.logEl.scrollHeight;
+          return;
+        }
+        g = this.paintGen; // 期间来了更新的请求，整条重画
+      }
+    } finally {
+      this.painting = false;
+    }
+  }
+
+  private paintStreamBubble(text: string): void {
+    // 流式期间只刷最后一条助手气泡；全量 markdown 重绘留给 done/finally
     if (!this.logEl) return;
-    this.logEl.empty();
-    if (this.msgs.length === 0) {
-      this.logEl.createEl("p", {
-        cls: "sp-hint",
-        text: "在笔记里框选至少 4 个字，点「用当前选区」，再选芯片。",
-      });
-      return;
+    let el = this.logEl.lastElementChild as HTMLElement | null;
+    if (!el?.hasClass("is-assistant")) {
+      el = this.logEl.createDiv({ cls: "sp-bubble is-assistant" });
     }
-    for (const m of this.msgs) {
-      const el = this.logEl.createDiv({ cls: `sp-bubble is-${m.role}` });
-      const src = m.role === "assistant" ? visibleReply(m.text) : m.text;
-      await MarkdownRenderer.render(this.app, src || " ", el, "/", this);
-    }
+    el.setText(visibleReply(text) || "…");
     this.logEl.scrollTop = this.logEl.scrollHeight;
   }
 
   async probeHealth(): Promise<void> {
     try {
       const h = await this.api().health();
+      this.sidecarReachable = true;
       this.health = h.llm.ok
         ? `sidecar 正常 · ${h.llm.model} · ${h.llm.key_source}`
         : "sidecar 在，但模型未配置（sidecar 的 .env）";
       this.err = "";
     } catch (e) {
-      this.health = "sidecar 未启动";
-      this.err = `请先在仓库根运行 python -m pen — ${e instanceof Error ? e.message : String(e)}`;
+      this.sidecarReachable = false;
+      this.health = "连不上 sidecar";
+      this.err = `连不上 sidecar（CORS / 没启动 / 端口不对）：${e instanceof Error ? e.message : String(e)}`;
     }
     this.paintBar();
   }
 
   async captureSelection(): Promise<void> {
     await this.probeHealth();
-    if (this.health.startsWith("sidecar 未启动")) {
-      new Notice("先启动 python -m pen");
+    if (!this.sidecarReachable) {
+      new Notice("连不上 sidecar，先看面板上的错误信息");
       return;
     }
     const pick = readEditorPick(this.app);
@@ -169,6 +202,7 @@ export class PenView extends ItemView {
       const hid = handbookIdFromPath(pick.absPath);
       await this.api().importHandbook(pick.absPath, hid);
       this.handbookId = hid;
+      this.capturedPath = pick.file.path;
       this.quote = pick.text;
       this.startLine = pick.startLine;
       this.endLine = pick.endLine;
@@ -213,9 +247,8 @@ export class PenView extends ItemView {
     try {
       const sess = await this.api().createSession(this.handbookId);
       this.adopt(sess);
-      const file = this.app.workspace.getActiveFile();
-      if (file) {
-        await this.plugin.bindNote(file.path, {
+      if (this.capturedPath) {
+        await this.plugin.bindNote(this.capturedPath, {
           handbook_id: this.handbookId,
           session_id: sess.session_id,
         });
@@ -269,7 +302,7 @@ export class PenView extends ItemView {
             acc += String(ev.text || "");
             const last = this.msgs[this.msgs.length - 1];
             if (last?.role === "assistant") last.text = acc;
-            void this.paintLog();
+            this.paintStreamBubble(acc);
             this.paintBar();
           } else if (ev.type === "tool") {
             this.status = "在翻手册…";
