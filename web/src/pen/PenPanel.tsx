@@ -16,12 +16,14 @@ function visibleReply(text: string): string {
   return text.replace(/<!--pen:chips[\s\S]*?-->/g, "").trim();
 }
 
-function AssistantBubble({ text }: { text: string }) {
+function MdBubble({ role, text }: { role: ChatMessage["role"]; text: string }) {
   const ref = useRef<HTMLDivElement>(null);
+  const allowHtml = role === "assistant";
+  const src = role === "assistant" ? visibleReply(text) : text;
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    el.innerHTML = renderMarkdown(visibleReply(text));
+    el.innerHTML = renderMarkdown(src, { html: allowHtml });
     const onToggle = (ev: Event) => {
       const t = ev.target;
       if (t instanceof HTMLDetailsElement && t.open) {
@@ -29,10 +31,15 @@ function AssistantBubble({ text }: { text: string }) {
       }
     };
     el.addEventListener("toggle", onToggle, true);
-    void hydrateMermaid(el);
-    return () => el.removeEventListener("toggle", onToggle, true);
-  }, [text]);
-  return <div ref={ref} className="bubble assistant" />;
+    const later = window.setTimeout(() => {
+      void hydrateMermaid(el);
+    }, 200);
+    return () => {
+      window.clearTimeout(later);
+      el.removeEventListener("toggle", onToggle, true);
+    };
+  }, [src, allowHtml]);
+  return <div ref={ref} className={`bubble ${role}`} />;
 }
 
 type Props = {
@@ -476,15 +483,9 @@ export function PenPanel({
         {msgs.length === 0 && (
           <p className="pen-hint">先选一条芯片。默认是苏格拉底：我先问你。</p>
         )}
-        {msgs.map((m, i) =>
-          m.role === "assistant" ? (
-            <AssistantBubble key={i} text={m.text} />
-          ) : (
-            <div key={i} className={`bubble ${m.role}`}>
-              {m.text}
-            </div>
-          ),
-        )}
+        {msgs.map((m, i) => (
+          <MdBubble key={i} role={m.role} text={m.text} />
+        ))}
       </div>
 
       {err && <p className="pen-err">{err}</p>}

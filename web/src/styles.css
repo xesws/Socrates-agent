@@ -708,7 +708,7 @@ select {
   padding: 8px 10px;
   font-size: 14px;
   line-height: 1.45;
-  white-space: pre-wrap;
+  white-space: normal;
 }
 
 .bubble.user {
@@ -720,94 +720,93 @@ select {
 .bubble.assistant {
   background: #2a221c;
   border-left: 2px solid var(--phosphor);
-  white-space: normal;
 }
 
-.bubble.assistant .mermaid-drawn {
+.bubble .mermaid-drawn {
   overflow-x: auto;
   margin: 0.8em 0;
   background: #efe4cc;
   padding: 8px;
 }
 
-.bubble.assistant .mermaid-drawn svg {
+.bubble .mermaid-drawn svg {
   max-width: 100%;
   height: auto;
 }
 
-.bubble.assistant .mermaid-drawn.is-failed,
+.bubble .mermaid-drawn.is-failed,
 .paper-body .mermaid-drawn.is-failed {
   background: #16110d;
 }
 
-.bubble.assistant .mermaid-err,
+.bubble .mermaid-err,
 .paper-body .mermaid-err {
   margin: 0.4em 0 0;
   font-size: 12px;
   color: #d48a6a;
 }
 
-.bubble.assistant .hljs-keyword,
+.bubble .hljs-keyword,
 .paper-body .hljs-keyword {
   color: #e8b86d;
 }
 
-.bubble.assistant .hljs-string,
+.bubble .hljs-string,
 .paper-body .hljs-string {
   color: #8fd4a8;
 }
 
-.bubble.assistant .hljs-comment,
+.bubble .hljs-comment,
 .paper-body .hljs-comment {
   color: #8a7b66;
 }
 
-.bubble.assistant .hljs-number,
+.bubble .hljs-number,
 .paper-body .hljs-number {
   color: #d48a6a;
 }
 
-.bubble.assistant .hljs-built_in,
-.bubble.assistant .hljs-title,
+.bubble .hljs-built_in,
+.bubble .hljs-title,
 .paper-body .hljs-built_in,
 .paper-body .hljs-title {
   color: #7eb8e8;
 }
 
-.bubble.assistant p {
+.bubble p {
   margin: 0 0 0.7em;
 }
 
-.bubble.assistant p:last-child {
+.bubble p:last-child {
   margin-bottom: 0;
 }
 
-.bubble.assistant h1,
-.bubble.assistant h2,
-.bubble.assistant h3 {
+.bubble h1,
+.bubble h2,
+.bubble h3 {
   font-family: Syne, sans-serif;
   font-size: 14px;
   margin: 0.9em 0 0.4em;
 }
 
-.bubble.assistant ul,
-.bubble.assistant ol {
+.bubble ul,
+.bubble ol {
   margin: 0.3em 0 0.8em;
   padding-left: 1.2em;
 }
 
-.bubble.assistant li {
+.bubble li {
   margin: 0.2em 0;
 }
 
-.bubble.assistant code {
+.bubble code {
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.86em;
   background: #16110d;
   padding: 0 4px;
 }
 
-.bubble.assistant pre {
+.bubble pre {
   background: #16110d;
   padding: 8px 10px;
   overflow: auto;
@@ -816,17 +815,32 @@ select {
   margin: 0.5em 0 0.8em;
 }
 
-.bubble.assistant table {
+.bubble table {
   border-collapse: collapse;
   width: 100%;
   font-size: 12px;
   margin: 0.5em 0 0.8em;
 }
 
-.bubble.assistant th,
-.bubble.assistant td {
+.bubble th,
+.bubble td {
   border: 1px solid #4a3b2a;
   padding: 4px 6px;
+}
+
+.paper-body .katex {
+  color: var(--ink, #1a1410);
+}
+
+.bubble .katex {
+  color: #f3ead8;
+}
+
+.paper-body .katex-display,
+.bubble .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  margin: 0.8em 0;
 }
 
 .bubble.tool {

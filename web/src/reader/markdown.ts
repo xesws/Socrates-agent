@@ -4,6 +4,8 @@ import python from "highlight.js/lib/languages/python";
 import bash from "highlight.js/lib/languages/bash";
 import json from "highlight.js/lib/languages/json";
 import plaintext from "highlight.js/lib/languages/plaintext";
+import katex from "katex";
+import texmath from "markdown-it-texmath";
 
 hljs.registerLanguage("python", python);
 hljs.registerLanguage("py", python);
@@ -43,26 +45,36 @@ function renderFence(tokens: any[], idx: number, _opts: unknown, _env: unknown, 
   return `<pre class="${langClass}"${attrs}><code>${html}</code></pre>\n`;
 }
 
-const md: MarkdownIt = new MarkdownIt({
-  html: true,
-  linkify: true,
-  typographer: false,
-});
-
-md.renderer.rules.fence = renderFence;
-md.renderer.rules.code_block = renderFence;
-
-md.core.ruler.push("source-line", (state) => {
-  for (const token of state.tokens) {
-    if (token.map && token.nesting !== -1) {
-      token.attrSet("data-source-line", String(token.map[0] + 1));
-      token.attrSet("data-source-end", String(token.map[1]));
+function makeMd(html: boolean): MarkdownIt {
+  const inst = new MarkdownIt({
+    html,
+    linkify: true,
+    typographer: false,
+  });
+  inst.use(texmath, {
+    engine: katex,
+    delimiters: ["dollars", "brackets"],
+    katexOptions: { throwOnError: false, strict: "ignore" },
+  });
+  inst.renderer.rules.fence = renderFence;
+  inst.renderer.rules.code_block = renderFence;
+  inst.core.ruler.push("source-line", (state) => {
+    for (const token of state.tokens) {
+      if (token.map && token.nesting !== -1) {
+        token.attrSet("data-source-line", String(token.map[0] + 1));
+        token.attrSet("data-source-end", String(token.map[1]));
+      }
     }
-  }
-});
+  });
+  return inst;
+}
 
-export function renderMarkdown(src: string): string {
-  return md.render(src);
+const mdHtml = makeMd(true);
+const mdSafe = makeMd(false);
+
+export function renderMarkdown(src: string, opts?: { html?: boolean }): string {
+  const inst = opts?.html === false ? mdSafe : mdHtml;
+  return inst.render(src);
 }
 
 export async function hydrateMermaid(root: HTMLElement): Promise<void> {
