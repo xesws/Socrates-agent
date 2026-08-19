@@ -20,6 +20,7 @@ ENV_BASE_URL = "OPENAI_BASE_URL"
 ENV_API_KEY = "OPENAI_API_KEY"
 ENV_MODEL = "MODEL_NAME"
 ENV_ALLOW_ROOTS = "PEN_ALLOW_ROOTS"
+ENV_PEN_HOME = "PEN_HOME"
 
 # 钥匙只认 lab 三件套，以及 DeepSeek 自己的名字。不把 KIMI_API_KEY 当成默认供应商。
 _KEY_ALIASES = ("OPENAI_API_KEY", "DEEPSEEK_API_KEY")
@@ -34,6 +35,17 @@ class LLMConfig:
     api_key: str
     model: str
     key_source: str
+
+
+def apply_pen_home(env_file: Path | None = None) -> Path:
+    """若设置 PEN_HOME，把 PEN_DIR / LIBRARIES_DIR 挪到该目录。测试仍可 monkeypatch PEN_DIR。"""
+    global PEN_DIR, LIBRARIES_DIR
+    file_vals = parse_dotenv(env_file)
+    raw = (os.environ.get(ENV_PEN_HOME) or file_vals.get(ENV_PEN_HOME) or "").strip()
+    if raw:
+        PEN_DIR = Path(raw).expanduser().resolve()
+        LIBRARIES_DIR = PEN_DIR / "libraries"
+    return PEN_DIR
 
 
 def handbook_allow_roots(env_file: Path | None = None) -> list[Path]:
@@ -123,3 +135,6 @@ def llm_public_status() -> dict[str, str | bool]:
         "model": cfg.model,
         "key_source": cfg.key_source,
     }
+
+
+apply_pen_home()

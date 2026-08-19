@@ -3,6 +3,9 @@
 .pen/
 web/node_modules/
 web/dist/
+obsidian/node_modules/
+obsidian/main.js
+obsidian/main.js.map
 __pycache__/
 *.pyc
 .pytest_cache/

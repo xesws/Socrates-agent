@@ -1,0 +1,92 @@
+.socrates-pen {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  font-size: 13px;
+}
+
+.socrates-pen .sp-bar {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.socrates-pen .sp-health,
+.socrates-pen .sp-usage,
+.socrates-pen .sp-status {
+  font-family: var(--font-monospace);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.socrates-pen .sp-status {
+  color: var(--text-accent);
+}
+
+.socrates-pen .sp-err {
+  color: var(--text-error);
+  font-size: 12px;
+}
+
+.socrates-pen .sp-quote {
+  border-left: 3px solid var(--text-accent);
+  padding: 6px 8px;
+  color: var(--text-muted);
+  background: var(--background-secondary);
+}
+
+.socrates-pen .sp-actions,
+.socrates-pen .sp-chips,
+.socrates-pen .sp-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.socrates-pen button {
+  font-size: 12px;
+}
+
+.socrates-pen .sp-form input {
+  flex: 1;
+  min-width: 120px;
+}
+
+.socrates-pen .sp-log {
+  flex: 1;
+  overflow: auto;
+  padding: 10px 12px;
+}
+
+.socrates-pen .sp-bubble {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--background-secondary);
+}
+
+.socrates-pen .sp-bubble.is-user {
+  border-right: 2px solid var(--text-accent);
+}
+
+.socrates-pen .sp-bubble.is-assistant {
+  border-left: 2px solid var(--interactive-accent);
+}
+
+.socrates-pen .sp-bubble.is-tool {
+  font-family: var(--font-monospace);
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.socrates-pen .sp-preview pre {
+  max-height: 180px;
+  overflow: auto;
+  font-size: 11px;
+}
+
+.socrates-pen .sp-hint {
+  color: var(--text-muted);
+}

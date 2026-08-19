@@ -37,7 +37,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.1.4", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -45,6 +45,7 @@ app.add_middleware(
         "http://localhost:5173",
         "http://127.0.0.1:4173",
         "http://localhost:4173",
+        "app://obsidian.md",
     ],
     allow_credentials=True,
     allow_methods=["*"],

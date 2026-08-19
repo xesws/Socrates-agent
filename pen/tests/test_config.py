@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pen import config
 from pen.config import parse_dotenv, resolve_llm
 
 
@@ -47,3 +48,16 @@ def test_kimi_key_alone_is_not_used(tmp_path: Path, monkeypatch) -> None:
     p = tmp_path / ".env"
     p.write_text("KIMI_API_KEY=sk-kimi-not-this\n", encoding="utf-8")
     assert resolve_llm(p) is None
+
+
+def test_pen_home_moves_pen_dir(tmp_path: Path, monkeypatch) -> None:
+    dest = tmp_path / "pen-home"
+    dest.mkdir()
+    monkeypatch.setenv("PEN_HOME", str(dest))
+    got = config.apply_pen_home(tmp_path / "missing.env")
+    assert got == dest.resolve()
+    assert config.PEN_DIR == dest.resolve()
+    assert config.LIBRARIES_DIR == dest.resolve() / "libraries"
+    monkeypatch.delenv("PEN_HOME", raising=False)
+    config.PEN_DIR = config.REPO_ROOT / ".pen"
+    config.LIBRARIES_DIR = config.PEN_DIR / "libraries"

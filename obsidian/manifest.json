@@ -1,0 +1,9 @@
+{
+  "id": "socrates-pen",
+  "name": "Socrates Pen",
+  "version": "0.2.0",
+  "minAppVersion": "1.5.0",
+  "description": "点读笔：框选笔记，经本机 sidecar 追问。桌面专用。",
+  "author": "xesws",
+  "isDesktopOnly": true
+}
