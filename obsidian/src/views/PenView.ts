@@ -1,7 +1,7 @@
 import { ItemView, MarkdownRenderer, Notice, WorkspaceLeaf } from "obsidian";
 import type SocratesPenPlugin from "../main";
 import { makeApi, streamChat } from "../api";
-import { handbookIdFromPath, readEditorPick, vaultRoot } from "../selection";
+import { handbookIdFromPath, vaultRoot, type EditorPick } from "../selection";
 import type { ChatMessage, Chip, Proposal, SessionView } from "../types";
 
 export const VIEW_TYPE_PEN = "socrates-pen-view";
@@ -90,9 +90,9 @@ export class PenView extends ItemView {
       this.barEl.createDiv({ cls: "sp-quote", text: this.quote.slice(0, 180) });
     }
     const row = this.barEl.createDiv({ cls: "sp-actions" });
-    row.createEl("button", { text: "用当前选区" }).onclick = () => {
+    this.bindKeepFocus(row.createEl("button", { text: "用当前选区" }), () => {
       void this.captureSelection();
-    };
+    });
     row.createEl("button", { text: "新开会话" }).onclick = () => {
       void this.newSession();
     };
@@ -139,7 +139,7 @@ export class PenView extends ItemView {
         if (this.msgs.length === 0) {
           log.createEl("p", {
             cls: "sp-hint",
-            text: "在笔记里框选至少 4 个字，点「用当前选区」，再选芯片。",
+            text: "在笔记里划一段（实时预览或阅读模式都行），再点「用当前选区」。",
           });
           return;
         }
@@ -193,26 +193,46 @@ export class PenView extends ItemView {
     this.paintBar();
   }
 
-  async captureSelection(): Promise<void> {
+  private bindKeepFocus(el: HTMLElement, fn: () => void): void {
+    let fromPointer = false;
+    el.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      fromPointer = true;
+      fn();
+    });
+    el.addEventListener("click", () => {
+      if (fromPointer) {
+        fromPointer = false;
+        return;
+      }
+      fn();
+    });
+  }
+
+  async captureSelection(pick?: EditorPick | null): Promise<void> {
+    const got = pick ?? this.plugin.takePick();
     await this.probeHealth();
     if (!this.sidecarReachable) {
       new Notice("连不上 sidecar，先看面板上的错误信息");
       return;
     }
-    const pick = readEditorPick(this.app);
-    if (!pick) {
-      new Notice("请先在笔记里框选至少 4 个字");
+    if (!got) {
+      this.err = "没读到选区。在笔记里划一段再点「用当前选区」。";
+      new Notice(this.err);
+      this.paintBar();
       return;
     }
     try {
-      const hid = handbookIdFromPath(pick.absPath);
-      await this.api().importHandbook(pick.absPath, hid, vaultRoot(this.app));
+      const hid = handbookIdFromPath(got.absPath);
+      await this.api().importHandbook(got.absPath, hid, vaultRoot(this.app));
       this.handbookId = hid;
-      this.capturedPath = pick.file.path;
-      this.quote = pick.text;
-      this.startLine = pick.startLine;
-      this.endLine = pick.endLine;
-      const bind = this.plugin.noteBind(pick.file.path);
+      this.capturedPath = got.file.path;
+      this.quote = got.text;
+      this.startLine = got.startLine;
+      this.endLine = got.endLine;
+      this.err = "";
+      const bind = this.plugin.noteBind(got.file.path);
       let sess: SessionView;
       if (bind?.session_id && bind.handbook_id === hid) {
         try {
@@ -224,7 +244,7 @@ export class PenView extends ItemView {
         sess = await this.api().createSession(hid);
       }
       this.adopt(sess);
-      await this.plugin.bindNote(pick.file.path, {
+      await this.plugin.bindNote(got.file.path, {
         handbook_id: hid,
         session_id: sess.session_id,
       });

@@ -10,7 +10,7 @@
 2. 关掉 Restricted mode，启用 **Socrates Pen**
 3. 本机终端运行：`python -m pen --host 127.0.0.1 --port 8765`
 4. **设置 → Socrates Pen**：填 API Key；需要换节点就改 Base URL / 模型名 / Thinking
-5. 打开一篇笔记，框选一段，命令面板「点读笔：用当前选区提问」
+5. 打开一篇笔记，划一段（实时预览或阅读模式都行），点侧栏「用当前选区」或命令面板「点读笔：用当前选区提问」
 
 当前库的绝对路径会在框选时自动带给 sidecar，不用设 `PEN_ALLOW_ROOTS`。
 

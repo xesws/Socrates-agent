@@ -6,6 +6,7 @@ import {
   PenSettingTab,
   type PenSettings,
 } from "./settings";
+import { readLivePick, type EditorPick } from "./selection";
 import type { NoteBinding } from "./types";
 import { PenView, VIEW_TYPE_PEN } from "./views/PenView";
 
@@ -19,11 +20,14 @@ export default class SocratesPenPlugin extends Plugin {
   settings: PenSettings = { ...DEFAULT_SETTINGS };
   notes: Record<string, NoteBinding> = {};
   private saveTimer: number | null = null;
+  private lastPick: EditorPick | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
     this.registerView(VIEW_TYPE_PEN, (leaf) => new PenView(leaf, this));
     this.addSettingTab(new PenSettingTab(this.app, this));
+    this.registerDomEvent(document, "selectionchange", () => this.cachePick());
+    this.registerDomEvent(document, "mouseup", () => this.cachePick());
     this.addRibbonIcon("highlighter", "打开点读笔", () => {
       void this.activateView();
     });
@@ -31,8 +35,9 @@ export default class SocratesPenPlugin extends Plugin {
       id: "socrates-pen-ask-selection",
       name: "点读笔：用当前选区提问",
       callback: () => {
+        const pick = this.takePick();
         void this.activateView().then(async (view) => {
-          await view.captureSelection();
+          await view.captureSelection(pick);
         });
       },
     });
@@ -63,6 +68,15 @@ export default class SocratesPenPlugin extends Plugin {
     const view = leaf.view;
     if (!(view instanceof PenView)) throw new Error("点读笔视图未挂上");
     return view;
+  }
+
+  cachePick(): void {
+    const p = readLivePick(this.app);
+    if (p) this.lastPick = p;
+  }
+
+  takePick(): EditorPick | null {
+    return readLivePick(this.app) ?? this.lastPick;
   }
 
   noteBind(path: string): NoteBinding | undefined {
