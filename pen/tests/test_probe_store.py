@@ -278,3 +278,36 @@ def test_concurrent_writers_leave_no_temp_files() -> None:
         t.join()
     assert not errs, errs
     assert not list(probe_store.probes_dir().glob("*.tmp"))
+
+
+def test_now_and_later_from_one_probe_both_reach_the_reader() -> None:
+    """双通道的完整剧本，也是 P0-1 的看门狗。
+
+    一次探索产 1 条 now + 1 条 later。now 当场抛；later 压着，等读者自己走到
+    它挂的那一关再浮出来。游标要是推到池子最大 seq，later 那条就永久够不着——
+    双通道的一半直接死掉，而 prompt 还写着「拿不准就写 later」。
+    """
+    pid = probe_store.try_claim("dual", "h", 1)
+    probe_store.add_questions(
+        "dual",
+        pid,
+        [
+            _q("眼前这条够长的问题在这里？", timing="now", atom="A", born_round=1),
+            _q("挂在六关那条问题够长吗？", timing="later", target="Level 6", born_round=1),
+        ],
+    )
+    cur, got = 0, []
+
+    def poll(level: str, rnd: int) -> None:
+        nonlocal cur
+        box = probe_store.inbox("dual", since=cur, atom="A", level=level, now_round=rnd)
+        cur = box["cursor"]
+        got.extend(i["text"] for i in box["items"])
+
+    poll("Level 0", 1)
+    assert len(got) == 1, "now 那条该当场抛"
+    poll("Level 0", 2)
+    assert len(got) == 1, "读者还没走到 Level 6，later 不该抛"
+    poll("Level 6", 3)
+    assert len(got) == 2, f"走到那一关了，later 必须浮出来：{got}"
+    assert probe_store.load("dual").pending_count() == 0
