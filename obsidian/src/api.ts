@@ -64,15 +64,39 @@ export function makeApi(baseUrl: string) {
         method: "POST",
         body: JSON.stringify({ session_id, proposal_id, commit: false }),
       }),
+    snapshots: (handbook_id: string) =>
+      j<{
+        can_undo: boolean;
+        can_redo: boolean;
+        undo_n: number;
+        redo_n: number;
+      }>(baseUrl, `/v1/handbooks/${handbook_id}/snapshots`),
     rollback: (handbook_id: string) =>
-      j<{ ok: boolean; restored_from: string; original_path: string }>(
-        baseUrl,
-        "/v1/writeback/rollback",
-        {
-          method: "POST",
-          body: JSON.stringify({ handbook_id }),
-        },
-      ),
+      j<{
+        ok: boolean;
+        restored_from: string;
+        original_path: string;
+        can_undo: boolean;
+        can_redo: boolean;
+        undo_n: number;
+        redo_n: number;
+      }>(baseUrl, "/v1/writeback/rollback", {
+        method: "POST",
+        body: JSON.stringify({ handbook_id }),
+      }),
+    redo: (handbook_id: string) =>
+      j<{
+        ok: boolean;
+        restored_from: string;
+        original_path: string;
+        can_undo: boolean;
+        can_redo: boolean;
+        undo_n: number;
+        redo_n: number;
+      }>(baseUrl, "/v1/writeback/redo", {
+        method: "POST",
+        body: JSON.stringify({ handbook_id }),
+      }),
     outline: (handbook_id: string) =>
       j<NoteOutline>(baseUrl, `/v1/handbooks/${handbook_id}/outline`),
     retarget: (

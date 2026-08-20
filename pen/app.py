@@ -39,7 +39,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.4.1", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.4.2", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -646,6 +646,12 @@ def apply(body: ApplyBody) -> dict[str, Any]:
     }
 
 
+@app.get("/v1/handbooks/{handbook_id}/snapshots")
+def snapshot_status(handbook_id: str) -> dict[str, Any]:
+    _meta_or_404(handbook_id)
+    return snapshots.status(handbook_id)
+
+
 @app.post("/v1/writeback/rollback")
 def rollback(body: RollbackBody) -> dict[str, Any]:
     meta = _meta_or_404(body.handbook_id)
@@ -655,11 +661,39 @@ def rollback(body: RollbackBody) -> dict[str, Any]:
     except SandboxError as exc:
         raise HTTPException(400, str(exc)) from exc
     try:
-        snap = snapshots.rollback(body.handbook_id, path)
+        snap = snapshots.undo(body.handbook_id, path)
     except FileNotFoundError as exc:
         raise HTTPException(400, str(exc)) from exc
     libraries.refresh_if_stale(body.handbook_id)
-    return {"ok": True, "restored_from": str(snap), "original_path": str(path)}
+    st = snapshots.status(body.handbook_id)
+    return {
+        "ok": True,
+        "restored_from": str(snap),
+        "original_path": str(path),
+        **st,
+    }
+
+
+@app.post("/v1/writeback/redo")
+def redo(body: RollbackBody) -> dict[str, Any]:
+    meta = _meta_or_404(body.handbook_id)
+    path = Path(meta.original_path)
+    try:
+        assert_handbook_path(path, extra_roots=libraries.extra_roots_for(body.handbook_id))
+    except SandboxError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    try:
+        snap = snapshots.redo(body.handbook_id, path)
+    except FileNotFoundError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    libraries.refresh_if_stale(body.handbook_id)
+    st = snapshots.status(body.handbook_id)
+    return {
+        "ok": True,
+        "restored_from": str(snap),
+        "original_path": str(path),
+        **st,
+    }
 
 
 @app.get("/v1/chips")

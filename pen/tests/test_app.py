@@ -720,3 +720,41 @@ def test_chat_409_when_session_busy() -> None:
             assert resp.status_code == 409
         finally:
             lock.release()
+
+
+def test_snapshot_status_undo_redo_api(tmp_path: Path, monkeypatch) -> None:
+    _isolate_pen(tmp_path, monkeypatch)
+    monkeypatch.setenv("PEN_ALLOW_ROOTS", str(tmp_path))
+    book = tmp_path / "mini.md"
+    book.write_text("# t\n\nA\n", encoding="utf-8")
+    with TestClient(app) as client:
+        imported = client.post(
+            "/v1/handbooks/import",
+            json={
+                "original_path": str(book),
+                "handbook_id": "mini-snap",
+                "vault_root": str(tmp_path),
+            },
+        )
+        assert imported.status_code == 200
+        hid = imported.json()["handbook_id"]
+        empty = client.get(f"/v1/handbooks/{hid}/snapshots").json()
+        assert empty["undo_n"] == 0
+        assert empty["can_undo"] is False
+        snapshots.take_snapshot(hid, book, "pre-edit")
+        book.write_text("# t\n\nB\n", encoding="utf-8")
+        st = client.get(f"/v1/handbooks/{hid}/snapshots").json()
+        assert st["can_undo"] is True
+        rolled = client.post("/v1/writeback/rollback", json={"handbook_id": hid})
+        assert rolled.status_code == 200
+        assert book.read_text(encoding="utf-8") == "# t\n\nA\n"
+        assert rolled.json()["can_redo"] is True
+        redone = client.post("/v1/writeback/redo", json={"handbook_id": hid})
+        assert redone.status_code == 200
+        assert book.read_text(encoding="utf-8") == "# t\n\nB\n"
+        again = client.post("/v1/writeback/rollback", json={"handbook_id": hid})
+        assert again.status_code == 200
+        assert book.read_text(encoding="utf-8") == "# t\n\nA\n"
+        missing = client.post("/v1/writeback/rollback", json={"handbook_id": hid})
+        assert missing.status_code == 400
+

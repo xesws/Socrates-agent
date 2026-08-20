@@ -70,7 +70,8 @@ export class PenView extends ItemView {
   private startLine = 1;
   private endLine = 1;
   private proposal: Proposal | null = null;
-  private canUndo = false;
+  private undoN = 0;
+  private redoN = 0;
   private outline: NoteOutline | null = null;
   private targetKind: RetargetKind = "auto";
   private lineInput = "1";
@@ -150,11 +151,24 @@ export class PenView extends ItemView {
     const ns = row.createEl("button", { text: "新开会话" });
     ns.disabled = this.busy || Boolean(this.pending);
     ns.onclick = () => void this.newSession();
-    if (this.canUndo) {
-      const undo = row.createEl("button", { text: "撤销刚才写入" });
-      undo.disabled = this.busy;
-      undo.onclick = () => void this.doRollback();
-    }
+    const undo = row.createEl(
+      "button",
+      { text: this.undoN > 0 ? `回到上一版（${this.undoN}）` : "回到上一版" },
+    );
+    undo.disabled = this.busy || this.undoN <= 0;
+    undo.title =
+      this.undoN <= 0
+        ? "还没有可回退的版本。允许一次编辑后才会亮。"
+        : "整篇笔记回到上一版";
+    undo.onclick = () => void this.doRollback();
+    const redo = row.createEl(
+      "button",
+      { text: this.redoN > 0 ? `重做（${this.redoN}）` : "重做" },
+    );
+    redo.disabled = this.busy || this.redoN <= 0;
+    redo.title =
+      this.redoN <= 0 ? "没有可重做的版本" : "把刚才撤销的写回回来";
+    redo.onclick = () => void this.doRedo();
     const blocked = this.busy || Boolean(this.pending);
     const chips = this.barEl.createDiv({ cls: "sp-chips" });
     for (const c of this.chips) {
@@ -388,6 +402,7 @@ export class PenView extends ItemView {
         handbook_id: hid,
         session_id: sess.session_id,
       });
+      await this.refreshSnapshots();
     } catch (e) {
       this.err = e instanceof Error ? e.message : String(e);
     }
@@ -494,7 +509,7 @@ export class PenView extends ItemView {
               ok,
               text: `${name} ${ok ? "成功" : "拒绝"} → ${path}`,
             });
-            if (name === "edit_file" && ok) this.canUndo = true;
+            if (name === "edit_file" && ok) void this.refreshSnapshots();
             void this.paintLog();
             this.paintBar();
           } else if (ev.type === "approval") {
@@ -585,7 +600,7 @@ export class PenView extends ItemView {
               text: `${name} ${ok ? "成功" : "拒绝"} → ${path}`,
             });
             if (name === "edit_file" && ok) {
-              this.canUndo = true;
+              void this.refreshSnapshots();
               const line = Number(ev.line) || this.startLine;
               if (this.capturedPath) void this.revealInsert(this.capturedPath, line);
             }
@@ -885,7 +900,7 @@ export class PenView extends ItemView {
       if (rel) await this.saveOpenNote(rel);
       const r = await this.api().apply(this.sessionId, prop.proposal_id);
       this.proposal = null;
-      this.canUndo = true;
+      await this.refreshSnapshots();
       this.msgs = [
         ...this.msgs,
         {
@@ -914,42 +929,90 @@ export class PenView extends ItemView {
     }
   }
 
+  private applySnapshotStatus(st: {
+    undo_n?: number;
+    redo_n?: number;
+  }): void {
+    this.undoN = Number(st.undo_n) || 0;
+    this.redoN = Number(st.redo_n) || 0;
+  }
+
+  private async refreshSnapshots(): Promise<void> {
+    if (!this.handbookId) {
+      this.undoN = 0;
+      this.redoN = 0;
+      return;
+    }
+    try {
+      this.applySnapshotStatus(await this.api().snapshots(this.handbookId));
+    } catch {
+      /* 侧栏仍画出按钮，只是保持当前计数 */
+    }
+    this.paintBar();
+  }
+
+  private async reloadCapturedNote(): Promise<void> {
+    const rel = this.capturedPath;
+    if (!rel) return;
+    const file = this.app.vault.getAbstractFileByPath(rel);
+    if (file instanceof TFile) {
+      const leaf = this.app.workspace.getLeavesOfType("markdown").find((l) => {
+        const v = l.view;
+        return v instanceof MarkdownView && v.file?.path === rel;
+      });
+      if (leaf) await leaf.openFile(file);
+    }
+  }
+
   private async doRollback(): Promise<void> {
-    if (this.busy || !this.handbookId) return;
+    if (this.busy || !this.handbookId || this.undoN <= 0) return;
     if (
       !window.confirm(
-        "将把整篇笔记恢复到这次写入之前。写入之后你又改的内容也会没。确定？",
+        "整篇笔记将回到上一版；这之后你手改的也会没。确定？",
       )
     ) {
       return;
     }
-    const abs = this.proposal?.original_path;
-    const rel =
-      (abs ? this.noteRelPath(abs) : null) ?? this.capturedPath;
+    const rel = this.capturedPath;
     this.busy = true;
     this.err = "";
-    this.status = "在撤销…";
+    this.status = "在回到上一版…";
     this.paintBar();
     try {
       if (rel) await this.saveOpenNote(rel);
-      await this.api().rollback(this.handbookId);
-      this.canUndo = false;
+      const st = await this.api().rollback(this.handbookId);
+      this.applySnapshotStatus(st);
       this.proposal = null;
       this.msgs = [
         ...this.msgs,
-        { role: "assistant", text: "已撤销刚才那次写入。" },
+        { role: "assistant", text: "已回到上一版。" },
       ];
-      if (rel) {
-        const file = this.app.vault.getAbstractFileByPath(rel);
-        if (file instanceof TFile) {
-          const leaf = this.app.workspace.getLeavesOfType("markdown").find((l) => {
-            const v = l.view;
-            return v instanceof MarkdownView && v.file?.path === rel;
-          });
-          if (leaf) await leaf.openFile(file);
-        }
-      }
-      new Notice("已撤销刚才写入");
+      await this.reloadCapturedNote();
+      new Notice("已回到上一版");
+    } catch (e) {
+      this.err = e instanceof Error ? e.message : String(e);
+    } finally {
+      this.busy = false;
+      this.status = "";
+      this.paintBar();
+      await this.paintLog();
+    }
+  }
+
+  private async doRedo(): Promise<void> {
+    if (this.busy || !this.handbookId || this.redoN <= 0) return;
+    const rel = this.capturedPath;
+    this.busy = true;
+    this.err = "";
+    this.status = "在重做…";
+    this.paintBar();
+    try {
+      if (rel) await this.saveOpenNote(rel);
+      const st = await this.api().redo(this.handbookId);
+      this.applySnapshotStatus(st);
+      this.msgs = [...this.msgs, { role: "assistant", text: "已重做刚才撤销的写入。" }];
+      await this.reloadCapturedNote();
+      new Notice("已重做");
     } catch (e) {
       this.err = e instanceof Error ? e.message : String(e);
     } finally {

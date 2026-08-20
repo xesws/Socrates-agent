@@ -87,6 +87,13 @@ export type RetargetKind =
   | "replace_heading"
   | "replace_range";
 
+export type SnapshotStatus = {
+  can_undo: boolean;
+  can_redo: boolean;
+  undo_n: number;
+  redo_n: number;
+};
+
 export type LlmStatus = {
   ok: boolean;
   base_url: string;
