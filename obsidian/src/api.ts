@@ -47,6 +47,26 @@ export function makeApi(baseUrl: string) {
           ...(settings ? llmPayload(settings) : {}),
         }),
       }),
+    apply: (session_id: string, proposal_id: string) =>
+      j<{
+        ok: boolean;
+        original_path: string;
+        snapshot: string;
+        commit: string | null;
+        commit_error?: string | null;
+      }>(baseUrl, "/v1/writeback/apply", {
+        method: "POST",
+        body: JSON.stringify({ session_id, proposal_id, commit: false }),
+      }),
+    rollback: (handbook_id: string) =>
+      j<{ ok: boolean; restored_from: string; original_path: string }>(
+        baseUrl,
+        "/v1/writeback/rollback",
+        {
+          method: "POST",
+          body: JSON.stringify({ handbook_id }),
+        },
+      ),
   };
 }
 

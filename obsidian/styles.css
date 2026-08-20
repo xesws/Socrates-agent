@@ -190,10 +190,38 @@
   border-bottom-color: var(--text-error);
 }
 
-.socrates-pen .sp-preview pre {
-  max-height: 180px;
+.socrates-pen .sp-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.socrates-pen .sp-preview h4 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.socrates-pen .sp-where {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.socrates-pen .sp-warn {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.socrates-pen .sp-preview pre,
+.socrates-pen .sp-preview .sp-fold {
+  max-height: 160px;
   overflow: auto;
   font-size: 11px;
+  margin: 0;
+}
+
+.socrates-pen .sp-preview-actions {
+  display: flex;
+  gap: 6px;
 }
 
 .socrates-pen .sp-hint {

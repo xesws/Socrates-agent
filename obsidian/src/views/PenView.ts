@@ -1,7 +1,19 @@
-import { ItemView, MarkdownRenderer, Notice, WorkspaceLeaf } from "obsidian";
+import {
+  ItemView,
+  MarkdownRenderer,
+  MarkdownView,
+  Notice,
+  TFile,
+  WorkspaceLeaf,
+} from "obsidian";
 import type SocratesPenPlugin from "../main";
 import { makeApi, streamChat } from "../api";
-import { handbookIdFromPath, vaultRoot, type EditorPick } from "../selection";
+import {
+  handbookIdFromPath,
+  relFromAbs,
+  vaultRoot,
+  type EditorPick,
+} from "../selection";
 import type { ChatMessage, Chip, Proposal, SessionView } from "../types";
 
 export const VIEW_TYPE_PEN = "socrates-pen-view";
@@ -15,6 +27,14 @@ function toolCaption(m: ChatMessage): { ok: boolean; file: string } {
   const path = m.text.split("→").slice(1).join("→").trim();
   const file = path.split("/").filter(Boolean).pop() || (path || "（无路径）");
   return { ok, file };
+}
+
+function whereSentence(p: Proposal): string {
+  const raw = (p.q_title || p.beat || "").replace(/\*+/g, "").trim();
+  const place = raw || "你刚划的那段附近";
+  const level = p.level ? `${p.level} · ` : "";
+  const line = p.insert_after_line || 0;
+  return `将作为「🔍 实例 ${p.instance_n}」插在 ${level}${place} 后面（约第 ${line} 行）。写入后笔记会跳到那一块。`;
 }
 
 export class PenView extends ItemView {
@@ -38,6 +58,7 @@ export class PenView extends ItemView {
   private startLine = 1;
   private endLine = 1;
   private proposal: Proposal | null = null;
+  private canUndo = false;
   private logEl: HTMLElement | null = null;
   private barEl: HTMLElement | null = null;
 
@@ -103,6 +124,11 @@ export class PenView extends ItemView {
     row.createEl("button", { text: "新开会话" }).onclick = () => {
       void this.newSession();
     };
+    if (this.canUndo) {
+      const undo = row.createEl("button", { text: "撤销刚才写入" });
+      undo.disabled = this.busy;
+      undo.onclick = () => void this.doRollback();
+    }
     const chips = this.barEl.createDiv({ cls: "sp-chips" });
     for (const c of this.chips) {
       const on = c.id === "writeback" ? this.substantive : c.enabled;
@@ -128,8 +154,27 @@ export class PenView extends ItemView {
     };
     if (this.proposal) {
       const box = this.barEl.createDiv({ cls: "sp-preview" });
-      box.createEl("h4", { text: "将写入原文（本版不 apply）" });
-      box.createEl("pre", { text: this.proposal.diff });
+      box.createEl("h4", { text: "将写入这篇笔记" });
+      box.createDiv({ cls: "sp-where", text: whereSentence(this.proposal) });
+      box.createDiv({
+        cls: "sp-warn",
+        text: "确认前请不要改这篇笔记。写入的是折叠块，不是 git 版本。",
+      });
+      box.createEl("pre", { cls: "sp-fold", text: this.proposal.fold_md });
+      const diff = box.createEl("details");
+      diff.createEl("summary", { text: "改动 diff" });
+      diff.createEl("pre", { text: this.proposal.diff });
+      const actions = box.createDiv({ cls: "sp-preview-actions" });
+      const ok = actions.createEl("button", { text: "确认写入原文" });
+      ok.disabled = this.busy;
+      ok.onclick = () => void this.doApply();
+      const cancel = actions.createEl("button", { text: "取消" });
+      cancel.disabled = this.busy;
+      cancel.onclick = () => {
+        if (this.busy) return;
+        this.proposal = null;
+        this.paintBar();
+      };
     }
   }
 
@@ -430,6 +475,121 @@ export class PenView extends ItemView {
       this.busy = false;
       this.status = "";
       this.paintBar();
+    }
+  }
+
+  private noteRelPath(abs: string): string | null {
+    return relFromAbs(this.app, abs) ?? this.capturedPath;
+  }
+
+  private async saveOpenNote(rel: string): Promise<void> {
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const v = leaf.view;
+      if (v instanceof MarkdownView && v.file?.path === rel) {
+        await v.save();
+      }
+    }
+  }
+
+  private async revealInsert(rel: string, line1: number): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(rel);
+    if (!(file instanceof TFile)) return;
+    const leaf =
+      this.app.workspace.getLeavesOfType("markdown").find((l) => {
+        const v = l.view;
+        return v instanceof MarkdownView && v.file?.path === rel;
+      }) ?? this.app.workspace.getLeaf(false);
+    await leaf.openFile(file);
+    const view = leaf.view;
+    if (!(view instanceof MarkdownView)) return;
+    const line = Math.max(0, line1 - 1);
+    const pos = { line, ch: 0 };
+    view.editor.setCursor(pos);
+    view.editor.scrollIntoView({ from: pos, to: pos }, true);
+  }
+
+  private async doApply(): Promise<void> {
+    if (this.busy || !this.sessionId || !this.proposal) return;
+    const prop = this.proposal;
+    const rel = this.noteRelPath(prop.original_path);
+    this.busy = true;
+    this.err = "";
+    this.status = "在写入…";
+    this.paintBar();
+    try {
+      if (rel) await this.saveOpenNote(rel);
+      const r = await this.api().apply(this.sessionId, prop.proposal_id);
+      this.proposal = null;
+      this.canUndo = true;
+      this.msgs = [
+        ...this.msgs,
+        {
+          role: "assistant",
+          text: `已写入这篇笔记，看「🔍 实例 ${prop.instance_n}」。`,
+        },
+      ];
+      const jump =
+        Number.isFinite(prop.insert_after_line) && prop.insert_after_line >= 0
+          ? prop.insert_after_line + 1
+          : 1;
+      if (rel) await this.revealInsert(rel, jump);
+      new Notice(`已写入「🔍 实例 ${prop.instance_n}」`);
+      if (r.commit_error) {
+        this.err = `原文已写入。commit 失败（可忽略）：${r.commit_error}`;
+      }
+    } catch (e) {
+      this.err = e instanceof Error ? e.message : String(e);
+    } finally {
+      this.busy = false;
+      this.status = "";
+      this.paintBar();
+      await this.paintLog();
+    }
+  }
+
+  private async doRollback(): Promise<void> {
+    if (this.busy || !this.handbookId) return;
+    if (
+      !window.confirm(
+        "将把整篇笔记恢复到这次写入之前。写入之后你又改的内容也会没。确定？",
+      )
+    ) {
+      return;
+    }
+    const abs = this.proposal?.original_path;
+    const rel =
+      (abs ? this.noteRelPath(abs) : null) ?? this.capturedPath;
+    this.busy = true;
+    this.err = "";
+    this.status = "在撤销…";
+    this.paintBar();
+    try {
+      if (rel) await this.saveOpenNote(rel);
+      await this.api().rollback(this.handbookId);
+      this.canUndo = false;
+      this.proposal = null;
+      this.msgs = [
+        ...this.msgs,
+        { role: "assistant", text: "已撤销刚才那次写入。" },
+      ];
+      if (rel) {
+        const file = this.app.vault.getAbstractFileByPath(rel);
+        if (file instanceof TFile) {
+          const leaf = this.app.workspace.getLeavesOfType("markdown").find((l) => {
+            const v = l.view;
+            return v instanceof MarkdownView && v.file?.path === rel;
+          });
+          if (leaf) await leaf.openFile(file);
+        }
+      }
+      new Notice("已撤销刚才写入");
+    } catch (e) {
+      this.err = e instanceof Error ? e.message : String(e);
+    } finally {
+      this.busy = false;
+      this.status = "";
+      this.paintBar();
+      await this.paintLog();
     }
   }
 }

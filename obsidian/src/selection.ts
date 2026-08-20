@@ -17,6 +17,15 @@ export function vaultRoot(app: App): string {
   throw new Error("需要桌面库（FileSystemAdapter）");
 }
 
+export function relFromAbs(app: App, absPath: string): string | null {
+  const root = vaultRoot(app).replace(/\\/g, "/");
+  const abs = absPath.replace(/\\/g, "/");
+  const prefix = root.endsWith("/") ? root : `${root}/`;
+  if (abs === root || abs === prefix.slice(0, -1)) return "";
+  if (abs.startsWith(prefix)) return abs.slice(prefix.length);
+  return null;
+}
+
 export function handbookIdFromPath(absPath: string): string {
   let h = 0;
   for (let i = 0; i < absPath.length; i++) {

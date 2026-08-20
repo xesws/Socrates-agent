@@ -183,6 +183,10 @@ def test_apply_uses_stored_allow_root(tmp_path: Path, monkeypatch) -> None:
         STORE.save(sess)
         proposed = client.post("/v1/writeback/propose", json={"session_id": sid})
         assert proposed.status_code == 200
+        body = proposed.json()
+        assert isinstance(body["insert_after_line"], int)
+        assert body["insert_after_line"] >= 1
+        assert body["instance_n"] >= 1
         applied = client.post(
             "/v1/writeback/apply",
             json={

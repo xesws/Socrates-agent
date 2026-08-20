@@ -37,7 +37,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.2.4", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.2.9", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -365,7 +365,9 @@ def propose(body: ProposeBody) -> dict[str, Any]:
         "mode": plan.mode,
         "level": plan.level,
         "q_title": plan.q_title,
+        "beat": plan.beat,
         "instance_n": plan.instance_n,
+        "insert_after_line": plan.insert_after_line,
         "fold_md": plan.fold_md,
         "diff": diff,
     }

@@ -45,7 +45,9 @@ export type Proposal = {
   mode: string;
   level: string;
   q_title: string | null;
+  beat?: string | null;
   instance_n: number;
+  insert_after_line: number;
   fold_md: string;
   diff: string;
 };
