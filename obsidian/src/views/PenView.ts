@@ -13,6 +13,8 @@ import { makeApi, streamApprove, streamChat } from "../api";
 import { handbookIdFromPath, vaultRoot, type EditorPick } from "../selection";
 import type { ChatMessage, Chip, PendingEdit, SessionView } from "../types";
 import { phaseText, t } from "../i18n";
+import { measureMonoAdvance, renderSplash, type SplashLevel } from "./splash";
+import { AVATAR } from "../logo";
 
 export const VIEW_TYPE_PEN = "socrates-pen-view";
 
@@ -53,6 +55,18 @@ function toolCaption(m: ChatMessage): { ok: boolean; file: string; kicker: strin
   return { ok, file, kicker };
 }
 
+/**
+ * 助手气泡的外壳：左边挂一个微缩苏格拉底，正文另起一列。
+ *
+ * 头像整幅用**一个** div + white-space:pre 承载，不逐行拆——它没有逐行动画，
+ * 而对话里可能有几十条助手消息，逐行拆会平白多出几百个节点。
+ */
+function assistantShell(turn: HTMLElement): HTMLElement {
+  const av = turn.createDiv({ cls: "sp-avatar", text: AVATAR.lines.join("\n") });
+  av.setAttr("aria-hidden", "true");
+  return turn.createDiv({ cls: "sp-turn-main" });
+}
+
 export class PenView extends ItemView {
   plugin: SocratesPenPlugin;
   private status = "";
@@ -78,6 +92,7 @@ export class PenView extends ItemView {
   private pending: PendingEdit | null = null;
   private approving = false;
   private chipsSig = "";
+  private splashLevel: SplashLevel = "none";
   private els: Els | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: SocratesPenPlugin) {
@@ -98,8 +113,25 @@ export class PenView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
+    // 换主题可能换掉等宽字体，字宽比要重测。registerEvent 由 Component 自动注销。
+    this.registerEvent(this.app.workspace.on("css-change", () => this.refreshAdvance()));
     this.renderShell();
     await this.probeHealth();
+  }
+
+  /** 框架回调：侧栏被拖动，或从折叠状态展开（那时首次测量拿到的是 0）。 */
+  onResize(): void {
+    this.refreshAdvance();
+  }
+
+  /**
+   * 字符画的字号由 CSS 反解：字号 = 可用宽 / (列数 × 字宽比)。
+   * 列数写在元素上，字宽比是全局的，在这里量一次存进 CSS 变量。
+   */
+  private refreshAdvance(): void {
+    const root = this.contentEl;
+    if (root.clientWidth === 0) return; // 折叠时量不出来，保留上次的值
+    root.style.setProperty("--sp-adv", String(measureMonoAdvance(root)));
   }
 
   async onClose(): Promise<void> {
@@ -122,6 +154,7 @@ export class PenView extends ItemView {
     const root = this.contentEl;
     root.empty();
     root.addClass("socrates-pen");
+    root.style.setProperty("--sp-adv", String(measureMonoAdvance(root)));
 
     const brand = root.createDiv({ cls: "sp-brand" });
     const dot = brand.createSpan({ cls: "sp-dot" });
@@ -346,11 +379,16 @@ export class PenView extends ItemView {
         if (!log) return;
         log.empty();
         if (this.msgs.length === 0) {
-          // 空态。v0.6.0 会把启动 Logo 放进这个分支。
+          // 还没抓选区 -> 完整开屏；抓了但还没问 -> 只留字标，把高度让给引文和芯片。
+          const level: SplashLevel = this.quote ? "mini" : "hero";
           const empty = log.createDiv({ cls: "sp-empty" });
+          // 只在档位变化时播入场动画，否则空态被重画几次就会闪几次
+          renderSplash(empty, { level, animate: level !== this.splashLevel });
+          this.splashLevel = level;
           empty.createEl("p", { cls: "sp-hint", text: t().emptyHint });
           return;
         }
+        this.splashLevel = "none";
         for (const m of this.msgs) {
           if (g !== this.paintGen || !this.els) break;
           if (m.role === "tool") {
@@ -367,11 +405,12 @@ export class PenView extends ItemView {
           }
           if (m.role === "assistant" && !m.text && this.pending) continue;
           const turn = log.createDiv({ cls: `sp-turn is-${m.role}` });
-          turn.createDiv({
+          const host = m.role === "assistant" ? assistantShell(turn) : turn;
+          host.createDiv({
             cls: "sp-kicker",
             text: m.role === "user" ? t().kickerYou : t().kickerPen,
           });
-          const body = turn.createDiv({ cls: "sp-body" });
+          const body = host.createDiv({ cls: "sp-body" });
           if (m.role === "user") {
             body.setText(m.text);
           } else {
@@ -406,12 +445,14 @@ export class PenView extends ItemView {
     }
     if (!turn) {
       turn = log.createDiv({ cls: "sp-turn is-assistant" });
-      turn.createDiv({ cls: "sp-kicker", text: t().kickerPen });
-      turn.createDiv({ cls: "sp-body" });
+      const host = assistantShell(turn);
+      host.createDiv({ cls: "sp-kicker", text: t().kickerPen });
+      host.createDiv({ cls: "sp-body" });
     }
+    const main = (turn.querySelector(".sp-turn-main") as HTMLElement | null) ?? turn;
     const body =
-      (turn.querySelector(".sp-body") as HTMLElement | null) ??
-      turn.createDiv({ cls: "sp-body" });
+      (main.querySelector(".sp-body") as HTMLElement | null) ??
+      main.createDiv({ cls: "sp-body" });
     const stick = this.atBottom(log);
     body.setText(visibleReply(text) || t().streamPlaceholder);
     if (stick) log.scrollTop = log.scrollHeight;

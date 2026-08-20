@@ -175,6 +175,35 @@
   overflow-wrap: anywhere;
 }
 
+/* 助手气泡左侧的微缩苏格拉底。4px 是这幅画的清晰度下限，再小只剩一团灰。
+   字号写死不跟随容器：它要跟正文行高对齐，不是要占满宽度。 */
+.socrates-pen .sp-turn.is-assistant {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  min-width: 0;
+}
+
+.socrates-pen .sp-turn-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.socrates-pen .sp-avatar {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  font-family: var(--font-monospace);
+  font-size: 4px;
+  line-height: 1;
+  letter-spacing: 0;
+  white-space: pre;
+  font-variant-ligatures: none;
+  color: var(--text-muted);
+  opacity: 0.85;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 .socrates-pen .sp-turn.is-assistant .sp-body {
   background: var(--background-secondary);
   border-left: 3px solid var(--interactive-accent);
@@ -446,6 +475,168 @@
   color: var(--text-muted);
   text-align: center;
   line-height: 1.5;
+}
+
+/* ============================================================
+   启动 Logo（v0.6.0）
+
+   字符画的字号是**反解**出来的，不是缩放出来的：
+     自然宽度 = 列数 × 字号 × 字宽比   =>   字号 = 可用宽 / (列数 × 字宽比)
+   这样布局高度天然跟着字号走。用 transform: scale() 就不行——它不参与布局，
+   缩放后外层盒仍占原高度，得靠 JS 追平，还会把 text-shadow 的厚度一起缩掉。
+
+   --sp-cols 由 logo.ts 在模块加载时算出并写在元素上；
+   --sp-adv（字宽比）由 PenView 实测一次写在根上，随主题换字体重测。
+   ============================================================ */
+
+.socrates-pen .sp-splash {
+  container-type: inline-size;
+  width: 100%;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+.socrates-pen .sp-art {
+  font-size: clamp(
+    4px,
+    calc(100cqi / (var(--sp-cols) * var(--sp-adv, 0.6))),
+    var(--sp-art-max, 13px)
+  );
+  font-family: var(--font-monospace);
+  font-variant-ligatures: none;
+  font-kerning: none;
+  /* 方块字标靠 ▀ 与 ▄ 在相邻行首尾相接构成实心笔画，行高一旦大于 1
+     就会露出背景色的横向白缝。 */
+  line-height: 1;
+  letter-spacing: 0;
+  white-space: pre;
+  width: fit-content;
+  max-width: 100%;
+  margin-inline: auto;
+  overflow: hidden;
+}
+
+.socrates-pen .sp-art-row {
+  white-space: pre;
+}
+
+/* 肖像用一种颜色即可：形状信息在字符密度里。深色主题下浅色字符在暗底上
+   把脸提亮，浅色主题下深色字符在白底上把脸压暗，两边都成立。 */
+.socrates-pen .sp-art.is-portrait {
+  --sp-art-max: 11px;
+  color: var(--text-muted);
+}
+
+/* 字标：em 单位的分层挤出。偏移用 em 而不是 px，随反解出来的字号等比缩放，
+   任何侧栏宽度下厚度观感一致。
+   远端一层必须用 --text-faint，不能用 --background-modifier-border——
+   后者在深色主题里比背景亮，阴影会变高光，立体方向就反了。 */
+.socrates-pen .sp-art.is-word {
+  --sp-art-max: 13px;
+  margin-top: 14px;
+  color: var(--text-normal);
+  text-shadow:
+    0.09em 0.09em 0 color-mix(in srgb, var(--interactive-accent) 62%, transparent),
+    0.18em 0.18em 0 color-mix(in srgb, var(--interactive-accent) 34%, transparent),
+    0.27em 0.27em 0 color-mix(in srgb, var(--text-faint) 45%, transparent);
+}
+
+/* 中文标语走真字形 + CSS 挤出，不走点阵：
+   「苏格拉底学习法」半块点阵实测要 98 列，而侧栏可用约 46 列，缩到 5px 会糊成一团。 */
+.socrates-pen .sp-splash-tag {
+  margin-top: 14px;
+  text-align: center;
+  font-size: clamp(12px, 6cqi, 19px);
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.28em;
+  text-indent: 0.28em; /* 抵消末字后多出的字距，视觉才真居中 */
+  color: var(--text-normal);
+  text-shadow:
+    0.055em 0.055em 0 color-mix(in srgb, var(--interactive-accent) 62%, transparent),
+    0.11em 0.11em 0 color-mix(in srgb, var(--interactive-accent) 34%, transparent),
+    0.165em 0.165em 0 color-mix(in srgb, var(--text-faint) 42%, transparent);
+}
+
+.socrates-pen .sp-splash-sub {
+  margin-top: 6px;
+  text-align: center;
+  font-family: var(--font-monospace);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--text-faint);
+}
+
+/* 宽窄两档都在 DOM 里，由容器查询挑一档显示——比在 JS 里测宽度选资产
+   少一条生命周期，也不需要 ResizeObserver。 */
+.socrates-pen .sp-art.is-wide {
+  display: none;
+}
+
+@container (min-width: 330px) {
+  .socrates-pen .sp-art.is-wide {
+    display: block;
+  }
+  .socrates-pen .sp-art.is-narrow {
+    display: none;
+  }
+}
+
+@container (min-width: 480px) {
+  .socrates-pen .sp-art.is-portrait {
+    --sp-art-max: 14px;
+  }
+  .socrates-pen .sp-art.is-word {
+    --sp-art-max: 16px;
+  }
+}
+
+/* ── 入场：头像逐行浮现，字标从左擦出，标语最后淡入 ── */
+.socrates-pen .sp-splash.is-enter .sp-art.is-portrait .sp-art-row {
+  opacity: 0;
+  animation: sp-line-in 240ms ease-out forwards;
+  animation-delay: calc(var(--i, 0) * 14ms);
+}
+
+@keyframes sp-line-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.socrates-pen .sp-splash.is-enter .sp-art.is-word {
+  clip-path: inset(0 100% 0 0);
+  animation: sp-wipe 460ms cubic-bezier(0.22, 0.61, 0.36, 1) 420ms forwards;
+}
+
+@keyframes sp-wipe {
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+.socrates-pen .sp-splash.is-enter .sp-splash-tag,
+.socrates-pen .sp-splash.is-enter .sp-splash-sub {
+  opacity: 0;
+  animation: sp-line-in 320ms ease-out 800ms forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .socrates-pen .sp-splash.is-enter .sp-art-row,
+  .socrates-pen .sp-splash.is-enter .sp-art.is-word,
+  .socrates-pen .sp-splash.is-enter .sp-splash-tag,
+  .socrates-pen .sp-splash.is-enter .sp-splash-sub {
+    animation: none;
+    opacity: 1;
+    transform: none;
+    clip-path: none;
+  }
 }
 
 /* 放在最后。双类名提一级特异性，压过上面那些 display:flex，不用 !important。 */

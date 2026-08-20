@@ -71,6 +71,10 @@ export const zh = {
   streamPlaceholder: "…",
   emptyHint: "在笔记里划一段（实时预览或阅读模式都行），再点「用当前选区」。",
 
+  // ── 启动 Logo ──
+  splashTagline: "苏格拉底学习法",
+  splashSubline: "Socrates-agent",
+
   // ── 状态行。键对齐 pen/tutor.py 的 ev.phase ──
   phases: {
     thinking: "师傅在想…",
