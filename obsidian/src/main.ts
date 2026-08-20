@@ -9,6 +9,7 @@ import {
 import { readLivePick, type EditorPick } from "./selection";
 import type { NoteBinding } from "./types";
 import { PenView, VIEW_TYPE_PEN } from "./views/PenView";
+import { t } from "./i18n";
 
 // 旧版插件把 PenSettings 键直接写在 data.json 顶层，故顶层也要容忍这些键
 type PluginData = Partial<PenSettings> & {
@@ -28,12 +29,12 @@ export default class SocratesPenPlugin extends Plugin {
     this.addSettingTab(new PenSettingTab(this.app, this));
     this.registerDomEvent(document, "selectionchange", () => this.cachePick());
     this.registerDomEvent(document, "mouseup", () => this.cachePick());
-    this.addRibbonIcon("highlighter", "打开点读笔", () => {
+    this.addRibbonIcon("highlighter", t().ribbonTooltip, () => {
       void this.activateView();
     });
     this.addCommand({
       id: "socrates-pen-ask-selection",
-      name: "点读笔：用当前选区提问",
+      name: t().cmdAskSelection,
       callback: () => {
         const pick = this.takePick();
         void this.activateView().then(async (view) => {
@@ -43,7 +44,7 @@ export default class SocratesPenPlugin extends Plugin {
     });
     this.addCommand({
       id: "socrates-pen-open",
-      name: "点读笔：打开面板",
+      name: t().cmdOpenPanel,
       callback: () => {
         void this.activateView();
       },
@@ -62,11 +63,11 @@ export default class SocratesPenPlugin extends Plugin {
   async activateView(): Promise<PenView> {
     const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_PEN);
     const leaf = existing[0] ?? this.app.workspace.getRightLeaf(false);
-    if (!leaf) throw new Error("没有可用的右侧叶子");
+    if (!leaf) throw new Error(t().errNoRightLeaf);
     await leaf.setViewState({ type: VIEW_TYPE_PEN, active: true });
     this.app.workspace.revealLeaf(leaf);
     const view = leaf.view;
-    if (!(view instanceof PenView)) throw new Error("点读笔视图未挂上");
+    if (!(view instanceof PenView)) throw new Error(t().errViewNotMounted);
     return view;
   }
 
@@ -123,7 +124,7 @@ export default class SocratesPenPlugin extends Plugin {
       await makeApi(this.settings.sidecarUrl).health();
       return true;
     } catch {
-      new Notice("sidecar 未启动。先在本机终端运行：python -m pen；模型在设置 → Socrates Pen 里填");
+      new Notice(t().noticeSidecarDown);
       return false;
     }
   }

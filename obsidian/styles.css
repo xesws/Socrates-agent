@@ -1,3 +1,25 @@
+/* ============================================================
+   骨架（v0.5.0）
+
+   .socrates-pen
+   ├── .sp-brand   品牌条        flex:0 0 auto    只画一次
+   ├── .sp-alert   错误条        flex:0 5 auto    有界，自己滚
+   ├── .sp-log     对话区        flex:1 0 0       唯一主滚动区
+   ├── .sp-panel   审批面板      flex:0 1000 auto 第一个让位，自己滚
+   └── .sp-dock    底座          flex:0 1 auto    贴底
+        ├── .sp-quote   flex:0 100 auto
+        ├── .sp-chips   flex:0 10 auto   有界，自己滚
+        ├── .sp-status  flex:0 0 auto
+        └── .sp-form    flex:0 0 auto    永不压缩
+
+   真正保证布局不塌的不是那些 max-height，是 flex-shrink 的权重阶梯：
+   权重会乘以 base size，差两个数量级就等于严格优先级。让位顺序是
+   面板 → 引文 → 芯片，输入行永远在，对话区永远至少 4em。
+   即使某个主题让百分比无法解析，这个保证依然成立。
+
+   颜色一律走库主题变量，全文件零硬编码色值。
+   ============================================================ */
+
 .socrates-pen {
   display: flex;
   flex-direction: column;
@@ -10,78 +32,120 @@
   font-size: 13px;
 }
 
-.socrates-pen .sp-bar {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--background-modifier-border);
+/* ── 品牌条 ── */
+.socrates-pen .sp-brand {
+  flex: 0 0 auto;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  /* 审批面板会让这里长到 600px+。封顶并自己滚，别再把 .sp-log 挤没。
-     overscroll-behavior 挡住滚到底后链式传导到对话区。 */
-  flex-shrink: 0;
-  max-height: 60%;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.socrates-pen .sp-health,
-.socrates-pen .sp-usage,
-.socrates-pen .sp-status {
+.socrates-pen .sp-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.socrates-pen .sp-dot.is-ok {
+  background: var(--interactive-accent);
+}
+
+.socrates-pen .sp-dot.is-down {
+  background: var(--text-error);
+}
+
+.socrates-pen .sp-brand-name {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--text-normal);
+}
+
+/* 健康行退居次要：单行省略，全文进 tooltip。它是给人扫一眼的，不是主角。 */
+.socrates-pen .sp-brand-sub {
+  flex: 1 1 auto;
+  min-width: 0;
   font-family: var(--font-monospace);
-  font-size: 11px;
+  font-size: 10px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.socrates-pen .sp-brand-tools {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 2px;
+}
+
+.socrates-pen button.sp-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  box-shadow: none;
+  background: transparent;
   color: var(--text-muted);
 }
 
-.socrates-pen .sp-status {
-  color: var(--text-accent);
+.socrates-pen button.sp-icon:hover:not(:disabled) {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
 }
 
-.socrates-pen .sp-err {
+.socrates-pen button.sp-icon:disabled {
+  opacity: 0.35;
+}
+
+.socrates-pen button.sp-icon .svg-icon {
+  width: 15px;
+  height: 15px;
+}
+
+/* ── 错误条 ── */
+.socrates-pen .sp-alert {
+  flex: 0 5 auto;
+  min-height: 0;
+  max-height: 5em;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
   color: var(--text-error);
   font-size: 12px;
+  line-height: 1.45;
 }
 
-.socrates-pen .sp-quote {
-  border-left: 3px solid var(--text-accent);
-  padding: 4px 8px;
-  color: var(--text-muted);
-  background: var(--background-secondary);
-  font-size: 12px;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.socrates-pen .sp-actions,
-.socrates-pen .sp-chips,
-.socrates-pen .sp-form {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.socrates-pen button {
-  font-size: 12px;
-}
-
-.socrates-pen .sp-form input {
-  flex: 1;
-  min-width: 120px;
-}
-
+/* ── 对话区：唯一主滚动区，只长不缩 ── */
 .socrates-pen .sp-log {
-  flex: 1;
-  /* 防御性，今天是冗余的：flex item 的 min-height 初始值 auto 在纵向 flex 里本会
-     解析成「基于内容的最小尺寸」，但规范规定 overflow 非 visible 时它直接解析为 0，
-     而下面那行正是 auto。写死 0 是为了将来谁把 overflow 改回 visible 时不会静默
-     撑破容器——那种炸法不报错，只表现为输入框被顶出屏幕。 */
-  min-height: 0;
+  flex: 1 0 0;
+  /* 硬底线。与百分比能否解析无关——即使面板和底座一起要地方，
+     对话区也保留 4em，不会出现「只剩一条边框」的退化状态。 */
+  min-height: 4em;
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 8px 10px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* 空态：在对话区里垂直居中。v0.6.0 的启动 Logo 会挂进来。 */
+.socrates-pen .sp-empty {
+  margin: auto 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
 }
 
 .socrates-pen .sp-kicker {
@@ -206,20 +270,33 @@
   border-bottom-color: var(--text-error);
 }
 
-.socrates-pen .sp-preview {
+/* ── 审批面板：在流内，不是浮窗。第一个让位，超出自己滚 ── */
+.socrates-pen .sp-panel {
+  flex: 0 1000 auto;
+  min-height: 0;
+  /* 宽栏下尽量把 diff 铺开（上限 560px 时百分比根本不触发）；
+     窄栏下让到 45%，把高度还给对话区，超出部分自己滚。 */
+  max-height: clamp(120px, 45%, 560px);
+  overflow: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 8px 10px;
+  background: var(--background-primary);
+  border-top: 1px solid var(--background-modifier-border);
 }
 
-.socrates-pen .sp-preview h4 {
+.socrates-pen .sp-panel h4 {
   margin: 0;
   font-size: 13px;
 }
 
 .socrates-pen .sp-where {
-  font-size: 12px;
-  line-height: 1.4;
+  font-family: var(--font-monospace);
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 
 .socrates-pen .sp-warn {
@@ -227,19 +304,151 @@
   color: var(--text-muted);
 }
 
-.socrates-pen .sp-preview pre,
-.socrates-pen .sp-preview .sp-fold {
-  max-height: 160px;
-  overflow: auto;
-  font-size: 11px;
+.socrates-pen .sp-panel .sp-fold {
   margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  font-size: 11px;
+  background: var(--background-secondary);
+  border-radius: 4px;
 }
 
-.socrates-pen .sp-preview-actions {
+/* 一眼看出哪段是原文、哪段是要换上去的 */
+.socrates-pen .sp-diff {
+  padding: 5px 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+.socrates-pen .sp-diff.is-old {
+  border-left: 3px solid var(--text-error);
+  color: var(--text-muted);
+}
+
+.socrates-pen .sp-diff.is-new {
+  border-left: 3px solid var(--interactive-accent);
+  color: var(--text-normal);
+}
+
+/* 动作行吸底：diff 滚多远，允许 / 拒绝都在面板底边可点。
+   sticky 在流内，不是浮窗。 */
+.socrates-pen .sp-panel-actions {
+  position: sticky;
+  bottom: -8px;
   display: flex;
   gap: 6px;
+  padding: 6px 0 0;
+  background: var(--background-primary);
+}
+
+/* ── 底座：贴底，内部有让位优先级 ── */
+.socrates-pen .sp-dock {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.socrates-pen .sp-quote {
+  flex: 0 100 auto;
+  min-height: 0;
+  border-left: 3px solid var(--text-accent);
+  padding: 4px 8px;
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  border-radius: 0 4px 4px 0;
+  font-size: 12px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 芯片：换行排列，但有界。窄栏下自己滚，宽栏下根本碰不到上限。
+   overscroll-behavior 不能省——否则在芯片区滑到底会带着对话区一起跳。 */
+.socrates-pen .sp-chips {
+  flex: 0 10 auto;
+  min-height: 0;
+  max-height: 6.4em;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+/* white-space: normal 是让长标签活下来的那一行：按钮默认 nowrap，
+   而中文标签已经 200px 宽，英文等义标签比整个侧栏还宽。 */
+.socrates-pen .sp-chips button {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  padding: 4px 10px;
+  border-radius: 11px;
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: left;
+  white-space: normal;
+}
+
+.socrates-pen .sp-chips button.is-dyn {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--background-modifier-border);
+  color: var(--text-muted);
+}
+
+.socrates-pen .sp-chips button.is-dyn:hover:not(:disabled) {
+  color: var(--text-normal);
+  box-shadow: inset 0 0 0 1px var(--text-accent);
+}
+
+.socrates-pen .sp-status {
+  flex: 0 0 auto;
+  font-family: var(--font-monospace);
+  font-size: 10px;
+  color: var(--text-accent);
+}
+
+.socrates-pen .sp-status.is-usage {
+  color: var(--text-faint);
+}
+
+/* 输入行永不压缩。窄栏下「用当前选区」自己换到上一行，不挤输入框。 */
+.socrates-pen .sp-form {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.socrates-pen .sp-form .sp-input {
+  flex: 1 1 130px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.socrates-pen .sp-form button {
+  flex: 0 0 auto;
+  font-size: 12px;
 }
 
 .socrates-pen .sp-hint {
+  margin: 0;
+  max-width: 32ch;
   color: var(--text-muted);
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* 放在最后。双类名提一级特异性，压过上面那些 display:flex，不用 !important。 */
+.socrates-pen .is-off.is-off {
+  display: none;
 }
