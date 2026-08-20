@@ -70,6 +70,24 @@ SYSTEM_PROMPT = """你是坐在读者旁边的师傅，正在带人读一本手�
 动态建议必须是下一问，不要重复固定芯片的文案。"""
 
 
+REPLY_IN_ENGLISH = (
+    "\n\n[Language] The reader's interface is in English. "
+    "Reply in English, in the same voice: a mentor sitting next to them, "
+    "spoken, short sentences, no customer-service tone. "
+    "Keep the <!--pen:chips ...--> block and its bullet format exactly as specified above, "
+    "but write the suggested next questions in English too."
+)
+
+
+def system_prompt(lang: str = "zh") -> str:
+    """按界面语言给出 system prompt。
+
+    只在中文人设后**追加**一句语言指令，不整体翻译——人设的语气是这本手册的一
+    部分，翻过去会走味，而模型完全能读中文指令、用英文作答。
+    """
+    return SYSTEM_PROMPT + (REPLY_IN_ENGLISH if lang == "en" else "")
+
+
 def sessions_dir() -> Path:
     dest = config.PEN_DIR / "sessions"
     dest.mkdir(parents=True, exist_ok=True)
@@ -107,10 +125,13 @@ class PenSession:
     ui_messages: list[dict[str, Any]] = field(default_factory=list)
     pending: dict[str, Any] | None = None
     read_ok_paths: list[str] = field(default_factory=list)
+    # 建会话那一刻的界面语言。system prompt 在 __post_init__ 就写死进 messages[0]
+    # 并落盘，所以中途切语言不影响已有会话——新开一场才生效。
+    lang: str = "zh"
 
     def __post_init__(self) -> None:
         if not self.messages:
-            self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+            self.messages = [{"role": "system", "content": system_prompt(self.lang)}]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -123,6 +144,7 @@ class PenSession:
             "ui_messages": self.ui_messages,
             "pending": self.pending,
             "read_ok_paths": list(self.read_ok_paths),
+            "lang": self.lang,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -159,6 +181,7 @@ class PenSession:
             read_ok_paths=[str(p) for p in data.get("read_ok_paths") or []]
             if isinstance(data.get("read_ok_paths"), list)
             else [],
+            lang=str(data.get("lang") or "zh"),
         )
 
 
@@ -199,9 +222,9 @@ class SessionStore:
                 self._locks[session_id] = lock
             return lock
 
-    def create(self, handbook_id: str) -> PenSession:
+    def create(self, handbook_id: str, lang: str = "zh") -> PenSession:
         sid = uuid.uuid4().hex
-        sess = PenSession(session_id=sid, handbook_id=handbook_id)
+        sess = PenSession(session_id=sid, handbook_id=handbook_id, lang=lang)
         self._items[sid] = sess
         save_session(sess)
         return sess

@@ -12,7 +12,7 @@ import type SocratesPenPlugin from "../main";
 import { makeApi, streamApprove, streamChat } from "../api";
 import { handbookIdFromPath, vaultRoot, type EditorPick } from "../selection";
 import type { ChatMessage, Chip, PendingEdit, SessionView } from "../types";
-import { phaseText, t } from "../i18n";
+import { chipHint, chipLabel, phaseText, t } from "../i18n";
 import { measureMonoAdvance, renderSplash, type SplashLevel } from "./splash";
 import { AVATAR } from "../logo";
 
@@ -70,7 +70,8 @@ function assistantShell(turn: HTMLElement): HTMLElement {
 export class PenView extends ItemView {
   plugin: SocratesPenPlugin;
   private status = "";
-  private usage = "";
+  /** 结构化存放，成文推迟到 setStatus——否则切语言后这一行还是旧语言。 */
+  private usage: { ctx?: number; out?: number } | null = null;
   private err = "";
   private health = t().healthUnprobed;
   private msgs: ChatMessage[] = [];
@@ -141,6 +142,21 @@ export class PenView extends ItemView {
 
   private api() {
     return makeApi(this.plugin.settings.sidecarUrl);
+  }
+
+  /**
+   * 语言切换后重画整个面板。
+   *
+   * 绝大多数文案是渲染时现取 t() 的，重画即完成本地化。两个例外：
+   *  - `health` 存的是**已成文**的字符串，所以这里重新探测一次；
+   *  - `err` 可能是 sidecar 下发的原文（本就不翻），保留不动。
+   * `usage` 已经改成结构化，成文推迟到 setStatus，不受影响。
+   */
+  relocalize(): void {
+    this.chipsSig = ""; // 芯片文案变了，作废签名缓存，强制重建
+    this.splashLevel = "none";
+    this.renderShell();
+    void this.probeHealth();
   }
 
   /**
@@ -251,7 +267,11 @@ export class PenView extends ItemView {
   private setStatus(): void {
     const e = this.els;
     if (!e) return;
-    const line = this.busy ? this.status : this.usage;
+    const line = this.busy
+      ? this.status
+      : this.usage
+        ? t().usage(this.usage.ctx, this.usage.out)
+        : "";
     e.status.classList.toggle("is-off", !line);
     e.status.classList.toggle("is-usage", !this.busy);
     if (e.status.textContent !== line) e.status.textContent = line;
@@ -301,9 +321,12 @@ export class PenView extends ItemView {
     e.chips.empty();
     for (const c of this.chips) {
       const on = c.id === "writeback" ? this.substantive : c.enabled;
-      const b = e.chips.createEl("button", { text: c.label });
+      // 后端下发的是中文 label，但带稳定的英文 id。查得到就本地化，
+      // 查不到（后端新增了芯片）就照抄它下发的原文，不会变成空按钮。
+      const b = e.chips.createEl("button", { text: chipLabel(c.id, c.label) });
       b.dataset.off = on ? "0" : "1";
-      if (c.hint) setTooltip(b, c.hint);
+      const hint = chipHint(c.id, c.hint ?? "");
+      if (hint) setTooltip(b, hint);
       b.onclick = () => void this.send(c.id, "");
     }
     for (const d of this.dyn) {
@@ -599,11 +622,11 @@ export class PenView extends ItemView {
     }
     this.busy = true;
     this.err = "";
-    this.usage = "";
+    this.usage = null;
     this.status = phaseText("thinking", "");
     const shown =
       userText.trim() ||
-      this.chips.find((c) => c.id === chip)?.label ||
+      chipLabel(chip, this.chips.find((c) => c.id === chip)?.label ?? "") ||
       chip;
     this.msgs = [...this.msgs, { role: "user", text: shown }, { role: "assistant", text: "" }];
     this.paintBar();
@@ -668,7 +691,7 @@ export class PenView extends ItemView {
             };
             const ctx = u?.context_tokens ?? u?.prompt_tokens;
             const out = u?.completion_tokens;
-            this.usage = t().usage(ctx, out);
+            this.usage = { ctx, out };
             this.dyn = (ev.dynamic_chips as string[]) || [];
             this.substantive = Boolean(ev.has_substantive);
           } else if (ev.type === "error") {
@@ -758,7 +781,7 @@ export class PenView extends ItemView {
             };
             const ctx = u?.context_tokens ?? u?.prompt_tokens;
             const out = u?.completion_tokens;
-            this.usage = t().usage(ctx, out);
+            this.usage = { ctx, out };
             this.dyn = (ev.dynamic_chips as string[]) || [];
             this.substantive = Boolean(ev.has_substantive);
           } else if (ev.type === "error") {

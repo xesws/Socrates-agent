@@ -1,3 +1,4 @@
+import { currentLang } from "./i18n";
 import type { PenSettings } from "./settings";
 import { llmPayload } from "./settings";
 import type { HandbookMeta, LlmStatus, SessionView } from "./types";
@@ -9,7 +10,13 @@ function joinUrl(base: string, path: string): string {
 async function j<T>(base: string, path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(joinUrl(base, path), {
     ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+    headers: {
+      "Content-Type": "application/json",
+      // sidecar 的错误文案按这个头选语言。走 header 而不是 body 字段，
+      // 是为了让没有 body 的 GET 路由也能覆盖。
+      "Accept-Language": currentLang(),
+      ...(init?.headers || {}),
+    },
   });
   if (!res.ok) {
     let detail = res.statusText;
@@ -90,7 +97,10 @@ export async function streamChat(
 ): Promise<void> {
   const res = await fetch(joinUrl(baseUrl, "/v1/chat"), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "Accept-Language": currentLang(),
+    },
     body: JSON.stringify({
       ...body,
       ...(settings ? llmPayload(settings) : {}),
@@ -107,7 +117,10 @@ export async function streamApprove(
 ): Promise<void> {
   const res = await fetch(joinUrl(baseUrl, "/v1/chat/approve"), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "Accept-Language": currentLang(),
+    },
     body: JSON.stringify({
       ...body,
       ...(settings ? llmPayload(settings) : {}),

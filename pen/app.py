@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -23,6 +23,7 @@ from pen import diagnose as diagnosemod
 from pen import proposals as proposalsmod
 from pen import trajectory
 from pen.config import DEFAULT_HANDBOOK_ID, LLMConfig, llm_public_status, merge_llm
+from pen.i18n import msg, norm_lang
 from pen.libraries import RegisterError
 from pen.sandbox import SandboxError, assert_handbook_path, parse_vault_root
 from pen.session import FIXED_CHIPS, STORE, chip_label
@@ -39,7 +40,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.6.0", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.7.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -124,10 +125,16 @@ class RollbackBody(BaseModel):
     handbook_id: str
 
 
-def _meta_or_404(handbook_id: str):
+def req_lang(accept_language: str | None = Header(default=None)) -> str:
+    """请求语言。走 Accept-Language 头而不是 body 字段——GET 路由也能覆盖，
+    而且不用给七个 Pydantic 模型各加一遍。"""
+    return norm_lang(accept_language)
+
+
+def _meta_or_404(handbook_id: str, lang: str = "zh"):
     meta = libraries.get(handbook_id)
     if meta is None:
-        raise HTTPException(404, f"未知手册 {handbook_id}")
+        raise HTTPException(404, msg("handbook.unknown", lang, handbook_id=handbook_id))
     return libraries.refresh_if_stale(handbook_id)
 
 
@@ -135,10 +142,10 @@ def _sse(ev: dict[str, Any]) -> str:
     return f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
 
 
-def _try_lock_session(session_id: str):
+def _try_lock_session(session_id: str, lang: str = "zh"):
     lock = STORE.lock_for(session_id)
     if not lock.acquire(blocking=False):
-        raise HTTPException(409, "这场对话还在跑，先等它结束。")
+        raise HTTPException(409, msg("session.busy", lang))
     return lock
 
 
@@ -300,8 +307,8 @@ def import_handbook(body: ImportBody) -> dict[str, Any]:
 
 
 @app.get("/v1/handbooks/{handbook_id}")
-def get_handbook(handbook_id: str) -> dict[str, Any]:
-    meta = _meta_or_404(handbook_id)
+def get_handbook(handbook_id: str, lang: str = Depends(req_lang)) -> dict[str, Any]:
+    meta = _meta_or_404(handbook_id, lang)
     idx = libraries.load_index(handbook_id)
     return {
         **meta.__dict__,
@@ -311,8 +318,8 @@ def get_handbook(handbook_id: str) -> dict[str, Any]:
 
 
 @app.get("/v1/handbooks/{handbook_id}/content")
-def get_content(handbook_id: str) -> dict[str, Any]:
-    meta = _meta_or_404(handbook_id)
+def get_content(handbook_id: str, lang: str = Depends(req_lang)) -> dict[str, Any]:
+    meta = _meta_or_404(handbook_id, lang)
     path = Path(meta.original_path)
     try:
         assert_handbook_path(path, extra_roots=libraries.extra_roots_for(handbook_id))
@@ -336,8 +343,8 @@ def locate(handbook_id: str, line: int) -> dict[str, Any]:
 
 
 @app.post("/v1/sessions")
-def create_session(body: SessionBody) -> dict[str, Any]:
-    _meta_or_404(body.handbook_id)
+def create_session(body: SessionBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
+    _meta_or_404(body.handbook_id, lang)
     if body.session_id:
         try:
             sess = STORE.get(body.session_id)
@@ -345,28 +352,28 @@ def create_session(body: SessionBody) -> dict[str, Any]:
                 return sess.to_public()
         except KeyError:
             pass
-    sess = STORE.create(body.handbook_id)
+    sess = STORE.create(body.handbook_id, lang=lang)
     return sess.to_public()
 
 
 @app.get("/v1/sessions/{session_id}")
-def get_session(session_id: str) -> dict[str, Any]:
+def get_session(session_id: str, lang: str = Depends(req_lang)) -> dict[str, Any]:
     try:
         sess = STORE.get(session_id)
     except KeyError as exc:
-        raise HTTPException(404, "未知会话") from exc
+        raise HTTPException(404, msg("session.unknown", lang)) from exc
     return sess.to_public()
 
 
 @app.post("/v1/chat")
-def chat(body: ChatBody) -> StreamingResponse:
+def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
     try:
         sess = STORE.get(body.session_id)
     except KeyError as exc:
-        raise HTTPException(404, "未知会话") from exc
+        raise HTTPException(404, msg("session.unknown", lang)) from exc
     if body.chip == "search":
         if sess.pending:
-            raise HTTPException(400, "有一次编辑在等你审批，先点允许或拒绝。")
+            raise HTTPException(400, msg("approval.pending", lang))
 
         def search_gen() -> Any:
             yield _sse({"type": "token", "text": SEARCH_REPLY})
@@ -380,11 +387,11 @@ def chat(body: ChatBody) -> StreamingResponse:
             )
 
         return StreamingResponse(search_gen(), media_type="text/event-stream")
-    lock = _try_lock_session(sess.session_id)
+    lock = _try_lock_session(sess.session_id, lang)
     try:
         if sess.pending:
-            raise HTTPException(400, "有一次编辑在等你审批，先点允许或拒绝。")
-        meta = _meta_or_404(sess.handbook_id)
+            raise HTTPException(400, msg("approval.pending", lang))
+        meta = _meta_or_404(sess.handbook_id, lang)
         idx = libraries.load_index(sess.handbook_id)
         path = Path(meta.original_path)
         try:
@@ -419,6 +426,7 @@ def chat(body: ChatBody) -> StreamingResponse:
                 llm=body.merged(),
                 extra_roots=libraries.extra_roots_for(sess.handbook_id),
                 allow_env_fallback=not bool((body.base_url or "").strip()),
+                lang=lang,
             ):
                 if ev.get("type") == "done":
                     has_sub = bool(ev.get("has_substantive"))
@@ -430,7 +438,7 @@ def chat(body: ChatBody) -> StreamingResponse:
             yield _sse({"type": "error", "message": str(exc)})
         except Exception:
             ok = False
-            yield _sse({"type": "error", "message": "对话中途出了意外错误，请重试。"})
+            yield _sse({"type": "error", "message": msg("chat.unexpected", lang)})
         finally:
             if sess.last_assistant and sess.last_assistant != prior_assistant:
                 sess.ui_messages.append({"role": "assistant", "text": sess.last_assistant})
@@ -461,16 +469,16 @@ def chat(body: ChatBody) -> StreamingResponse:
 
 
 @app.post("/v1/chat/approve")
-def chat_approve(body: ApproveBody) -> StreamingResponse:
+def chat_approve(body: ApproveBody, lang: str = Depends(req_lang)) -> StreamingResponse:
     try:
         sess = STORE.get(body.session_id)
     except KeyError as exc:
-        raise HTTPException(404, "未知会话") from exc
-    lock = _try_lock_session(sess.session_id)
+        raise HTTPException(404, msg("session.unknown", lang)) from exc
+    lock = _try_lock_session(sess.session_id, lang)
     try:
         if not sess.pending or sess.pending.get("id") != body.pending_id:
-            raise HTTPException(400, "没有待审批的编辑，或已经过期")
-        meta = _meta_or_404(sess.handbook_id)
+            raise HTTPException(400, msg("approval.none", lang))
+        meta = _meta_or_404(sess.handbook_id, lang)
         path = Path(meta.original_path)
         prior_assistant = sess.last_assistant
     except Exception:
@@ -488,6 +496,7 @@ def chat_approve(body: ApproveBody) -> StreamingResponse:
                 llm=body.merged(),
                 extra_roots=libraries.extra_roots_for(sess.handbook_id),
                 allow_env_fallback=not bool((body.base_url or "").strip()),
+                lang=lang,
             ):
                 if ev.get("type") == "error":
                     ok = False
@@ -497,7 +506,7 @@ def chat_approve(body: ApproveBody) -> StreamingResponse:
             yield _sse({"type": "error", "message": str(exc)})
         except Exception:
             ok = False
-            yield _sse({"type": "error", "message": "审批后续出错，请重试。"})
+            yield _sse({"type": "error", "message": msg("approve.unexpected", lang)})
         finally:
             if sess.last_assistant and sess.last_assistant != prior_assistant:
                 sess.ui_messages.append({"role": "assistant", "text": sess.last_assistant})
@@ -512,16 +521,16 @@ def chat_approve(body: ApproveBody) -> StreamingResponse:
 
 
 @app.post("/v1/writeback/propose")
-def propose(body: ProposeBody) -> dict[str, Any]:
+def propose(body: ProposeBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
     try:
         sess = STORE.get(body.session_id)
     except KeyError as exc:
-        raise HTTPException(404, "未知会话") from exc
+        raise HTTPException(404, msg("session.unknown", lang)) from exc
     if not sess.last_assistant:
-        raise HTTPException(400, "还没有可写回的解答")
+        raise HTTPException(400, msg("writeback.no_answer", lang))
     if not sess.last_anchor:
-        raise HTTPException(400, "缺少框选锚点")
-    meta = _meta_or_404(sess.handbook_id)
+        raise HTTPException(400, msg("writeback.no_anchor", lang))
+    meta = _meta_or_404(sess.handbook_id, lang)
     idx = libraries.load_index(sess.handbook_id)
     path = Path(meta.original_path)
     try:
@@ -529,6 +538,7 @@ def propose(body: ProposeBody) -> dict[str, Any]:
             sess,
             llm=body.merged(),
             allow_env_fallback=not bool((body.base_url or "").strip()),
+            lang=lang,
         )
     except RuntimeError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -561,8 +571,8 @@ def propose(body: ProposeBody) -> dict[str, Any]:
 
 
 @app.get("/v1/handbooks/{handbook_id}/outline")
-def handbook_outline(handbook_id: str) -> dict[str, Any]:
-    meta = _meta_or_404(handbook_id)
+def handbook_outline(handbook_id: str, lang: str = Depends(req_lang)) -> dict[str, Any]:
+    meta = _meta_or_404(handbook_id, lang)
     path = Path(meta.original_path)
     try:
         assert_handbook_path(path, extra_roots=libraries.extra_roots_for(handbook_id))
@@ -572,14 +582,14 @@ def handbook_outline(handbook_id: str) -> dict[str, Any]:
 
 
 @app.post("/v1/writeback/retarget")
-def retarget(body: RetargetBody) -> dict[str, Any]:
+def retarget(body: RetargetBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
     prop = _proposal_get(body.proposal_id)
     if prop is None:
-        raise HTTPException(404, "提议不存在或已过期")
+        raise HTTPException(404, msg("proposal.unknown", lang))
     try:
         sess = STORE.get(prop["session_id"])
     except KeyError as exc:
-        raise HTTPException(404, "未知会话") from exc
+        raise HTTPException(404, msg("session.unknown", lang)) from exc
     path = Path(prop["original_path"])
     try:
         assert_handbook_path(path, extra_roots=libraries.extra_roots_for(sess.handbook_id))
@@ -601,16 +611,16 @@ def retarget(body: RetargetBody) -> dict[str, Any]:
 
 
 @app.post("/v1/writeback/apply")
-def apply(body: ApplyBody) -> dict[str, Any]:
+def apply(body: ApplyBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
     prop = _proposal_get(body.proposal_id)
     if prop is None:
-        raise HTTPException(404, "提议不存在或已过期")
+        raise HTTPException(404, msg("proposal.unknown", lang))
     try:
         sess = STORE.get(body.session_id)
     except KeyError as exc:
-        raise HTTPException(404, "未知会话") from exc
+        raise HTTPException(404, msg("session.unknown", lang)) from exc
     if prop["session_id"] != sess.session_id:
-        raise HTTPException(403, "提议不属于这个会话")
+        raise HTTPException(403, msg("proposal.wrong_session", lang))
     path = Path(prop["original_path"])
     try:
         assert_handbook_path(path, extra_roots=libraries.extra_roots_for(sess.handbook_id))
@@ -618,7 +628,7 @@ def apply(body: ApplyBody) -> dict[str, Any]:
         raise HTTPException(400, str(exc)) from exc
     expected = prop.get("content_fp")
     if expected and _content_fp(path) != expected:
-        raise HTTPException(400, "笔记在选定位置之后改过了，请再选一次写入位置")
+        raise HTTPException(400, msg("writeback.stale", lang))
     snap = snapshots.take_snapshot(sess.handbook_id, path, "pre-insert")
     try:
         insertmod.apply_insert(path, prop["plan"])
@@ -628,11 +638,11 @@ def apply(body: ApplyBody) -> dict[str, Any]:
     commit_out = None
     commit_error: str | None = None
     if body.commit:
-        msg = body.commit_message or (
+        commit_msg = body.commit_message or (
             f"pen: 写回 {prop['plan'].level} {prop['plan'].q_title or prop['plan'].beat}"
         )
         try:
-            commit_out = gitops.commit_original(path, msg)
+            commit_out = gitops.commit_original(path, commit_msg)
         except gitops.GitError as exc:
             commit_error = str(exc)
     _proposal_del(body.proposal_id)
@@ -647,14 +657,14 @@ def apply(body: ApplyBody) -> dict[str, Any]:
 
 
 @app.get("/v1/handbooks/{handbook_id}/snapshots")
-def snapshot_status(handbook_id: str) -> dict[str, Any]:
-    _meta_or_404(handbook_id)
+def snapshot_status(handbook_id: str, lang: str = Depends(req_lang)) -> dict[str, Any]:
+    _meta_or_404(handbook_id, lang)
     return snapshots.status(handbook_id)
 
 
 @app.post("/v1/writeback/rollback")
-def rollback(body: RollbackBody) -> dict[str, Any]:
-    meta = _meta_or_404(body.handbook_id)
+def rollback(body: RollbackBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
+    meta = _meta_or_404(body.handbook_id, lang)
     path = Path(meta.original_path)
     try:
         assert_handbook_path(path, extra_roots=libraries.extra_roots_for(body.handbook_id))
@@ -675,8 +685,8 @@ def rollback(body: RollbackBody) -> dict[str, Any]:
 
 
 @app.post("/v1/writeback/redo")
-def redo(body: RollbackBody) -> dict[str, Any]:
-    meta = _meta_or_404(body.handbook_id)
+def redo(body: RollbackBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
+    meta = _meta_or_404(body.handbook_id, lang)
     path = Path(meta.original_path)
     try:
         assert_handbook_path(path, extra_roots=libraries.extra_roots_for(body.handbook_id))
@@ -702,8 +712,8 @@ def chips() -> dict[str, Any]:
 
 
 @app.get("/v1/handbooks/{handbook_id}/diagnosis")
-def get_diagnosis(handbook_id: str) -> dict[str, Any]:
-    _meta_or_404(handbook_id)
+def get_diagnosis(handbook_id: str, lang: str = Depends(req_lang)) -> dict[str, Any]:
+    _meta_or_404(handbook_id, lang)
     turns = trajectory.load_turns(handbook_id)
     report = diagnosemod.aggregate(turns)
     report["handbook_id"] = handbook_id
@@ -711,8 +721,8 @@ def get_diagnosis(handbook_id: str) -> dict[str, Any]:
 
 
 @app.post("/v1/handbooks/{handbook_id}/diagnosis/narrate")
-def narrate_diagnosis(handbook_id: str) -> dict[str, Any]:
-    _meta_or_404(handbook_id)
+def narrate_diagnosis(handbook_id: str, lang: str = Depends(req_lang)) -> dict[str, Any]:
+    _meta_or_404(handbook_id, lang)
     turns = trajectory.load_turns(handbook_id)
     report = diagnosemod.aggregate(turns)
     report["handbook_id"] = handbook_id

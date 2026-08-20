@@ -157,7 +157,7 @@ def test_apply_uses_stored_allow_root(tmp_path: Path, monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "pen.app.propose_fold_md",
-        lambda _sess, llm=None, allow_env_fallback=True: FOLD,
+        lambda _sess, llm=None, allow_env_fallback=True, lang="zh": FOLD,
     )
     with TestClient(app) as client:
         imported = client.post(
@@ -206,7 +206,7 @@ def test_retarget_after_line_and_outline(tmp_path: Path, monkeypatch) -> None:
     book.write_text("# 随便\n\nkeep-me\n", encoding="utf-8")
     monkeypatch.setattr(
         "pen.app.propose_fold_md",
-        lambda _sess, llm=None, allow_env_fallback=True: FOLD,
+        lambda _sess, llm=None, allow_env_fallback=True, lang="zh": FOLD,
     )
     with TestClient(app) as client:
         imported = client.post(
@@ -274,7 +274,7 @@ def test_chat_forwards_settings_overrides(monkeypatch) -> None:
             thinking=kw.get("thinking") or "off",
         )
 
-    def fake_stream(sess, path, packet, llm=None, extra_roots=None, allow_env_fallback=True):
+    def fake_stream(sess, path, packet, llm=None, extra_roots=None, allow_env_fallback=True, lang="zh"):
         seen["llm"] = llm
         yield {
             "type": "done",
@@ -318,7 +318,7 @@ def test_chat_request_base_url_disables_env_fallback(monkeypatch) -> None:
     seen: dict = {}
     monkeypatch.setattr("pen.app.merge_llm", lambda **kw: None)
 
-    def fake_stream(sess, path, packet, llm=None, extra_roots=None, allow_env_fallback=True):
+    def fake_stream(sess, path, packet, llm=None, extra_roots=None, allow_env_fallback=True, lang="zh"):
         seen["llm"] = llm
         seen["allow_env_fallback"] = allow_env_fallback
         yield {
@@ -361,7 +361,7 @@ def test_chat_forwards_stored_allow_root(tmp_path: Path, monkeypatch) -> None:
     )
     seen: dict = {}
 
-    def fake_stream(sess, path, packet, llm=None, extra_roots=None, allow_env_fallback=True):
+    def fake_stream(sess, path, packet, llm=None, extra_roots=None, allow_env_fallback=True, lang="zh"):
         seen["extra_roots"] = extra_roots
         yield {
             "type": "done",
@@ -403,7 +403,7 @@ def test_chat_stream_raise_yields_error_and_records_not_ok(tmp_path: Path, monke
 
     _isolate_pen(tmp_path, monkeypatch)
 
-    def boom_stream(sess, path, packet, llm=None, extra_roots=None, allow_env_fallback=True):
+    def boom_stream(sess, path, packet, llm=None, extra_roots=None, allow_env_fallback=True, lang="zh"):
         raise ProviderError("节点不收这把钥匙。请到设置 → Socrates Pen 检查 API Key。")
         yield  # 只是为了让本函数成为生成器：第一次 next 才抛
 
@@ -552,7 +552,7 @@ def test_apply_commit_failure_consumes_proposal(tmp_path: Path, monkeypatch) -> 
     q1 = next(i for i, ln in enumerate(book.read_text(encoding="utf-8").splitlines(), 1) if ln.startswith("**Q1. shell"))
     monkeypatch.setattr(
         "pen.app.propose_fold_md",
-        lambda _sess, llm=None, allow_env_fallback=True: FOLD,
+        lambda _sess, llm=None, allow_env_fallback=True, lang="zh": FOLD,
     )
 
     def boom(_path, _msg):
@@ -657,7 +657,7 @@ def test_approve_wrong_id_and_missing_session() -> None:
 def test_approve_allow_runs_resume(monkeypatch) -> None:
     seen: dict = {}
 
-    def fake_resume(sess, path, *, allow, pending_id, llm=None, extra_roots=None, allow_env_fallback=True):
+    def fake_resume(sess, path, *, allow, pending_id, llm=None, extra_roots=None, allow_env_fallback=True, lang="zh"):
         seen["allow"] = allow
         seen["pending_id"] = pending_id
         seen["path"] = path

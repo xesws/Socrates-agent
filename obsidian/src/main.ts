@@ -1,4 +1,4 @@
-import { Notice, Plugin } from "obsidian";
+import { Notice, Plugin, setTooltip, type Command, type WorkspaceLeaf } from "obsidian";
 import { makeApi } from "./api";
 import {
   coerceThinking,
@@ -9,7 +9,7 @@ import {
 import { readLivePick, type EditorPick } from "./selection";
 import type { NoteBinding } from "./types";
 import { PenView, VIEW_TYPE_PEN } from "./views/PenView";
-import { t } from "./i18n";
+import { coerceLangPref, resolveLang, setLang, t } from "./i18n";
 
 // 旧版插件把 PenSettings 键直接写在 data.json 顶层，故顶层也要容忍这些键
 type PluginData = Partial<PenSettings> & {
@@ -22,17 +22,26 @@ export default class SocratesPenPlugin extends Plugin {
   notes: Record<string, NoteBinding> = {};
   private saveTimer: number | null = null;
   private lastPick: EditorPick | null = null;
+  private ribbonEl: HTMLElement | null = null;
+  private cmdAsk: Command | null = null;
+  private cmdOpen: Command | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
+    // 必须在注册 ribbon 和命令之前：它们的文案在注册那一刻就定下来了
+    setLang(resolveLang(this.settings.lang));
     this.registerView(VIEW_TYPE_PEN, (leaf) => new PenView(leaf, this));
     this.addSettingTab(new PenSettingTab(this.app, this));
     this.registerDomEvent(document, "selectionchange", () => this.cachePick());
     this.registerDomEvent(document, "mouseup", () => this.cachePick());
-    this.addRibbonIcon("highlighter", t().ribbonTooltip, () => {
+    // 注册标题必须**语言无关**：ribbon 项的内部 id 是 manifest.id + ":" + title，
+    // 用户在「外观 → 功能区」里的排序和隐藏状态按这个 id 存。换语言就换标题
+    // 会让那份配置变成孤儿。所以写死品牌名，真正的文案用 setTooltip 覆盖。
+    this.ribbonEl = this.addRibbonIcon("highlighter", "Socrates Pen", () => {
       void this.activateView();
     });
-    this.addCommand({
+    setTooltip(this.ribbonEl, t().ribbonTooltip, { placement: "right" });
+    this.cmdAsk = this.addCommand({
       id: "socrates-pen-ask-selection",
       name: t().cmdAskSelection,
       callback: () => {
@@ -42,7 +51,7 @@ export default class SocratesPenPlugin extends Plugin {
         });
       },
     });
-    this.addCommand({
+    this.cmdOpen = this.addCommand({
       id: "socrates-pen-open",
       name: t().cmdOpenPanel,
       callback: () => {
@@ -57,6 +66,32 @@ export default class SocratesPenPlugin extends Plugin {
       window.clearTimeout(this.saveTimer);
       this.saveTimer = null;
       void this.saveSettings();
+    }
+  }
+
+  /**
+   * 语言改了之后就地刷新，不需要重启插件。
+   *
+   * 命令名：Plugin.addCommand 在注册那一刻做过一次 `manifest.name + ": "`，
+   * 之后改名要自己把前缀补回来。id 不变，所以用户已绑的快捷键不受影响；
+   * 命令面板每次打开都重读 name，下次打开就是新语言。
+   */
+  applyLanguage(): void {
+    setLang(resolveLang(this.settings.lang));
+    const s = t();
+    if (this.ribbonEl) setTooltip(this.ribbonEl, s.ribbonTooltip, { placement: "right" });
+    const prefix = `${this.manifest.name}: `;
+    if (this.cmdAsk) this.cmdAsk.name = prefix + s.cmdAskSelection;
+    if (this.cmdOpen) this.cmdOpen.name = prefix + s.cmdOpenPanel;
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_PEN)) {
+      const view = leaf.view;
+      if (view instanceof PenView) view.relocalize();
+      // updateHeader 未进 .d.ts，但它是刷新 tab 标题的直接办法；
+      // 兜底走公开 API：type 相同且非 deferred 时 setViewState 不会重建 view，
+      // 且 getViewState() 不含 active，不会抢焦点。
+      const withHeader = leaf as WorkspaceLeaf & { updateHeader?: () => void };
+      if (typeof withHeader.updateHeader === "function") withHeader.updateHeader();
+      else void leaf.setViewState(leaf.getViewState());
     }
   }
 
@@ -104,6 +139,7 @@ export default class SocratesPenPlugin extends Plugin {
     if (raw.thinking !== undefined) legacy.thinking = raw.thinking;
     this.settings = { ...DEFAULT_SETTINGS, ...legacy, ...(raw.settings || {}) };
     this.settings.thinking = coerceThinking(this.settings.thinking);
+    this.settings.lang = coerceLangPref(this.settings.lang);
     this.notes = raw.notes || {};
   }
 

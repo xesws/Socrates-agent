@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from pen.i18n import msg
 from pen.config import LLMConfig, REPO_ROOT, resolve_llm
 from pen.index import HandbookIndex, neighborhood
 from pen.agent.permissions import decide, read_first_block
@@ -114,18 +115,18 @@ class ProviderError(RuntimeError):
     """供应商调用失败。message 已是给用户看的中文，不含 key。"""
 
 
-def provider_error_message(exc: BaseException) -> str:
-    """OpenAI / 网络异常 → 给用户看的中文。不带 key，不贴原始报文。"""
+def provider_error_message(exc: BaseException, lang: str = "zh") -> str:
+    """OpenAI / 网络异常 → 给用户看的一句话。不带 key，不贴原始报文。"""
     status = getattr(exc, "status_code", None)
     if status in (401, 403):
-        return "节点不收这把钥匙。请到设置 → Socrates Pen 检查 API Key。"
+        return msg("provider.bad_key", lang)
     if status == 400:
-        return "这个节点不接受当前 Thinking 档，先改回 off 再试。"
+        return msg("provider.bad_thinking", lang)
     from openai import APIConnectionError, APITimeoutError
 
     if isinstance(exc, (APIConnectionError, APITimeoutError, OSError, TimeoutError)):
-        return "连不上节点。检查设置里的 Base URL 有没有填对。"
-    return f"节点返回了意料外的错误（{type(exc).__name__}）。稍后再试，或检查设置里的配置。"
+        return msg("provider.unreachable", lang)
+    return msg("provider.unexpected", lang, kind=type(exc).__name__)
 
 
 def _finish_text(session: PenSession, raw: str, usage: dict[str, int]) -> Iterator[dict[str, Any]]:
@@ -194,16 +195,14 @@ def stream_chat(
     llm: LLMConfig | None = None,
     extra_roots: list[Path] | None = None,
     allow_env_fallback: bool = True,
+    lang: str = "zh",
 ) -> Iterator[dict[str, Any]]:
     # 请求换了主机却没带 key 时 merge_llm 会返回 None；不能再 or resolve_llm() 把 .env 钥匙挪用过去。
     cfg = llm if llm is not None else (resolve_llm() if allow_env_fallback else None)
     if cfg is None:
         yield {
             "type": "error",
-            "message": (
-                "找不到模型配置。请到 Obsidian 设置 → Socrates Pen 填写 API Key，"
-                "或给本机 sidecar 留一份开发用 .env（DEEPSEEK_API_KEY / OPENAI_API_KEY）。"
-            ),
+            "message": msg("llm.missing_config", lang),
         }
         return
 
@@ -211,13 +210,14 @@ def stream_chat(
 
     extra_roots = [REPO_ROOT, *(extra_roots or [])]
     ctx = _tool_ctx(session, original_path, extra_roots)
-    yield from _agent_loop(session, ctx, cfg)
+    yield from _agent_loop(session, ctx, cfg, lang)
 
 
 def _agent_loop(
     session: PenSession,
     ctx: dict[str, Any],
     cfg: LLMConfig,
+    lang: str = "zh",
 ) -> Iterator[dict[str, Any]]:
     from openai import OpenAI, OpenAIError
 
@@ -234,7 +234,7 @@ def _agent_loop(
         try:
             resp = client.chat.completions.create(**kwargs)
         except (OpenAIError, OSError, TimeoutError) as exc:
-            raise ProviderError(provider_error_message(exc)) from exc
+            raise ProviderError(provider_error_message(exc, lang)) from exc
         if resp.usage:
             usage.update(
                 usage_snapshot(
@@ -257,7 +257,7 @@ def _agent_loop(
             if not raw:
                 yield {
                     "type": "error",
-                    "message": f"模型 {cfg.model} 返回了空正文（已接上 {cfg.base_url}）。",
+                    "message": msg("llm.empty_reply", lang, model=cfg.model, base_url=cfg.base_url),
                 }
                 return
             yield from _finish_text(session, raw, usage)
@@ -279,7 +279,7 @@ def _agent_loop(
     if not raw:
         yield {
             "type": "error",
-            "message": "翻了几页还没收工。请把问题问得更具体一点，或再点一次芯片。",
+            "message": msg("loop.exhausted", lang),
         }
         return
     yield from _finish_text(session, raw, usage)
@@ -403,16 +403,17 @@ def resume_chat(
     llm: LLMConfig | None = None,
     extra_roots: list[Path] | None = None,
     allow_env_fallback: bool = True,
+    lang: str = "zh",
 ) -> Iterator[dict[str, Any]]:
     pending = session.pending
     if not pending or pending.get("id") != pending_id:
-        yield {"type": "error", "message": "没有待审批的编辑，或已经过期。"}
+        yield {"type": "error", "message": msg("approval.expired", lang)}
         return
     cfg = llm if llm is not None else (resolve_llm() if allow_env_fallback else None)
     if cfg is None:
         yield {
             "type": "error",
-            "message": "找不到模型配置。请到设置 → Socrates Pen 填写 API Key。",
+            "message": msg("llm.missing_config_short", lang),
         }
         return
     frozen = str(pending.get("original_path") or "").strip()
@@ -420,7 +421,7 @@ def resume_chat(
         frozen_p = Path(frozen).expanduser().resolve()
         if frozen_p != original_path.expanduser().resolve():
             tcid_bad = str(pending.get("tool_call_id") or "")
-            result = "错误：手册路径已经变了，这次编辑作废。请重新框选。"
+            result = msg("approval.path_changed", lang)
             session.messages.append(
                 {"role": "tool", "tool_call_id": tcid_bad, "content": result}
             )
@@ -480,19 +481,18 @@ def resume_chat(
         paused = yield from _run_tool_batch(session, ctx, [_Tc(r) for r in rest])
         if paused:
             return
-    yield from _agent_loop(session, ctx, cfg)
+    yield from _agent_loop(session, ctx, cfg, lang)
 
 
 def propose_fold_md(
     session: PenSession,
     llm: LLMConfig | None = None,
     allow_env_fallback: bool = True,
+    lang: str = "zh",
 ) -> str:
     cfg = llm if llm is not None else (resolve_llm() if allow_env_fallback else None)
     if cfg is None:
-        raise RuntimeError(
-            "找不到模型配置，无法生成折叠块。请到设置 → Socrates Pen 填写 API Key。"
-        )
+        raise RuntimeError(msg("llm.missing_config_fold", lang))
     from openai import OpenAI, OpenAIError
 
     client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key, timeout=120.0)
@@ -517,5 +517,5 @@ def propose_fold_md(
             )
         )
     except (OpenAIError, OSError, TimeoutError) as exc:
-        raise ProviderError(provider_error_message(exc)) from exc
+        raise ProviderError(provider_error_message(exc, lang)) from exc
     return (resp.choices[0].message.content or "").strip()

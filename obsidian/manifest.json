@@ -1,9 +1,9 @@
 {
   "id": "socrates-pen",
   "name": "Socrates Pen",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "minAppVersion": "1.5.0",
-  "description": "点读笔：框选笔记，经本机 sidecar 追问。桌面专用。",
+  "description": "Highlight a passage in your notes and question it through a local sidecar. Desktop only.",
   "author": "xesws",
   "isDesktopOnly": true
 }

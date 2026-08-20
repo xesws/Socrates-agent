@@ -1,5 +1,6 @@
 import { App, FileSystemAdapter, MarkdownView, TFile } from "obsidian";
 import { collapseWs, linesFromQuote } from "./locate";
+import { t } from "./i18n";
 
 export type EditorPick = {
   text: string;
@@ -14,7 +15,7 @@ const MIN_CHARS = 4;
 export function vaultRoot(app: App): string {
   const ad = app.vault.adapter;
   if (ad instanceof FileSystemAdapter) return ad.getBasePath();
-  throw new Error("需要桌面库（FileSystemAdapter）");
+  throw new Error(t().errNeedDesktopVault);
 }
 
 export function relFromAbs(app: App, absPath: string): string | null {

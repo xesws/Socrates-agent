@@ -1,8 +1,11 @@
 import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { coerceLangPref, t, type LangPref } from "./i18n";
 
 export type ThinkingLevel = "off" | "low" | "medium" | "high";
 
 export interface PenSettings {
+  /** 界面语言。"auto" 跟随 Obsidian。 */
+  lang: LangPref;
   sidecarUrl: string;
   apiKey: string;
   baseUrl: string;
@@ -11,6 +14,7 @@ export interface PenSettings {
 }
 
 export const DEFAULT_SETTINGS: PenSettings = {
+  lang: "auto",
   sidecarUrl: "http://127.0.0.1:8765",
   apiKey: "",
   baseUrl: "https://api.deepseek.com",
@@ -42,6 +46,8 @@ export function llmPayload(s: PenSettings): {
 type PenHost = Plugin & {
   settings: PenSettings;
   saveSettingsSoon: () => void;
+  /** 语言改了之后重刷 ribbon tooltip、命令名、已打开的侧栏。 */
+  applyLanguage: () => void;
 };
 
 export class PenSettingTab extends PluginSettingTab {
@@ -54,18 +60,32 @@ export class PenSettingTab extends PluginSettingTab {
 
   display(): void {
     const { containerEl } = this;
+    const s = t();
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Socrates Pen" });
-    containerEl.createEl("p", {
-      text: "在这一页填钥匙和节点。不要去配环境变量。当前库的路径会在框选时自动带给本机 sidecar。",
-    });
-    containerEl.createEl("p", {
-      text: "API Key 存在本库 .obsidian/plugins/socrates-pen/data.json。若整个库进了 Sync / iCloud / git，钥匙会跟着走。",
-    });
+    // 标题用 setHeading 而不是裸 h2：Obsidian 现行插件规范。
+    // 也不重复插件名——设置侧栏已经写着 Socrates Pen 了。
+    containerEl.createEl("p", { cls: "setting-item-description", text: s.setIntro1 });
+    containerEl.createEl("p", { cls: "setting-item-description", text: s.setIntro2 });
+
+    new Setting(containerEl)
+      .setName(s.setLangName) // 两张表都写成双语，切错了还找得回来
+      .setDesc(s.setLangDesc)
+      .addDropdown((d) => {
+        d.addOption("auto", s.setLangAuto)
+          .addOption("zh", "中文") // 语言选项按惯例各用本语言书写，不翻译
+          .addOption("en", "English")
+          .setValue(coerceLangPref(this.plugin.settings.lang))
+          .onChange((v) => {
+            this.plugin.settings.lang = coerceLangPref(v);
+            this.plugin.saveSettingsSoon();
+            this.plugin.applyLanguage();
+            this.display(); // 原地重画，设置页自己也要跟着变
+          });
+      });
 
     new Setting(containerEl)
       .setName("API Key")
-      .setDesc("OpenAI 兼容节点的钥匙。密码框，不会显示在健康行里。")
+      .setDesc(s.setApiKeyDesc)
       .addText((t) => {
         t.inputEl.type = "password";
         t.inputEl.autocomplete = "off";
@@ -79,7 +99,7 @@ export class PenSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Base URL")
-      .setDesc("Chat Completions 兼容地址，不要带尾斜杠。")
+      .setDesc(s.setBaseUrlDesc)
       .addText((t) =>
         t
           .setPlaceholder("https://api.deepseek.com")
@@ -91,8 +111,8 @@ export class PenSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("模型名")
-      .setDesc("节点上的 model 字符串，例如 deepseek-v4-flash 或 gpt-4.1-mini。")
+      .setName(s.setModelName)
+      .setDesc(s.setModelDesc)
       .addText((t) =>
         t
           .setPlaceholder("deepseek-v4-flash")
@@ -105,9 +125,9 @@ export class PenSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Thinking")
-      .setDesc("off 最稳。只有推理模型才打开；不支持的节点开了可能 400。")
+      .setDesc(s.setThinkingDesc)
       .addDropdown((d) => {
-        d.addOption("off", "off（默认）")
+        d.addOption("off", s.setThinkingOff)
           .addOption("low", "low")
           .addOption("medium", "medium")
           .addOption("high", "high")
@@ -120,7 +140,7 @@ export class PenSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Sidecar URL")
-      .setDesc("本机点读笔地址。一般不用改。先在本机终端运行：python -m pen --host 127.0.0.1 --port 8765")
+      .setDesc(s.setSidecarDesc)
       .addText((t) =>
         t
           .setPlaceholder("http://127.0.0.1:8765")

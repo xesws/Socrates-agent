@@ -117,8 +117,35 @@ export const zh = {
   // ── main.ts ──
   errNoRightLeaf: "没有可用的右侧叶子",
   errViewNotMounted: "点读笔视图未挂上",
+  errNeedDesktopVault: "需要桌面库（FileSystemAdapter）",
   noticeSidecarDown:
     "sidecar 未启动。先在本机终端运行：python -m pen；模型在设置 → Socrates Pen 里填",
+
+  // ── 芯片。键对齐后端 pen/session.py 的 FIXED_CHIPS[].id ──
+  chips: {
+    socratic: { label: "先别揭晓，问我一个问题", hint: "" },
+    explain_zero: { label: "当我零基础，讲清楚再给两个例子", hint: "" },
+    examples: { label: "只举例子", hint: "" },
+    search: { label: "查相关论文 / 算法出处", hint: "P2 才开放，现在不会假装搜过" },
+    writeback: { label: "把刚才的解答写进手册原文", hint: "先有一轮实质解答" },
+  } as Record<string, { label: string; hint: string }>,
+
+  // ── 设置页 ──
+  setLangName: "语言 / Language",
+  setLangDesc: "默认跟随 Obsidian 的界面语言。",
+  setLangAuto: "自动（跟随 Obsidian）",
+  setIntro1:
+    "在这一页填钥匙和节点。不要去配环境变量。当前库的路径会在框选时自动带给本机 sidecar。",
+  setIntro2:
+    "API Key 存在本库 .obsidian/plugins/socrates-pen/data.json。若整个库进了 Sync / iCloud / git，钥匙会跟着走。",
+  setApiKeyDesc: "OpenAI 兼容节点的钥匙。密码框，不会显示在健康行里。",
+  setBaseUrlDesc: "Chat Completions 兼容地址，不要带尾斜杠。",
+  setModelName: "模型名",
+  setModelDesc: "节点上的 model 字符串，例如 deepseek-v4-flash 或 gpt-4.1-mini。",
+  setThinkingDesc: "off 最稳。只有推理模型才打开；不支持的节点开了可能 400。",
+  setThinkingOff: "off（默认）",
+  setSidecarDesc:
+    "本机点读笔地址。一般不用改。先在本机终端运行：python -m pen --host 127.0.0.1 --port 8765",
 };
 
 export type Dict = typeof zh;
