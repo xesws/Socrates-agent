@@ -11,7 +11,7 @@ import {
 import type SocratesPenPlugin from "../main";
 import { makeApi, streamApprove, streamChat } from "../api";
 import { handbookIdFromPath, vaultRoot, type EditorPick } from "../selection";
-import type { ChatMessage, Chip, PendingEdit, SessionView } from "../types";
+import type { ChatMessage, Chip, DynChip, PendingEdit, SessionView } from "../types";
 import { chipHint, chipLabel, phaseText, t } from "../i18n";
 import { measureMonoAdvance, renderSplash, type SplashLevel } from "./splash";
 import { AVATAR } from "../logo";
@@ -46,6 +46,31 @@ function visibleReply(text: string): string {
   return text.replace(/<!--pen:chips[\s\S]*?-->/g, "").trim();
 }
 
+/** 深挖的排前面。同类保持后端给的顺序。 */
+function dynRank(c: DynChip): number {
+  return c.kind === "deep" ? 0 : 1;
+}
+
+/**
+ * 从 done 事件里取动态追问。
+ *
+ * sidecar >= v0.8.0 发富格式 dyn_chips；更早的只有 dynamic_chips: string[]。
+ * 插件和 sidecar 是两个进程，版本可能对不上，所以两种都要认。
+ */
+function readDynChips(ev: Record<string, unknown>): DynChip[] {
+  const rich = ev.dyn_chips;
+  if (Array.isArray(rich)) {
+    return rich
+      .filter((c): c is DynChip => Boolean(c) && typeof (c as DynChip).text === "string")
+      .map((c, i) => ({ id: c.id || `d${i}`, kind: c.kind === "deep" ? "deep" : "quick", text: c.text, why: c.why }));
+  }
+  const flat = ev.dynamic_chips;
+  if (!Array.isArray(flat)) return [];
+  return flat
+    .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+    .map((text, i) => ({ id: `q${i}`, kind: "quick" as const, text }));
+}
+
 function toolCaption(m: ChatMessage): { ok: boolean; file: string; kicker: string } {
   const ok = m.ok !== false;
   const name = m.text.split(" ")[0] || "tool";
@@ -76,7 +101,7 @@ export class PenView extends ItemView {
   private health = t().healthUnprobed;
   private msgs: ChatMessage[] = [];
   private chips: Chip[] = [];
-  private dyn: string[] = [];
+  private dyn: DynChip[] = [];
   private busy = false;
   private substantive = false;
   private sessionId: string | null = null;
@@ -335,10 +360,13 @@ export class PenView extends ItemView {
       if (hint) setTooltip(b, hint);
       b.onclick = () => void this.send(c.id, "");
     }
-    for (const d of this.dyn) {
-      const b = e.chips.createEl("button", { text: d, cls: "is-dyn" });
+    // 深挖的排在前面：它们是「跳出来」的问题，读者最容易忽略，别沉到底下。
+    for (const d of [...this.dyn].sort((a, b2) => dynRank(a) - dynRank(b2))) {
+      const cls = d.kind === "deep" ? "is-dyn is-deep" : "is-dyn";
+      const b = e.chips.createEl("button", { text: d.text, cls });
       b.dataset.off = "0";
-      b.onclick = () => void this.send("free", d);
+      if (d.why) setTooltip(b, d.why);
+      b.onclick = () => void this.send("free", d.text);
     }
     e.chips.classList.toggle("is-off", e.chips.childElementCount === 0);
     this.syncChipDisabled();
@@ -592,7 +620,8 @@ export class PenView extends ItemView {
     this.chips = sess.chips;
     this.msgs = sess.ui_messages || [];
     this.substantive = Boolean(sess.has_substantive);
-    this.dyn = [];
+    // 以前这里无条件清空，刷新一次上一轮的追问就永久丢了。
+    this.dyn = (sess.dyn_chips || []).filter((c) => c && c.text);
     const p = sess.pending;
     this.pending =
       p && p.pending_id
@@ -713,7 +742,7 @@ export class PenView extends ItemView {
             const ctx = u?.context_tokens ?? u?.prompt_tokens;
             const out = u?.completion_tokens;
             this.usage = { ctx, out };
-            this.dyn = (ev.dynamic_chips as string[]) || [];
+            this.dyn = readDynChips(ev);
             this.substantive = Boolean(ev.has_substantive);
           } else if (ev.type === "error") {
             this.status = "";
@@ -807,7 +836,7 @@ export class PenView extends ItemView {
             const ctx = u?.context_tokens ?? u?.prompt_tokens;
             const out = u?.completion_tokens;
             this.usage = { ctx, out };
-            this.dyn = (ev.dynamic_chips as string[]) || [];
+            this.dyn = readDynChips(ev);
             this.substantive = Boolean(ev.has_substantive);
           } else if (ev.type === "error") {
             this.err = String(ev.message);

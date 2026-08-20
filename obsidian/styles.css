@@ -418,6 +418,19 @@
   }
 }
 
+/* 追问变多了（v0.8.0 起两条实时 + 后续的深挖），宽侧栏别把它们压进滚动条 */
+@container (min-width: 420px) {
+  .socrates-pen .sp-chips {
+    max-height: 9em;
+  }
+}
+
+@container (min-width: 640px) {
+  .socrates-pen .sp-chips {
+    max-height: 12em;
+  }
+}
+
 /* 芯片：换行排列，但有界。窄栏下自己滚，宽栏下根本碰不到上限。
    overscroll-behavior 不能省——否则在芯片区滑到底会带着对话区一起跳。 */
 .socrates-pen .sp-chips {

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -14,9 +14,13 @@ from pen.index import HandbookIndex, neighborhood
 from pen.agent.permissions import decide, read_first_block
 from pen.agent.registry import dispatch, schemas
 from pen.sandbox import resolve_read_target
-from pen.session import PenSession
+from pen.questions import clean_candidates
+from pen.session import PROMPT_EXAMPLE_LINES, FIXED_CHIPS, PenSession
 
 MAX_TOOL_ROUNDS = 50
+# 全书目录注进 packet 的字符预算。实测那本 13083 行的手册全量 87 条只要 3647 字符。
+TOC_CHARS = 4500
+ASKED_CHARS = 700
 FORCE_ANSWER = (
     "工具次数用完了。根据邻域和你已经读到的内容，直接用自然语言回答读者。"
     "不要再调用任何工具。"
@@ -32,6 +36,18 @@ CHIP_INTENT = {
 }
 
 
+def _budget_lines(lines: Sequence[str], budget: int) -> str:
+    """按字符预算收行，不按条数——书变厚时截的是尾巴，不是整段失控。"""
+    out: list[str] = []
+    used = 0
+    for line in lines:
+        used += len(line) + 1
+        if used > budget:
+            break
+        out.append(line)
+    return "\n".join(out)
+
+
 def build_user_packet(
     idx: HandbookIndex,
     original_path: Path,
@@ -41,6 +57,7 @@ def build_user_packet(
     end_line: int,
     chip: str,
     user_text: str,
+    asked: Sequence[str] = (),
 ) -> tuple[str, dict[str, Any]]:
     section = idx.locate(start_line)
     nb = neighborhood(original_path, section, (start_line, end_line))
@@ -50,7 +67,9 @@ def build_user_packet(
             toc_lines.append(f"- {t.level}  L{t.start_line}  {t.heading}")
         else:
             toc_lines.append(f"  - {t.level} / {t.beat}  L{t.start_line}")
-    toc = "\n".join(toc_lines[:80])
+    # 按字符预算截，不按条数。以前是 toc_lines[:80]，而这本手册有 87 条——
+    # 被砍掉的正好是尾部的 Capstone 和附录，跨关的问题就是这么问不出来的。
+    toc = _budget_lines(toc_lines, TOC_CHARS)
     packet = f"""[来源]
 handbook_path: {original_path}
 level: {section.level}
@@ -74,6 +93,9 @@ chip = {chip}
 
 [用户补充]
 {user_text or "（无，按芯片意图行动）"}
+
+[已经抛过的追问（别再重复这些）]
+{_budget_lines([f"- {a}" for a in asked], ASKED_CHARS) or "（还没抛过）"}
 """
     anchor = {
         "path": str(original_path),
@@ -88,7 +110,17 @@ chip = {chip}
     return packet, anchor
 
 
-def parse_dynamic_chips(reply: str) -> tuple[str, list[str]]:
+def parse_dynamic_chips(
+    reply: str,
+    *,
+    user_text: str = "",
+    asked: Sequence[str] = (),
+) -> tuple[str, list[dict[str, Any]]]:
+    """剥掉回复末尾的 <!--pen:chips--> 块，把里面的行清洗成可下发的芯片。
+
+    清洗不是可选的：模型会把 prompt 里的示范文字原样抄出来（历史上「下一问 1」
+    真的变成过按钮），也会把读者刚问过的那句话换个说法再吐回来。
+    """
     marker = "<!--pen:chips"
     if marker not in reply:
         return reply.strip(), []
@@ -96,12 +128,16 @@ def parse_dynamic_chips(reply: str) -> tuple[str, list[str]]:
     end = rest.find("-->")
     block = rest[:end] if end >= 0 else rest
     visible = head.strip()
-    chips: list[str] = []
-    for line in block.splitlines():
-        line = line.strip().lstrip("-").strip()
-        if line:
-            chips.append(line)
-    return visible, chips[:4]
+    chips = clean_candidates(
+        block.splitlines(),
+        example_lines=PROMPT_EXAMPLE_LINES,
+        fixed_labels=[str(c["label"]) for c in FIXED_CHIPS],
+        user_text=user_text,
+        asked=asked,
+        limit=2,
+        kind="quick",
+    )
+    return visible, chips
 
 
 def usage_snapshot(prompt: int, completion: int) -> dict[str, int]:
@@ -129,9 +165,18 @@ def provider_error_message(exc: BaseException, lang: str = "zh") -> str:
     return msg("provider.unexpected", lang, kind=type(exc).__name__)
 
 
-def _finish_text(session: PenSession, raw: str, usage: dict[str, int]) -> Iterator[dict[str, Any]]:
-    visible, dyn = parse_dynamic_chips(raw)
+def _finish_text(
+    session: PenSession,
+    raw: str,
+    usage: dict[str, int],
+    *,
+    user_text: str = "",
+) -> Iterator[dict[str, Any]]:
+    # 上一轮抛过的别再抛一遍
+    asked = [str(c.get("text") or "") for c in session.last_chips]
+    visible, dyn = parse_dynamic_chips(raw, user_text=user_text, asked=asked)
     session.last_assistant = visible
+    session.last_chips = dyn
     if len(visible) > 80:
         session.has_substantive = True
     yield {"type": "status", "phase": "writing", "text": "在写…"}
@@ -140,7 +185,10 @@ def _finish_text(session: PenSession, raw: str, usage: dict[str, int]) -> Iterat
     yield {
         "type": "done",
         "usage": usage,
-        "dynamic_chips": dyn,
+        # dynamic_chips 保持 list[str]：web/src/pen/PenPanel.tsx 还在吃这个形状。
+        # 富格式走新键 dyn_chips，前端 ?? 回落。
+        "dynamic_chips": [c["text"] for c in dyn],
+        "dyn_chips": dyn,
         "has_substantive": session.has_substantive,
     }
 
@@ -173,6 +221,8 @@ def _tool_ctx(
     return {
         "original_path": original_path,
         "extra_roots": extra_roots,
+        # 只为把读者原话透到 _finish_text 去做复读过滤，工具链路不读它
+        "user_text": "",
         "handbook_id": session.handbook_id,
         "read_ok": {Path(p).expanduser().resolve() for p in session.read_ok_paths},
     }
@@ -196,6 +246,7 @@ def stream_chat(
     extra_roots: list[Path] | None = None,
     allow_env_fallback: bool = True,
     lang: str = "zh",
+    user_text: str = "",
 ) -> Iterator[dict[str, Any]]:
     # 请求换了主机却没带 key 时 merge_llm 会返回 None；不能再 or resolve_llm() 把 .env 钥匙挪用过去。
     cfg = llm if llm is not None else (resolve_llm() if allow_env_fallback else None)
@@ -210,6 +261,7 @@ def stream_chat(
 
     extra_roots = [REPO_ROOT, *(extra_roots or [])]
     ctx = _tool_ctx(session, original_path, extra_roots)
+    ctx["user_text"] = user_text
     yield from _agent_loop(session, ctx, cfg, lang)
 
 
@@ -261,7 +313,7 @@ def _agent_loop(
                     "message": msg("llm.empty_reply", lang, model=cfg.model, base_url=cfg.base_url),
                 }
                 return
-            yield from _finish_text(session, raw, usage)
+            yield from _finish_text(session, raw, usage, user_text=str(ctx.get("user_text") or ""))
             return
         yield {"type": "status", "phase": "reading", "text": "在翻手册…"}
         paused = yield from _run_tool_batch(session, ctx, list(reply.tool_calls))
@@ -283,7 +335,7 @@ def _agent_loop(
             "message": msg("loop.exhausted", lang),
         }
         return
-    yield from _finish_text(session, raw, usage)
+    yield from _finish_text(session, raw, usage, user_text=str(ctx.get("user_text") or ""))
 
 
 def _tool_event(name: str, out: dict[str, Any]) -> dict[str, Any]:

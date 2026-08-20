@@ -62,12 +62,27 @@ SYSTEM_PROMPT = """你是坐在读者旁边的师傅，正在带人读一本手�
 
 终端实录若不是你亲眼看到的工具输出，必须标注「示意」。
 语气：师傅带实习生，口语，短句，别客服腔。
-回复末尾另起一行写且只写（界面会剥掉，读者看不到）：
+回复末尾另起一行，写且只写这个块（界面会剥掉，读者看不到）。
+块里恰好两行，每行以「- 」开头，各写一句追问，别写第三行，别写别的：
 <!--pen:chips
-- 下一问 1
-- 下一问 2
+- 那这块和前面第几拍讲的是同一件事吗？
+- 为什么这里选 A 不选 B，代价是什么？
 -->
-动态建议必须是下一问，不要重复固定芯片的文案。"""
+上面两行是**语气和抽象层级的示范，不是让你抄的原话**。照这个高度，写读者读完你
+这段之后真会脱口而出的两句。两句别问同一件事，别复述固定芯片的文案，也别把读者
+刚才那句话换个说法再问一遍——他自己刚问过。
+还有一条：别问引号、转义、某个符号怎么写这类抠字眼的问题，那种读者自己翻一眼手册
+就有。宁可往上抬一层——问这段东西为什么这么设计，或者它跟前面哪一拍、哪一关对得上。"""
+
+# SYSTEM_PROMPT 里那两句示范，模型抄了就整条丢弃。
+# 病根是旧版示范文本「下一问 1」长得像可填的空槽；换成成型句子后，
+# 抄袭的心理阻力大得多，真抄了这里也能精确命中。
+PROMPT_EXAMPLE_LINES = frozenset(
+    {
+        "那这块和前面第几拍讲的是同一件事吗？",
+        "为什么这里选 A 不选 B，代价是什么？",
+    }
+)
 
 
 REPLY_IN_ENGLISH = (
@@ -128,6 +143,11 @@ class PenSession:
     # 建会话那一刻的界面语言。system prompt 在 __post_init__ 就写死进 messages[0]
     # 并落盘，所以中途切语言不影响已有会话——新开一场才生效。
     lang: str = "zh"
+    # 本轮下发的动态芯片（富格式）。落盘是为了刷新/重开侧栏后还在——
+    # 以前 this.dyn 只在内存里，adopt() 一清就永久丢了。
+    last_chips: list[dict[str, Any]] = field(default_factory=list)
+    # 完成的对话轮次。给追问冷却和「这条深问题是第几轮生的」用。
+    turns: int = 0
 
     def __post_init__(self) -> None:
         if not self.messages:
@@ -145,6 +165,8 @@ class PenSession:
             "pending": self.pending,
             "read_ok_paths": list(self.read_ok_paths),
             "lang": self.lang,
+            "last_chips": list(self.last_chips),
+            "turns": self.turns,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -165,6 +187,7 @@ class PenSession:
             "ui_messages": self.ui_messages,
             "last_assistant": self.last_assistant,
             "pending": pending,
+            "dyn_chips": list(self.last_chips),
         }
 
     @classmethod
@@ -182,6 +205,8 @@ class PenSession:
             if isinstance(data.get("read_ok_paths"), list)
             else [],
             lang=str(data.get("lang") or "zh"),
+            last_chips=[c for c in (data.get("last_chips") or []) if isinstance(c, dict)],
+            turns=int(data.get("turns") or 0),
         )
 
 

@@ -150,3 +150,106 @@ def test_propose_fold_md_provider_error_raises_runtime_error(monkeypatch) -> Non
         propose_fold_md(sess, llm=_cfg())
     assert isinstance(excinfo.value, RuntimeError)
     assert "sk-secret-do-not-leak" not in str(excinfo.value)
+
+
+# ── v0.8.0：动态芯片的清洗 ──────────────────────────────────────────
+
+
+def test_parse_dynamic_chips_returns_rich_dicts() -> None:
+    from pen.tutor import parse_dynamic_chips
+
+    reply = (
+        "正文。\n\n<!--pen:chips\n"
+        "- 七块积木里 messages 为什么不算文件？数据流上它凭什么独立一格？\n"
+        "-->"
+    )
+    visible, chips = parse_dynamic_chips(reply)
+    assert visible == "正文。"
+    assert chips == [
+        {
+            "id": "q0",
+            "kind": "quick",
+            "text": "七块积木里 messages 为什么不算文件？数据流上它凭什么独立一格？",
+        }
+    ]
+
+
+def test_parse_dynamic_chips_drops_placeholders_and_navigation() -> None:
+    from pen.tutor import parse_dynamic_chips
+
+    reply = (
+        "答。\n<!--pen:chips\n"
+        "- 下一问 1\n"
+        "- 下一问 2\n"
+        "- ...\n"
+        "- 带我读一下本书玩法说明\n"
+        "- 那步数上限设多少合适？任务没跑完就被熔断了怎么办？\n"
+        "-->"
+    )
+    _visible, chips = parse_dynamic_chips(reply)
+    assert [c["text"] for c in chips] == ["那步数上限设多少合适？任务没跑完就被熔断了怎么办？"]
+
+
+def test_parse_dynamic_chips_caps_at_two() -> None:
+    from pen.tutor import parse_dynamic_chips
+
+    # 用真正不同的五条：只差一个数字的问题会被相互去重合并掉，
+    # 那样测的就不是 limit 而是去重了。
+    lines = "\n".join(
+        "- " + q
+        for q in (
+            "为什么审批闸门要单独算一件，不能塞进工具里？",
+            "那步数上限设多少合适？任务没跑完就被熔断了怎么办？",
+            "白名单排在危险检测前面，危险命令会不会被静默放行？",
+            "工具输出被截断之后，实习生看不到完整结果，会不会瞎猜？",
+            "为什么第一个参考实现偏偏是 mini-swe-agent，而不是 LangChain？",
+        )
+    )
+    _visible, chips = parse_dynamic_chips(f"答。\n<!--pen:chips\n{lines}\n-->")
+    assert len(chips) == 2
+
+
+def test_parse_dynamic_chips_without_block_is_untouched() -> None:
+    from pen.tutor import parse_dynamic_chips
+
+    visible, chips = parse_dynamic_chips("就是一段普通回复。")
+    assert visible == "就是一段普通回复。"
+    assert chips == []
+
+
+def test_finish_text_emits_both_chip_shapes() -> None:
+    """dynamic_chips 保持 list[str]（web/ 那个前端还在吃它），富格式走 dyn_chips。"""
+    from pen.session import PenSession
+    from pen.tutor import _finish_text
+
+    sess = PenSession(session_id="s1", handbook_id="h1")
+    raw = "答案很长" * 30 + "\n<!--pen:chips\n- 那步数上限设多少合适？没跑完被熔断怎么办？\n-->"
+    done = [ev for ev in _finish_text(sess, raw, {"prompt_tokens": 1}) if ev["type"] == "done"][0]
+    assert done["dynamic_chips"] == ["那步数上限设多少合适？没跑完被熔断怎么办？"]
+    assert done["dyn_chips"][0]["kind"] == "quick"
+    assert sess.last_chips == done["dyn_chips"]
+    assert sess.has_substantive is True
+
+
+def test_build_user_packet_keeps_whole_toc_and_lists_asked() -> None:
+    """toc 以前是 [:80]，那本手册有 87 条——砍掉的正好是 Capstone 和附录。"""
+    from pathlib import Path
+
+    from pen import libraries
+    from pen.tutor import build_user_packet
+
+    idx = libraries.load_index("swe-agent-v2")
+    packet, _anchor = build_user_packet(
+        idx,
+        Path(idx.original_path),
+        selected_text="x",
+        start_line=544,
+        end_line=545,
+        chip="socratic",
+        user_text="",
+        asked=["上一轮抛过的那个问题？"],
+    )
+    toc_seg = packet.split("[全书目录（不要整本背诵）]")[1].split("[框选]")[0]
+    assert len([l for l in toc_seg.strip().splitlines() if l.strip()]) == len(idx.toc)
+    assert "附录" in toc_seg
+    assert "上一轮抛过的那个问题？" in packet

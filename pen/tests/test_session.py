@@ -84,3 +84,25 @@ def test_corrupt_json_is_missing(pen_home: Path) -> None:
     dest = save_session(sess)
     dest.write_text("{not-json", encoding="utf-8")
     assert load_session(sess.session_id) is None
+
+
+def test_turns_and_last_chips_roundtrip() -> None:
+    """v0.8.0 新增的两个字段要能落盘、能从旧快照回落。"""
+    from pen.session import PenSession
+
+    sess = PenSession(session_id="t-turns", handbook_id="h")
+    sess.turns = 3
+    sess.last_chips = [{"id": "q0", "kind": "quick", "text": "为什么这里选 A？"}]
+    back = PenSession.from_dict(sess.to_dict())
+    assert back.turns == 3
+    assert back.last_chips == sess.last_chips
+    assert back.to_public()["dyn_chips"] == sess.last_chips
+
+
+def test_old_snapshot_without_new_fields_still_loads() -> None:
+    from pen.session import PenSession
+
+    sess = PenSession(session_id="t-old", handbook_id="h")
+    data = {k: v for k, v in sess.to_dict().items() if k not in ("turns", "last_chips")}
+    back = PenSession.from_dict(data)
+    assert back.turns == 0 and back.last_chips == []

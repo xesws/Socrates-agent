@@ -5,6 +5,18 @@ export type Chip = {
   hint?: string;
 };
 
+/**
+ * 一条动态追问。
+ * quick = 主回复搭车产出的基础追问；deep = 后台探索挖出的（v0.8.2 起）。
+ * why 只有 deep 有，挂 tooltip，不进对话。
+ */
+export type DynChip = {
+  id: string;
+  kind: "quick" | "deep";
+  text: string;
+  why?: string;
+};
+
 export type HandbookMeta = {
   handbook_id: string;
   title: string;
@@ -38,6 +50,8 @@ export type SessionView = {
   ui_messages: ChatMessage[];
   last_assistant?: string;
   pending?: PendingEdit | null;
+  /** 上一轮的动态追问。以前只在内存里，刷新就没了。sidecar >= v0.8.0 才有。 */
+  dyn_chips?: DynChip[];
 };
 
 export type ChatMessage = {

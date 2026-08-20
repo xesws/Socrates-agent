@@ -40,7 +40,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.7.1", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.8.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -408,6 +408,7 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
                 end_line=body.end_line,
                 chip=body.chip,
                 user_text=body.user_text,
+                asked=[str(c.get("text") or "") for c in sess.last_chips],
             )
         except ValueError as exc:
             raise HTTPException(400, localized(exc, lang)) from exc
@@ -438,6 +439,7 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
                 extra_roots=libraries.extra_roots_for(sess.handbook_id),
                 allow_env_fallback=not bool((body.base_url or "").strip()),
                 lang=lang,
+                user_text=body.user_text,
             ):
                 if ev.get("type") == "done":
                     has_sub = bool(ev.get("has_substantive"))
@@ -453,6 +455,10 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
         finally:
             if sess.last_assistant and sess.last_assistant != prior_assistant:
                 sess.ui_messages.append({"role": "assistant", "text": sess.last_assistant})
+            # 轮次不能挂在「回复内容变了」上：模型偶尔会把同一段话再说一遍，
+            # 那仍然是走完的一轮。ui_messages 用内容去重是对的，turns 不是。
+            if ok and sess.last_assistant:
+                sess.turns += 1
             try:
                 STORE.save(sess)
             except Exception:
