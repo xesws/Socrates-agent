@@ -86,6 +86,16 @@ def register(
         if resolved == root or root in resolved.parents:
             allow_root = str(root)
             break
+    existing = get(hid)
+    if existing and Path(existing.original_path).resolve() == resolved:
+        # 同一本书重复登记：不整本重建索引，只补登记新的允许根，过没过期交给 refresh_if_stale。
+        if allow_root and allow_root != existing.allow_root:
+            existing.allow_root = allow_root
+            _meta_path(hid).write_text(
+                json.dumps(asdict(existing), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        return refresh_if_stale(hid)
     idx = build_index(path)
     meta = HandbookMeta(
         handbook_id=hid,

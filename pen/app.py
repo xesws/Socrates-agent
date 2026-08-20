@@ -24,7 +24,7 @@ from pen.config import DEFAULT_HANDBOOK_ID, LLMConfig, llm_public_status, merge_
 from pen.libraries import RegisterError
 from pen.sandbox import SandboxError, assert_handbook_path, parse_vault_root
 from pen.session import FIXED_CHIPS, STORE, chip_label
-from pen.tutor import build_user_packet, propose_fold_md, stream_chat
+from pen.tutor import ProviderError, build_user_packet, propose_fold_md, stream_chat
 
 SEARCH_REPLY = (
     "论文检索还没开。这是诚实挂起：P2 才有联网，"
@@ -37,7 +37,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.2.3", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.2.4", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -279,6 +279,12 @@ def chat(body: ChatBody) -> StreamingResponse:
                 elif ev.get("type") == "error":
                     ok = False
                 yield _sse(ev)
+        except ProviderError as exc:
+            ok = False
+            yield _sse({"type": "error", "message": str(exc)})
+        except Exception:
+            ok = False
+            yield _sse({"type": "error", "message": "对话中途出了意外错误，请重试。"})
         finally:
             if sess.last_assistant and sess.last_assistant != prior_assistant:
                 sess.ui_messages.append({"role": "assistant", "text": sess.last_assistant})

@@ -64,9 +64,9 @@ def assert_handbook_path(
     path: str | Path,
     extra_roots: list[Path] | None = None,
 ) -> Path:
-    """登记和写回共用：必须是允许根下的 Markdown，且不是 .env / .git。"""
+    """登记和写回共用：必须是允许根下的 Markdown，且不是 .env / .git / .obsidian。"""
     got = Path(path).expanduser().resolve()
-    if got.name == ".env" or ".git" in got.parts:
+    if got.name == ".env" or ".git" in got.parts or ".obsidian" in got.parts:
         raise SandboxError(f"拒绝受保护路径：{got}")
     if got.suffix.lower() not in HANDBOOK_SUFFIXES:
         raise SandboxError(f"只接受 Markdown 教材（.md / .markdown）：{got}")
@@ -82,7 +82,7 @@ def assert_write_target(original_path: Path, target: str | Path) -> Path:
     got = Path(target).expanduser().resolve()
     if got != allowed:
         raise SandboxError(f"拒绝写入 {got}：本手册只能改 {allowed}")
-    if ".git" in got.parts or got.name == ".env":
+    if ".git" in got.parts or ".obsidian" in got.parts or got.name == ".env":
         raise SandboxError(f"拒绝写入受保护路径：{got}")
     return got
 
@@ -95,11 +95,11 @@ def assert_readable(
 ) -> Path:
     """
     读：原文本身，或 extra_roots 之下（默认原文所在目录，用于对照 lab/）。
-    相对路径相对手册目录解析。禁止 .env / .git。
+    相对路径相对手册目录解析。禁止 .env / .git / .obsidian。
     """
     allowed_file = original_path.expanduser().resolve()
     got = resolve_read_target(original_path, target)
-    if got.name == ".env" or ".git" in got.parts:
+    if got.name == ".env" or ".git" in got.parts or ".obsidian" in got.parts:
         raise SandboxError(f"拒绝读取受保护路径：{got}")
     if got == allowed_file:
         return got

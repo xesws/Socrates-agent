@@ -129,6 +129,24 @@ def usage_snapshot(prompt: int, completion: int) -> dict[str, int]:
     return {"context_tokens": p, "completion_tokens": c, "prompt_tokens": p}
 
 
+class ProviderError(RuntimeError):
+    """供应商调用失败。message 已是给用户看的中文，不含 key。"""
+
+
+def provider_error_message(exc: BaseException) -> str:
+    """OpenAI / 网络异常 → 给用户看的中文。不带 key，不贴原始报文。"""
+    status = getattr(exc, "status_code", None)
+    if status in (401, 403):
+        return "节点不收这把钥匙。请到设置 → Socrates Pen 检查 API Key。"
+    if status == 400:
+        return "这个节点不接受当前 Thinking 档，先改回 off 再试。"
+    from openai import APIConnectionError, APITimeoutError
+
+    if isinstance(exc, (APIConnectionError, APITimeoutError, OSError, TimeoutError)):
+        return "连不上节点。检查设置里的 Base URL 有没有填对。"
+    return f"节点返回了意料外的错误（{type(exc).__name__}）。稍后再试，或检查设置里的配置。"
+
+
 def _finish_text(session: PenSession, raw: str, usage: dict[str, int]) -> Iterator[dict[str, Any]]:
     visible, dyn = parse_dynamic_chips(raw)
     session.last_assistant = visible
@@ -183,7 +201,7 @@ def stream_chat(
         }
         return
 
-    from openai import OpenAI
+    from openai import OpenAI, OpenAIError
 
     client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key, timeout=120.0)
     session.messages.append({"role": "user", "content": user_packet})
@@ -198,7 +216,10 @@ def stream_chat(
             messages=session.messages,
             tools=tools if with_tools else None,
         )
-        resp = client.chat.completions.create(**kwargs)
+        try:
+            resp = client.chat.completions.create(**kwargs)
+        except (OpenAIError, OSError, TimeoutError) as exc:
+            raise ProviderError(provider_error_message(exc)) from exc
         if resp.usage:
             usage.update(
                 usage_snapshot(
@@ -210,7 +231,11 @@ def stream_chat(
 
     for _step in range(MAX_TOOL_ROUNDS):
         yield {"type": "status", "phase": "thinking", "text": "师傅在想…"}
-        msg = _create(with_tools=True)
+        try:
+            msg = _create(with_tools=True)
+        except ProviderError as exc:
+            yield {"type": "error", "message": str(exc)}
+            return
         session.messages.append(msg.model_dump(exclude_none=True))
         if not msg.tool_calls:
             raw = (msg.content or "").strip()
@@ -276,7 +301,11 @@ def stream_chat(
 
     session.messages.append({"role": "user", "content": FORCE_ANSWER})
     yield {"type": "status", "phase": "thinking", "text": "师傅在想…"}
-    msg = _create(with_tools=False)
+    try:
+        msg = _create(with_tools=False)
+    except ProviderError as exc:
+        yield {"type": "error", "message": str(exc)}
+        return
     session.messages.append(msg.model_dump(exclude_none=True))
     raw = (msg.content or "").strip()
     if not raw:
@@ -294,7 +323,7 @@ def propose_fold_md(session: PenSession, llm: LLMConfig | None = None) -> str:
         raise RuntimeError(
             "找不到模型配置，无法生成折叠块。请到设置 → Socrates Pen 填写 API Key。"
         )
-    from openai import OpenAI
+    from openai import OpenAI, OpenAIError
 
     client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key, timeout=120.0)
     prompt = f"""把下面师傅刚讲的内容收成一个可插入手册的 Meta Instance。
@@ -307,13 +336,16 @@ def propose_fold_md(session: PenSession, llm: LLMConfig | None = None) -> str:
 解答正文：
 {session.last_assistant}
 """
-    resp = client.chat.completions.create(
-        **llm_create_kwargs(
-            cfg,
-            messages=[
-                {"role": "system", "content": "你只输出一个合法的 <details> Markdown 块。"},
-                {"role": "user", "content": prompt},
-            ],
+    try:
+        resp = client.chat.completions.create(
+            **llm_create_kwargs(
+                cfg,
+                messages=[
+                    {"role": "system", "content": "你只输出一个合法的 <details> Markdown 块。"},
+                    {"role": "user", "content": prompt},
+                ],
+            )
         )
-    )
+    except (OpenAIError, OSError, TimeoutError) as exc:
+        raise ProviderError(provider_error_message(exc)) from exc
     return (resp.choices[0].message.content or "").strip()

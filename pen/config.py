@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 PEN_DIR: Path = REPO_ROOT / ".pen"
@@ -132,6 +133,11 @@ def normalize_thinking(raw: str | None) -> str:
     return got if got in THINKING_LEVELS else "off"
 
 
+def _host_of(url: str) -> str:
+    """小写 netloc，剥掉 userinfo。钥匙不跨主机挪用。"""
+    return urlparse(url).netloc.lower().rsplit("@", 1)[-1]
+
+
 def merge_llm(
     *,
     api_key: str | None = None,
@@ -140,20 +146,24 @@ def merge_llm(
     thinking: str | None = None,
     env_file: Path | None = None,
 ) -> LLMConfig | None:
-    """请求体非空字段优先，缺的回退 resolve_llm()。两边都没有 key → None。"""
+    """请求体非空字段优先，缺的回退 resolve_llm()。两边都没有 key → None。
+    请求把 base_url 换到别的主机却没自带 key → 不挪用 env 钥匙，返回 None，
+    让设置页自己填那台主机的 key。"""
     env = resolve_llm(env_file)
     req_key = (api_key or "").strip()
-    key = req_key or (env.api_key if env else "")
-    if not key:
-        return None
-    url = (base_url or "").strip() or (env.base_url if env else DEEPSEEK_BASE)
-    name = (model or "").strip() or (env.model if env else DEEPSEEK_MODEL)
+    req_url = (base_url or "").strip()
     if req_key:
+        key = req_key
         source = "settings"
+    elif env and req_url and _host_of(req_url) != _host_of(env.base_url):
+        return None
     elif env:
+        key = env.api_key
         source = env.key_source
     else:
-        source = "settings"
+        return None
+    url = req_url or (env.base_url if env else DEEPSEEK_BASE)
+    name = (model or "").strip() or (env.model if env else DEEPSEEK_MODEL)
     return LLMConfig(
         base_url=url,
         api_key=key,

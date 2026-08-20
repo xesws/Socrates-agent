@@ -1,10 +1,51 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import httpx
+import openai
+import pytest
 
 from pen.config import LLMConfig
 from pen.session import PenSession
-from pen.tutor import llm_create_kwargs, stream_chat, usage_snapshot
+from pen.tutor import (
+    ProviderError,
+    llm_create_kwargs,
+    propose_fold_md,
+    provider_error_message,
+    stream_chat,
+    usage_snapshot,
+)
+
+
+def _cfg() -> LLMConfig:
+    return LLMConfig(
+        base_url="https://api.deepseek.com",
+        api_key="sk-secret-do-not-leak",
+        model="deepseek-v4-flash",
+        key_source="settings",
+    )
+
+
+def _status_exc(cls: type[openai.APIStatusError], status: int) -> openai.APIStatusError:
+    req = httpx.Request("POST", "https://api.deepseek.com/chat/completions")
+    return cls("boom", response=httpx.Response(status, request=req), body=None)
+
+
+def _patch_openai_boom(monkeypatch, exc: Exception) -> None:
+    """openai.OpenAI 换成假客户端：create 必抛 exc。exc 是 openai 的异常实例。"""
+
+    class _BoomCompletions:
+        def create(self, **_kwargs: Any) -> Any:
+            raise exc
+
+    class _BoomClient:
+        def __init__(self, **_kwargs: Any) -> None:
+            self.chat = SimpleNamespace(completions=_BoomCompletions())
+
+    monkeypatch.setattr(openai, "OpenAI", _BoomClient)
 
 
 def test_usage_snapshot_is_last_call_not_a_sum() -> None:
@@ -57,3 +98,55 @@ def test_stream_chat_error_points_to_settings(monkeypatch, tmp_path: Path) -> No
     assert events[0]["type"] == "error"
     assert "设置 → Socrates Pen" in events[0]["message"]
     assert "环境变量" not in events[0]["message"]
+
+
+def test_provider_error_message_maps_common_failures() -> None:
+    auth = provider_error_message(_status_exc(openai.AuthenticationError, 401))
+    assert "设置" in auth and "API Key" in auth
+    denied = provider_error_message(_status_exc(openai.PermissionDeniedError, 403))
+    assert "设置" in denied and "API Key" in denied
+    bad = provider_error_message(_status_exc(openai.BadRequestError, 400))
+    assert "Thinking" in bad and "off" in bad
+    req = httpx.Request("POST", "https://api.deepseek.com/chat/completions")
+    conn = provider_error_message(openai.APIConnectionError(request=req))
+    assert "Base URL" in conn
+    timeout = provider_error_message(openai.APITimeoutError(request=req))
+    assert "Base URL" in timeout
+    assert "Base URL" in provider_error_message(OSError(" refused"))
+    assert "Base URL" in provider_error_message(TimeoutError())
+    other = provider_error_message(_status_exc(openai.RateLimitError, 429))
+    assert "RateLimitError" in other
+    assert "sk-secret-do-not-leak" not in other
+
+
+def test_stream_chat_auth_error_yields_error_event(monkeypatch, tmp_path: Path) -> None:
+    _patch_openai_boom(monkeypatch, _status_exc(openai.AuthenticationError, 401))
+    sess = PenSession(session_id="s" * 32, handbook_id="demo")
+    book = tmp_path / "book.md"
+    book.write_text("# x\n", encoding="utf-8")
+    events = list(stream_chat(sess, book, "packet", llm=_cfg()))
+    errors = [e for e in events if e["type"] == "error"]
+    assert len(errors) == 1
+    assert "设置" in errors[0]["message"] and "API Key" in errors[0]["message"]
+    assert "sk-secret-do-not-leak" not in errors[0]["message"]
+
+
+def test_stream_chat_thinking_rejected_points_to_off(monkeypatch, tmp_path: Path) -> None:
+    _patch_openai_boom(monkeypatch, _status_exc(openai.BadRequestError, 400))
+    sess = PenSession(session_id="s" * 32, handbook_id="demo")
+    book = tmp_path / "book.md"
+    book.write_text("# x\n", encoding="utf-8")
+    events = list(stream_chat(sess, book, "packet", llm=_cfg()))
+    errors = [e for e in events if e["type"] == "error"]
+    assert len(errors) == 1
+    assert "Thinking" in errors[0]["message"]
+
+
+def test_propose_fold_md_provider_error_raises_runtime_error(monkeypatch) -> None:
+    _patch_openai_boom(monkeypatch, _status_exc(openai.AuthenticationError, 401))
+    sess = PenSession(session_id="s" * 32, handbook_id="demo")
+    sess.last_assistant = "讲了一段。"
+    with pytest.raises(ProviderError, match="API Key") as excinfo:
+        propose_fold_md(sess, llm=_cfg())
+    assert isinstance(excinfo.value, RuntimeError)
+    assert "sk-secret-do-not-leak" not in str(excinfo.value)

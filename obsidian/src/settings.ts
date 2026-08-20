@@ -41,7 +41,7 @@ export function llmPayload(s: PenSettings): {
 
 type PenHost = Plugin & {
   settings: PenSettings;
-  saveSettings: () => Promise<void>;
+  saveSettingsSoon: () => void;
 };
 
 export class PenSettingTab extends PluginSettingTab {
@@ -71,9 +71,9 @@ export class PenSettingTab extends PluginSettingTab {
         t.inputEl.autocomplete = "off";
         t.setPlaceholder("sk-…")
           .setValue(this.plugin.settings.apiKey)
-          .onChange(async (v) => {
+          .onChange((v) => {
             this.plugin.settings.apiKey = v.trim();
-            await this.plugin.saveSettings();
+            this.plugin.saveSettingsSoon();
           });
       });
 
@@ -84,9 +84,9 @@ export class PenSettingTab extends PluginSettingTab {
         t
           .setPlaceholder("https://api.deepseek.com")
           .setValue(this.plugin.settings.baseUrl)
-          .onChange(async (v) => {
+          .onChange((v) => {
             this.plugin.settings.baseUrl = (v.trim().replace(/\/+$/, "") || DEFAULT_SETTINGS.baseUrl);
-            await this.plugin.saveSettings();
+            this.plugin.saveSettingsSoon();
           }),
       );
 
@@ -97,9 +97,9 @@ export class PenSettingTab extends PluginSettingTab {
         t
           .setPlaceholder("deepseek-v4-flash")
           .setValue(this.plugin.settings.model)
-          .onChange(async (v) => {
+          .onChange((v) => {
             this.plugin.settings.model = v.trim() || DEFAULT_SETTINGS.model;
-            await this.plugin.saveSettings();
+            this.plugin.saveSettingsSoon();
           }),
       );
 
@@ -112,22 +112,22 @@ export class PenSettingTab extends PluginSettingTab {
           .addOption("medium", "medium")
           .addOption("high", "high")
           .setValue(coerceThinking(this.plugin.settings.thinking))
-          .onChange(async (v) => {
+          .onChange((v) => {
             this.plugin.settings.thinking = coerceThinking(v);
-            await this.plugin.saveSettings();
+            this.plugin.saveSettingsSoon();
           });
       });
 
     new Setting(containerEl)
       .setName("Sidecar URL")
-      .setDesc("本机笔的地址。一般不用改。先在仓库根跑：python -m pen --host 127.0.0.1 --port 8765")
+      .setDesc("本机点读笔地址。一般不用改。先在本机终端运行：python -m pen --host 127.0.0.1 --port 8765")
       .addText((t) =>
         t
           .setPlaceholder("http://127.0.0.1:8765")
           .setValue(this.plugin.settings.sidecarUrl)
-          .onChange(async (v) => {
+          .onChange((v) => {
             this.plugin.settings.sidecarUrl = v.trim() || DEFAULT_SETTINGS.sidecarUrl;
-            await this.plugin.saveSettings();
+            this.plugin.saveSettingsSoon();
           }),
       );
   }

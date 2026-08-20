@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
+import openai
 from fastapi.testclient import TestClient
 
 from pen import config, gitops, libraries, snapshots
@@ -241,6 +245,151 @@ def test_chat_forwards_settings_overrides(monkeypatch) -> None:
     assert seen["llm"] is not None
     assert seen["llm"].api_key == "sk-from-page"
     assert seen["llm"].thinking == "medium"
+
+
+def test_chat_forwards_stored_allow_root(tmp_path: Path, monkeypatch) -> None:
+    _isolate_pen(tmp_path, monkeypatch)
+    monkeypatch.delenv("PEN_ALLOW_ROOTS", raising=False)
+    book = tmp_path / "mini.md"
+    book.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+    q1 = next(
+        i
+        for i, ln in enumerate(book.read_text(encoding="utf-8").splitlines(), 1)
+        if ln.startswith("**Q1. shell")
+    )
+    seen: dict = {}
+
+    def fake_stream(sess, path, packet, llm=None, extra_roots=None):
+        seen["extra_roots"] = extra_roots
+        yield {
+            "type": "done",
+            "usage": {"context_tokens": 1, "completion_tokens": 1, "prompt_tokens": 1},
+            "dynamic_chips": [],
+            "has_substantive": False,
+        }
+
+    monkeypatch.setattr("pen.app.stream_chat", fake_stream)
+    with TestClient(app) as client:
+        imported = client.post(
+            "/v1/handbooks/import",
+            json={
+                "original_path": str(book),
+                "handbook_id": "mini-root",
+                "vault_root": str(tmp_path),
+            },
+        )
+        assert imported.status_code == 200
+        sid = client.post("/v1/sessions", json={"handbook_id": "mini-root"}).json()["session_id"]
+        resp = client.post(
+            "/v1/chat",
+            json={
+                "session_id": sid,
+                "selected_text": "shell 和 Bash",
+                "start_line": q1,
+                "end_line": q1,
+                "chip": "socratic",
+                "user_text": "",
+            },
+        )
+        assert resp.status_code == 200
+    roots = [Path(r).expanduser().resolve() for r in seen["extra_roots"]]
+    assert tmp_path.resolve() in roots
+
+
+def test_chat_stream_raise_yields_error_and_records_not_ok(tmp_path: Path, monkeypatch) -> None:
+    from pen.tutor import ProviderError
+
+    _isolate_pen(tmp_path, monkeypatch)
+
+    def boom_stream(sess, path, packet, llm=None, extra_roots=None):
+        raise ProviderError("节点不收这把钥匙。请到设置 → Socrates Pen 检查 API Key。")
+        yield  # 只是为了让本函数成为生成器：第一次 next 才抛
+
+    monkeypatch.setattr("pen.app.stream_chat", boom_stream)
+    text = DEFAULT_HANDBOOK.read_text(encoding="utf-8").splitlines()
+    line = next(i for i, ln in enumerate(text, 1) if ln.startswith("**Q1. shell 和 Bash"))
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        resp = client.post(
+            "/v1/chat",
+            json={
+                "session_id": sid,
+                "selected_text": "shell 和 Bash",
+                "start_line": line,
+                "end_line": line,
+                "chip": "socratic",
+                "user_text": "",
+            },
+        )
+        assert resp.status_code == 200
+        assert '"type": "error"' in resp.text
+        assert "API Key" in resp.text
+    turns = [
+        json.loads(raw)
+        for raw in (tmp_path / "trajectories" / "swe-agent-v2.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if raw.strip()
+    ]
+    assert turns[-1]["ok"] is False
+
+
+def test_propose_provider_error_becomes_400(tmp_path: Path, monkeypatch) -> None:
+    import httpx
+
+    _isolate_pen(tmp_path, monkeypatch)
+    monkeypatch.delenv("PEN_ALLOW_ROOTS", raising=False)
+    book = tmp_path / "mini.md"
+    book.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+    q1 = next(
+        i
+        for i, ln in enumerate(book.read_text(encoding="utf-8").splitlines(), 1)
+        if ln.startswith("**Q1. shell")
+    )
+    req = httpx.Request("POST", "https://api.deepseek.com/chat/completions")
+    auth_exc = openai.AuthenticationError(
+        "bad key", response=httpx.Response(401, request=req), body=None
+    )
+
+    class _BoomCompletions:
+        def create(self, **_kwargs: Any) -> Any:
+            raise auth_exc
+
+    class _BoomClient:
+        def __init__(self, **_kwargs: Any) -> None:
+            self.chat = SimpleNamespace(completions=_BoomCompletions())
+
+    monkeypatch.setattr(openai, "OpenAI", _BoomClient)
+    with TestClient(app) as client:
+        imported = client.post(
+            "/v1/handbooks/import",
+            json={
+                "original_path": str(book),
+                "handbook_id": "mini-propose",
+                "vault_root": str(tmp_path),
+            },
+        )
+        assert imported.status_code == 200
+        sid = client.post("/v1/sessions", json={"handbook_id": "mini-propose"}).json()["session_id"]
+        sess = STORE.get(sid)
+        sess.last_assistant = "x" * 90
+        sess.last_anchor = {
+            "start_line": q1,
+            "end_line": q1,
+            "selected_text": "shell",
+            "kind": "q",
+            "level": "Level 0",
+            "q_title": "**Q1. shell 和 Bash 是什么关系？**",
+        }
+        STORE.save(sess)
+        proposed = client.post(
+            "/v1/writeback/propose",
+            json={"session_id": sid, "api_key": "sk-from-page"},
+        )
+        assert proposed.status_code == 400
+        assert "设置" in proposed.json()["detail"]
+        assert "API Key" in proposed.json()["detail"]
+        assert "sk-from-page" not in proposed.json()["detail"]
 
 
 def test_import_rejects_arbitrary_and_unsafe_ids(tmp_path: Path, monkeypatch) -> None:

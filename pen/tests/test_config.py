@@ -94,3 +94,52 @@ def test_merge_llm_request_wins_and_key_alone_works(tmp_path: Path, monkeypatch)
     assert mixed.thinking == "off"
     assert mixed.key_source == "DEEPSEEK_API_KEY"
     assert mixed.base_url == "https://api.deepseek.com"
+
+
+def _clear_llm_env(monkeypatch) -> None:
+    for name in ("OPENAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_BASE_URL", "MODEL_NAME"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_merge_llm_same_host_model_override_keeps_env_key(tmp_path: Path, monkeypatch) -> None:
+    _clear_llm_env(monkeypatch)
+    envf = tmp_path / ".env"
+    envf.write_text("DEEPSEEK_API_KEY=sk-env\n", encoding="utf-8")
+    cfg = merge_llm(
+        base_url="https://api.deepseek.com",
+        model="deepseek-reasoner",
+        env_file=envf,
+    )
+    assert cfg is not None
+    assert cfg.api_key == "sk-env"
+    assert cfg.base_url == "https://api.deepseek.com"
+    assert cfg.model == "deepseek-reasoner"
+    assert cfg.key_source == "DEEPSEEK_API_KEY"
+    with_userinfo = merge_llm(
+        base_url="https://user:pass@api.deepseek.com/v1",
+        env_file=envf,
+    )
+    assert with_userinfo is not None
+    assert with_userinfo.api_key == "sk-env"
+
+
+def test_merge_llm_different_host_without_request_key_returns_none(tmp_path: Path, monkeypatch) -> None:
+    _clear_llm_env(monkeypatch)
+    envf = tmp_path / ".env"
+    envf.write_text("DEEPSEEK_API_KEY=sk-env\n", encoding="utf-8")
+    assert merge_llm(base_url="https://api.openai.com/v1", env_file=envf) is None
+
+
+def test_merge_llm_different_host_with_request_key_uses_request_key(tmp_path: Path, monkeypatch) -> None:
+    _clear_llm_env(monkeypatch)
+    envf = tmp_path / ".env"
+    envf.write_text("DEEPSEEK_API_KEY=sk-env\n", encoding="utf-8")
+    cfg = merge_llm(
+        api_key="sk-from-page",
+        base_url="https://api.openai.com/v1",
+        env_file=envf,
+    )
+    assert cfg is not None
+    assert cfg.api_key == "sk-from-page"
+    assert cfg.base_url == "https://api.openai.com/v1"
+    assert cfg.key_source == "settings"

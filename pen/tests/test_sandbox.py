@@ -81,3 +81,29 @@ def test_handbook_path_extra_roots_without_env(tmp_path: Path, monkeypatch) -> N
     missing = tmp_path / "not-a-dir"
     with pytest.raises(SandboxError, match="不是目录"):
         parse_vault_root(str(missing))
+
+
+def test_read_blocks_obsidian_but_allows_plain_data_json(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "notes" / "book.md"
+    plain = vault / "notes" / "data.json"
+    plugin_data = vault / ".obsidian" / "plugins" / "socrates-pen" / "data.json"
+    note.parent.mkdir(parents=True)
+    plugin_data.parent.mkdir(parents=True)
+    note.write_text("# vault 里的手册\n", encoding="utf-8")
+    plain.write_text("{}\n", encoding="utf-8")
+    plugin_data.write_text('{"key": "sk-x"}\n', encoding="utf-8")
+    assert assert_readable(note, plain, extra_roots=[vault]) == plain.resolve()
+    with pytest.raises(SandboxError, match="受保护"):
+        assert_readable(note, plugin_data, extra_roots=[vault])
+    with pytest.raises(SandboxError, match="受保护"):
+        assert_readable(note, "../.obsidian/plugins/socrates-pen/data.json")
+
+
+def test_handbook_path_rejects_book_under_obsidian(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    obs_book = vault / ".obsidian" / "book.md"
+    obs_book.parent.mkdir(parents=True)
+    obs_book.write_text("# x\n", encoding="utf-8")
+    with pytest.raises(SandboxError, match="受保护"):
+        assert_handbook_path(obs_book, extra_roots=[vault])
