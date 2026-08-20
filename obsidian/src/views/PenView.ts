@@ -10,6 +10,13 @@ function visibleReply(text: string): string {
   return text.replace(/<!--pen:chips[\s\S]*?-->/g, "").trim();
 }
 
+function toolCaption(m: ChatMessage): { ok: boolean; file: string } {
+  const ok = m.ok !== false;
+  const path = m.text.split("→").slice(1).join("→").trim();
+  const file = path.split("/").filter(Boolean).pop() || (path || "（无路径）");
+  return { ok, file };
+}
+
 export class PenView extends ItemView {
   plugin: SocratesPenPlugin;
   private status = "";
@@ -145,9 +152,35 @@ export class PenView extends ItemView {
         }
         for (const m of this.msgs) {
           if (g !== this.paintGen || !this.logEl) break;
-          const el = log.createDiv({ cls: `sp-bubble is-${m.role}` });
-          const src = m.role === "assistant" ? visibleReply(m.text) : m.text;
-          await MarkdownRenderer.render(this.app, src || " ", el, "/", this);
+          if (m.role === "tool") {
+            const cap = toolCaption(m);
+            const row = log.createDiv({
+              cls: cap.ok ? "sp-tool" : "sp-tool is-bad",
+            });
+            row.createSpan({ cls: "sp-kicker", text: "翻手册" });
+            row.createSpan({
+              cls: "sp-tool-msg",
+              text: `${cap.ok ? "成功" : "拒绝"} · ${cap.file}`,
+            });
+            continue;
+          }
+          const turn = log.createDiv({ cls: `sp-turn is-${m.role}` });
+          turn.createDiv({
+            cls: "sp-kicker",
+            text: m.role === "user" ? "你" : "点读笔",
+          });
+          const body = turn.createDiv({ cls: "sp-body" });
+          if (m.role === "user") {
+            body.setText(m.text);
+          } else {
+            await MarkdownRenderer.render(
+              this.app,
+              visibleReply(m.text) || " ",
+              body,
+              "/",
+              this,
+            );
+          }
         }
         if (g === this.paintGen && this.logEl) {
           this.logEl.scrollTop = this.logEl.scrollHeight;
@@ -161,13 +194,21 @@ export class PenView extends ItemView {
   }
 
   private paintStreamBubble(text: string): void {
-    // 流式期间只刷最后一条助手气泡；全量 markdown 重绘留给 done/finally
-    if (!this.logEl) return;
-    let el = this.logEl.lastElementChild as HTMLElement | null;
-    if (!el?.hasClass("is-assistant")) {
-      el = this.logEl.createDiv({ cls: "sp-bubble is-assistant" });
+    // 流式只刷最后一条助手正文；全量 markdown 重绘留给 done/finally
+    if (!this.logEl || this.painting) return;
+    let turn = this.logEl.lastElementChild as HTMLElement | null;
+    while (turn && !turn.hasClass("is-assistant")) {
+      turn = turn.previousElementSibling as HTMLElement | null;
     }
-    el.setText(visibleReply(text) || "…");
+    if (!turn) {
+      turn = this.logEl.createDiv({ cls: "sp-turn is-assistant" });
+      turn.createDiv({ cls: "sp-kicker", text: "点读笔" });
+      turn.createDiv({ cls: "sp-body" });
+    }
+    const body =
+      (turn.querySelector(".sp-body") as HTMLElement | null) ??
+      turn.createDiv({ cls: "sp-body" });
+    body.setText(visibleReply(text) || "…");
     this.logEl.scrollTop = this.logEl.scrollHeight;
   }
 

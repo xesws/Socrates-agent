@@ -6,11 +6,11 @@
 }
 
 .socrates-pen .sp-bar {
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--background-modifier-border);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .socrates-pen .sp-health,
@@ -32,9 +32,14 @@
 
 .socrates-pen .sp-quote {
   border-left: 3px solid var(--text-accent);
-  padding: 6px 8px;
+  padding: 4px 8px;
   color: var(--text-muted);
   background: var(--background-secondary);
+  font-size: 12px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .socrates-pen .sp-actions,
@@ -57,28 +62,121 @@
 .socrates-pen .sp-log {
   flex: 1;
   overflow: auto;
-  padding: 10px 12px;
-}
-
-.socrates-pen .sp-bubble {
-  margin: 0 0 10px;
   padding: 8px 10px;
-  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.socrates-pen .sp-kicker {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  line-height: 1.2;
+  margin-bottom: 2px;
+}
+
+.socrates-pen .sp-turn.is-user {
+  align-self: flex-end;
+  max-width: 92%;
+}
+
+.socrates-pen .sp-turn.is-user .sp-kicker {
+  text-align: right;
+}
+
+.socrates-pen .sp-turn.is-user .sp-body {
+  background: var(--background-primary-alt);
+  border-right: 3px solid var(--text-accent);
+  padding: 5px 8px;
+  border-radius: 6px 2px 6px 6px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.socrates-pen .sp-turn.is-assistant .sp-body {
   background: var(--background-secondary);
+  border-left: 3px solid var(--interactive-accent);
+  padding: 6px 10px;
+  border-radius: 2px 6px 6px 6px;
+  line-height: 1.45;
 }
 
-.socrates-pen .sp-bubble.is-user {
-  border-right: 2px solid var(--text-accent);
+.socrates-pen .sp-turn.is-assistant .sp-body p {
+  margin: 0 0 0.35em;
 }
 
-.socrates-pen .sp-bubble.is-assistant {
-  border-left: 2px solid var(--interactive-accent);
+.socrates-pen .sp-turn.is-assistant .sp-body p:last-child {
+  margin-bottom: 0;
 }
 
-.socrates-pen .sp-bubble.is-tool {
+.socrates-pen .sp-turn.is-assistant .sp-body h1,
+.socrates-pen .sp-turn.is-assistant .sp-body h2 {
+  font-size: 14px;
+  margin: 0.55em 0 0.2em;
+}
+
+.socrates-pen .sp-turn.is-assistant .sp-body h3,
+.socrates-pen .sp-turn.is-assistant .sp-body h4 {
+  font-size: 13px;
+  margin: 0.45em 0 0.15em;
+}
+
+.socrates-pen .sp-turn.is-assistant .sp-body ul,
+.socrates-pen .sp-turn.is-assistant .sp-body ol {
+  margin: 0.15em 0 0.4em;
+  padding-left: 1.15em;
+}
+
+.socrates-pen .sp-turn.is-assistant .sp-body li {
+  margin: 0.05em 0;
+}
+
+.socrates-pen .sp-turn.is-assistant .sp-body pre,
+.socrates-pen .sp-turn.is-assistant .sp-body table {
+  font-size: 12px;
+  margin: 0.3em 0 0.45em;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.socrates-pen .sp-turn.is-assistant .sp-body blockquote {
+  margin: 0.3em 0 0.4em;
+  padding-left: 0.7em;
+}
+
+.socrates-pen .sp-turn.is-assistant .sp-body > :last-child {
+  margin-bottom: 0;
+}
+
+.socrates-pen .sp-tool-msg {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.socrates-pen .sp-tool {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
   font-family: var(--font-monospace);
   font-size: 11px;
-  opacity: 0.85;
+  color: var(--text-muted);
+  padding: 1px 0 3px;
+  border-bottom: 1px dashed var(--background-modifier-border);
+}
+
+.socrates-pen .sp-tool .sp-kicker {
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.socrates-pen .sp-tool.is-bad {
+  color: var(--text-error);
+  border-bottom-color: var(--text-error);
 }
 
 .socrates-pen .sp-preview pre {
