@@ -1,3 +1,5 @@
+import type { PenSettings } from "./settings";
+import { llmPayload } from "./settings";
 import type { HandbookMeta, LlmStatus, Proposal, SessionView } from "./types";
 
 function joinUrl(base: string, path: string): string {
@@ -25,10 +27,10 @@ async function j<T>(base: string, path: string, init?: RequestInit): Promise<T> 
 export function makeApi(baseUrl: string) {
   return {
     health: () => j<{ status: string; llm: LlmStatus }>(baseUrl, "/v1/health"),
-    importHandbook: (original_path: string, handbook_id: string) =>
+    importHandbook: (original_path: string, handbook_id: string, vault_root?: string) =>
       j<HandbookMeta>(baseUrl, "/v1/handbooks/import", {
         method: "POST",
-        body: JSON.stringify({ original_path, handbook_id }),
+        body: JSON.stringify({ original_path, handbook_id, vault_root }),
       }),
     createSession: (handbook_id: string, session_id?: string) =>
       j<SessionView>(baseUrl, "/v1/sessions", {
@@ -37,10 +39,13 @@ export function makeApi(baseUrl: string) {
       }),
     getSession: (session_id: string) =>
       j<SessionView>(baseUrl, `/v1/sessions/${session_id}`),
-    propose: (session_id: string) =>
+    propose: (session_id: string, settings?: PenSettings) =>
       j<Proposal>(baseUrl, "/v1/writeback/propose", {
         method: "POST",
-        body: JSON.stringify({ session_id }),
+        body: JSON.stringify({
+          session_id,
+          ...(settings ? llmPayload(settings) : {}),
+        }),
       }),
   };
 }
@@ -56,11 +61,15 @@ export async function streamChat(
     user_text: string;
   },
   onEvent: (ev: Record<string, unknown>) => void,
+  settings?: PenSettings,
 ): Promise<void> {
   const res = await fetch(joinUrl(baseUrl, "/v1/chat"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      ...body,
+      ...(settings ? llmPayload(settings) : {}),
+    }),
   });
   if (!res.ok || !res.body) {
     let detail = res.statusText;

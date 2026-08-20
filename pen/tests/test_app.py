@@ -103,6 +103,146 @@ def test_search_is_friendly_sse_and_skips_trajectory(tmp_path, monkeypatch) -> N
         assert sess.ui_messages == []
 
 
+def test_import_vault_root_without_env(tmp_path: Path, monkeypatch) -> None:
+    _isolate_pen(tmp_path, monkeypatch)
+    monkeypatch.delenv("PEN_ALLOW_ROOTS", raising=False)
+    book = tmp_path / "mini.md"
+    book.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+    with TestClient(app) as client:
+        denied = client.post(
+            "/v1/handbooks/import",
+            json={"original_path": str(book), "handbook_id": "mini-vault"},
+        )
+        assert denied.status_code == 400
+        assert "允许的根" in denied.json()["detail"]
+        rooted = client.post(
+            "/v1/handbooks/import",
+            json={
+                "original_path": str(book),
+                "handbook_id": "mini-vault",
+                "vault_root": str(tmp_path),
+            },
+        )
+        assert rooted.status_code == 200
+        assert rooted.json()["handbook_id"] == "mini-vault"
+        assert rooted.json()["allow_root"] == str(tmp_path.resolve())
+        text = client.get("/v1/handbooks/mini-vault/content")
+        assert text.status_code == 200
+        assert "Q1. shell" in text.json()["text"]
+        slash = client.post(
+            "/v1/handbooks/import",
+            json={
+                "original_path": str(book),
+                "handbook_id": "slash",
+                "vault_root": "/",
+            },
+        )
+        assert slash.status_code == 400
+        assert "文件系统根" in slash.json()["detail"]
+
+
+def test_apply_uses_stored_allow_root(tmp_path: Path, monkeypatch) -> None:
+    _isolate_pen(tmp_path, monkeypatch)
+    monkeypatch.delenv("PEN_ALLOW_ROOTS", raising=False)
+    book = tmp_path / "mini.md"
+    book.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+    q1 = next(
+        i
+        for i, ln in enumerate(book.read_text(encoding="utf-8").splitlines(), 1)
+        if ln.startswith("**Q1. shell")
+    )
+    monkeypatch.setattr("pen.app.propose_fold_md", lambda _sess, llm=None: FOLD)
+    with TestClient(app) as client:
+        imported = client.post(
+            "/v1/handbooks/import",
+            json={
+                "original_path": str(book),
+                "handbook_id": "mini-stored",
+                "vault_root": str(tmp_path),
+            },
+        )
+        assert imported.status_code == 200
+        sid = client.post("/v1/sessions", json={"handbook_id": "mini-stored"}).json()["session_id"]
+        sess = STORE.get(sid)
+        sess.last_assistant = "x" * 90
+        sess.last_anchor = {
+            "start_line": q1,
+            "end_line": q1,
+            "selected_text": "shell",
+            "kind": "q",
+            "level": "Level 0",
+            "q_title": "**Q1. shell 和 Bash 是什么关系？**",
+        }
+        STORE.save(sess)
+        proposed = client.post("/v1/writeback/propose", json={"session_id": sid})
+        assert proposed.status_code == 200
+        applied = client.post(
+            "/v1/writeback/apply",
+            json={
+                "session_id": sid,
+                "proposal_id": proposed.json()["proposal_id"],
+                "commit": False,
+            },
+        )
+        assert applied.status_code == 200
+        assert "点读笔补的例子" in book.read_text(encoding="utf-8")
+
+
+def test_chat_forwards_settings_overrides(monkeypatch) -> None:
+    from pen.config import LLMConfig
+
+    seen: dict = {}
+
+    def fake_merge(**kw):
+        seen["merge"] = kw
+        return LLMConfig(
+            base_url=kw.get("base_url") or "https://example.invalid/v1",
+            api_key=kw.get("api_key") or "sk-test",
+            model=kw.get("model") or "demo-model",
+            key_source="settings",
+            thinking=kw.get("thinking") or "off",
+        )
+
+    def fake_stream(sess, path, packet, llm=None):
+        seen["llm"] = llm
+        yield {
+            "type": "done",
+            "usage": {"context_tokens": 1, "completion_tokens": 1, "prompt_tokens": 1},
+            "dynamic_chips": [],
+            "has_substantive": False,
+        }
+
+    monkeypatch.setattr("pen.app.merge_llm", fake_merge)
+    monkeypatch.setattr("pen.app.stream_chat", fake_stream)
+    text = DEFAULT_HANDBOOK.read_text(encoding="utf-8").splitlines()
+    line = next(i for i, ln in enumerate(text, 1) if ln.startswith("**Q1. shell 和 Bash"))
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        resp = client.post(
+            "/v1/chat",
+            json={
+                "session_id": sid,
+                "selected_text": "shell 和 Bash",
+                "start_line": line,
+                "end_line": line,
+                "chip": "socratic",
+                "user_text": "",
+                "api_key": "sk-from-page",
+                "base_url": "https://api.openai.com/v1",
+                "model": "gpt-4.1-mini",
+                "thinking": "medium",
+            },
+        )
+        assert resp.status_code == 200
+    assert seen["merge"]["api_key"] == "sk-from-page"
+    assert seen["merge"]["base_url"] == "https://api.openai.com/v1"
+    assert seen["merge"]["model"] == "gpt-4.1-mini"
+    assert seen["merge"]["thinking"] == "medium"
+    assert seen["llm"] is not None
+    assert seen["llm"].api_key == "sk-from-page"
+    assert seen["llm"].thinking == "medium"
+
+
 def test_import_rejects_arbitrary_and_unsafe_ids(tmp_path: Path, monkeypatch) -> None:
     _isolate_pen(tmp_path, monkeypatch)
     outsider = tmp_path / "secret.md"
@@ -159,7 +299,7 @@ def test_apply_commit_failure_consumes_proposal(tmp_path: Path, monkeypatch) -> 
     book = tmp_path / "mini.md"
     book.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
     q1 = next(i for i, ln in enumerate(book.read_text(encoding="utf-8").splitlines(), 1) if ln.startswith("**Q1. shell"))
-    monkeypatch.setattr("pen.app.propose_fold_md", lambda _sess: FOLD)
+    monkeypatch.setattr("pen.app.propose_fold_md", lambda _sess, llm=None: FOLD)
 
     def boom(_path, _msg):
         raise gitops.GitError("gpg failed")

@@ -48,14 +48,29 @@ def resolve_existing_or_new(path: str | Path) -> Path:
     return Path(path).expanduser().resolve()
 
 
-def assert_handbook_path(path: str | Path) -> Path:
+def parse_vault_root(raw: str | None) -> list[Path]:
+    """请求体带来的库根。空 → 不加。拒绝文件系统根与非目录。"""
+    if raw is None or not str(raw).strip():
+        return []
+    p = Path(str(raw).strip()).expanduser().resolve()
+    if p == p.parent:
+        raise SandboxError("vault_root 不能是文件系统根")
+    if not p.is_dir():
+        raise SandboxError(f"vault_root 不是目录：{p}")
+    return [p]
+
+
+def assert_handbook_path(
+    path: str | Path,
+    extra_roots: list[Path] | None = None,
+) -> Path:
     """登记和写回共用：必须是允许根下的 Markdown，且不是 .env / .git。"""
     got = Path(path).expanduser().resolve()
     if got.name == ".env" or ".git" in got.parts:
         raise SandboxError(f"拒绝受保护路径：{got}")
     if got.suffix.lower() not in HANDBOOK_SUFFIXES:
         raise SandboxError(f"只接受 Markdown 教材（.md / .markdown）：{got}")
-    roots = handbook_allow_roots()
+    roots = handbook_allow_roots(extra_roots=extra_roots)
     if not any(got == root or root in got.parents for root in roots):
         raise SandboxError(f"教材不在允许的根内：{got}")
     return got

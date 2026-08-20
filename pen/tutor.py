@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from pen.config import REPO_ROOT, resolve_llm
+from pen.config import LLMConfig, REPO_ROOT, resolve_llm
 from pen.index import HandbookIndex, neighborhood
 from pen.readtool import read_file_report
 from pen.session import PenSession
@@ -145,14 +145,39 @@ def _finish_text(session: PenSession, raw: str, usage: dict[str, int]) -> Iterat
     }
 
 
-def stream_chat(session: PenSession, original_path: Path, user_packet: str) -> Iterator[dict[str, Any]]:
-    cfg = resolve_llm()
+def llm_create_kwargs(
+    cfg: LLMConfig,
+    *,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """组 chat.completions.create 参数。thinking=off 不加推理字段。"""
+    kwargs: dict[str, Any] = {
+        "model": cfg.model,
+        "messages": messages,
+        "stream": False,
+    }
+    if tools:
+        kwargs["tools"] = tools
+    if cfg.thinking != "off":
+        kwargs["reasoning_effort"] = cfg.thinking
+        kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+    return kwargs
+
+
+def stream_chat(
+    session: PenSession,
+    original_path: Path,
+    user_packet: str,
+    llm: LLMConfig | None = None,
+) -> Iterator[dict[str, Any]]:
+    cfg = llm or resolve_llm()
     if cfg is None:
         yield {
             "type": "error",
             "message": (
-                "找不到模型配置。请在仓库根 .env 写入 DEEPSEEK_API_KEY，"
-                "或 export OPENAI_BASE_URL / OPENAI_API_KEY / MODEL_NAME（DeepSeek）。"
+                "找不到模型配置。请到 Obsidian 设置 → Socrates Pen 填写 API Key，"
+                "或给本机 sidecar 留一份开发用 .env（DEEPSEEK_API_KEY / OPENAI_API_KEY）。"
             ),
         }
         return
@@ -167,13 +192,11 @@ def stream_chat(session: PenSession, original_path: Path, user_packet: str) -> I
     usage = usage_snapshot(0, 0)
 
     def _create(*, with_tools: bool) -> Any:
-        kwargs: dict[str, Any] = {
-            "model": cfg.model,
-            "messages": session.messages,
-            "stream": False,
-        }
-        if with_tools:
-            kwargs["tools"] = tools
+        kwargs = llm_create_kwargs(
+            cfg,
+            messages=session.messages,
+            tools=tools if with_tools else None,
+        )
         resp = client.chat.completions.create(**kwargs)
         if resp.usage:
             usage.update(
@@ -264,10 +287,12 @@ def stream_chat(session: PenSession, original_path: Path, user_packet: str) -> I
     yield from _finish_text(session, raw, usage)
 
 
-def propose_fold_md(session: PenSession) -> str:
-    cfg = resolve_llm()
+def propose_fold_md(session: PenSession, llm: LLMConfig | None = None) -> str:
+    cfg = llm or resolve_llm()
     if cfg is None:
-        raise RuntimeError("找不到模型配置，无法生成折叠块")
+        raise RuntimeError(
+            "找不到模型配置，无法生成折叠块。请到设置 → Socrates Pen 填写 API Key。"
+        )
     from openai import OpenAI
 
     client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key, timeout=120.0)
@@ -282,10 +307,12 @@ def propose_fold_md(session: PenSession) -> str:
 {session.last_assistant}
 """
     resp = client.chat.completions.create(
-        model=cfg.model,
-        messages=[
-            {"role": "system", "content": "你只输出一个合法的 <details> Markdown 块。"},
-            {"role": "user", "content": prompt},
-        ],
+        **llm_create_kwargs(
+            cfg,
+            messages=[
+                {"role": "system", "content": "你只输出一个合法的 <details> Markdown 块。"},
+                {"role": "user", "content": prompt},
+            ],
+        )
     )
     return (resp.choices[0].message.content or "").strip()

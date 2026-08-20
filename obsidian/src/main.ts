@@ -1,6 +1,11 @@
 import { Notice, Plugin } from "obsidian";
 import { makeApi } from "./api";
-import { DEFAULT_SETTINGS, PenSettingTab, type PenSettings } from "./settings";
+import {
+  coerceThinking,
+  DEFAULT_SETTINGS,
+  PenSettingTab,
+  type PenSettings,
+} from "./settings";
 import type { NoteBinding } from "./types";
 import { PenView, VIEW_TYPE_PEN } from "./views/PenView";
 
@@ -65,6 +70,7 @@ export default class SocratesPenPlugin extends Plugin {
   async loadSettings(): Promise<void> {
     const raw = ((await this.loadData()) || {}) as PluginData;
     this.settings = { ...DEFAULT_SETTINGS, ...(raw.settings || {}) };
+    this.settings.thinking = coerceThinking(this.settings.thinking);
     this.notes = raw.notes || {};
   }
 
@@ -77,7 +83,7 @@ export default class SocratesPenPlugin extends Plugin {
       await makeApi(this.settings.sidecarUrl).health();
       return true;
     } catch {
-      new Notice("sidecar 未启动。在仓库根运行 python -m pen");
+      new Notice("sidecar 未启动。在仓库根运行 python -m pen；模型在设置 → Socrates Pen 里填");
       return false;
     }
   }

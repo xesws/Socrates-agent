@@ -31,6 +31,18 @@ class HandbookMeta:
     original_path: str
     imported_at: str
     mtime: float
+    allow_root: str | None = None
+
+
+def _meta_from_dict(data: dict) -> HandbookMeta:
+    return HandbookMeta(
+        handbook_id=data["handbook_id"],
+        title=data["title"],
+        original_path=data["original_path"],
+        imported_at=data["imported_at"],
+        mtime=data["mtime"],
+        allow_root=data.get("allow_root"),
+    )
 
 
 def _require_id(handbook_id: str) -> str:
@@ -47,15 +59,33 @@ def _index_path(handbook_id: str) -> Path:
     return LIBRARIES_DIR / _require_id(handbook_id) / "index.json"
 
 
-def register(original_path: str | Path, handbook_id: str | None = None) -> HandbookMeta:
+def extra_roots_for(handbook_id: str) -> list[Path] | None:
+    meta = get(handbook_id)
+    if meta is None or not meta.allow_root:
+        return None
+    return [Path(meta.allow_root)]
+
+
+def register(
+    original_path: str | Path,
+    handbook_id: str | None = None,
+    extra_roots: list[Path] | None = None,
+) -> HandbookMeta:
     ensure_pen_dirs()
     try:
-        path = assert_handbook_path(original_path)
+        path = assert_handbook_path(original_path, extra_roots=extra_roots)
     except SandboxError as exc:
         raise RegisterError(str(exc)) from exc
     if not path.is_file():
         raise FileNotFoundError(f"找不到教材：{path}")
     hid = _require_id(handbook_id or _suggest_id(path))
+    allow_root: str | None = None
+    resolved = path.resolve()
+    for raw in extra_roots or []:
+        root = Path(raw).expanduser().resolve()
+        if resolved == root or root in resolved.parents:
+            allow_root = str(root)
+            break
     idx = build_index(path)
     meta = HandbookMeta(
         handbook_id=hid,
@@ -63,6 +93,7 @@ def register(original_path: str | Path, handbook_id: str | None = None) -> Handb
         original_path=str(path),
         imported_at=datetime.now(timezone.utc).isoformat(),
         mtime=path.stat().st_mtime,
+        allow_root=allow_root,
     )
     dest = LIBRARIES_DIR / hid
     dest.mkdir(parents=True, exist_ok=True)
@@ -87,7 +118,7 @@ def list_handbooks() -> list[HandbookMeta]:
     out: list[HandbookMeta] = []
     for meta_file in LIBRARIES_DIR.glob("*/meta.json"):
         data = json.loads(meta_file.read_text(encoding="utf-8"))
-        out.append(HandbookMeta(**data))
+        out.append(_meta_from_dict(data))
     out.sort(key=lambda m: m.imported_at)
     return out
 
@@ -99,7 +130,7 @@ def get(handbook_id: str) -> HandbookMeta | None:
         return None
     if not p.is_file():
         return None
-    return HandbookMeta(**json.loads(p.read_text(encoding="utf-8")))
+    return _meta_from_dict(json.loads(p.read_text(encoding="utf-8")))
 
 
 def load_index(handbook_id: str) -> HandbookIndex:

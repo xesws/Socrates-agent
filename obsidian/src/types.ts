@@ -55,6 +55,7 @@ export type LlmStatus = {
   base_url: string;
   model: string;
   key_source: string;
+  thinking?: string;
 };
 
 export type NoteBinding = {

@@ -20,9 +20,9 @@ from pen import libraries, snapshots
 from pen import diagnose as diagnosemod
 from pen import proposals as proposalsmod
 from pen import trajectory
-from pen.config import DEFAULT_HANDBOOK_ID, llm_public_status
+from pen.config import DEFAULT_HANDBOOK_ID, LLMConfig, llm_public_status, merge_llm
 from pen.libraries import RegisterError
-from pen.sandbox import SandboxError, assert_handbook_path
+from pen.sandbox import SandboxError, assert_handbook_path, parse_vault_root
 from pen.session import FIXED_CHIPS, STORE, chip_label
 from pen.tutor import build_user_packet, propose_fold_md, stream_chat
 
@@ -37,7 +37,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.2.3", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -55,9 +55,25 @@ app.add_middleware(
 _proposals: dict[str, dict[str, Any]] = {}
 
 
+class LlmOverrideBody(BaseModel):
+    api_key: str | None = None
+    base_url: str | None = None
+    model: str | None = None
+    thinking: str | None = None
+
+    def merged(self) -> LLMConfig | None:
+        return merge_llm(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            model=self.model,
+            thinking=self.thinking,
+        )
+
+
 class ImportBody(BaseModel):
     original_path: str
     handbook_id: str | None = None
+    vault_root: str | None = None
 
 
 class SessionBody(BaseModel):
@@ -65,7 +81,7 @@ class SessionBody(BaseModel):
     session_id: str | None = None
 
 
-class ChatBody(BaseModel):
+class ChatBody(LlmOverrideBody):
     session_id: str
     selected_text: str
     start_line: int
@@ -74,7 +90,7 @@ class ChatBody(BaseModel):
     user_text: str = ""
 
 
-class ProposeBody(BaseModel):
+class ProposeBody(LlmOverrideBody):
     session_id: str
     summary_hint: str | None = None
 
@@ -135,7 +151,12 @@ def list_handbooks() -> dict[str, Any]:
 @app.post("/v1/handbooks/import")
 def import_handbook(body: ImportBody) -> dict[str, Any]:
     try:
-        meta = libraries.register(body.original_path, body.handbook_id)
+        extra = parse_vault_root(body.vault_root)
+        meta = libraries.register(
+            body.original_path,
+            body.handbook_id,
+            extra_roots=extra or None,
+        )
     except FileNotFoundError as exc:
         raise HTTPException(400, str(exc)) from exc
     except (RegisterError, SandboxError) as exc:
@@ -159,7 +180,7 @@ def get_content(handbook_id: str) -> dict[str, Any]:
     meta = _meta_or_404(handbook_id)
     path = Path(meta.original_path)
     try:
-        assert_handbook_path(path)
+        assert_handbook_path(path, extra_roots=libraries.extra_roots_for(handbook_id))
     except SandboxError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {
@@ -246,7 +267,7 @@ def chat(body: ChatBody) -> StreamingResponse:
         ok = True
         has_sub = False
         try:
-            for ev in stream_chat(sess, path, packet):
+            for ev in stream_chat(sess, path, packet, llm=body.merged()):
                 if ev.get("type") == "done":
                     has_sub = bool(ev.get("has_substantive"))
                 elif ev.get("type") == "error":
@@ -294,7 +315,7 @@ def propose(body: ProposeBody) -> dict[str, Any]:
     idx = libraries.load_index(sess.handbook_id)
     path = Path(meta.original_path)
     try:
-        fold = propose_fold_md(sess)
+        fold = propose_fold_md(sess, llm=body.merged())
     except RuntimeError as exc:
         raise HTTPException(400, str(exc)) from exc
     try:
@@ -346,7 +367,7 @@ def apply(body: ApplyBody) -> dict[str, Any]:
         raise HTTPException(403, "提议不属于这个会话")
     path = Path(prop["original_path"])
     try:
-        assert_handbook_path(path)
+        assert_handbook_path(path, extra_roots=libraries.extra_roots_for(sess.handbook_id))
     except SandboxError as exc:
         raise HTTPException(400, str(exc)) from exc
     snap = snapshots.take_snapshot(sess.handbook_id, path, "pre-insert")
@@ -381,7 +402,7 @@ def rollback(body: RollbackBody) -> dict[str, Any]:
     meta = _meta_or_404(body.handbook_id)
     path = Path(meta.original_path)
     try:
-        assert_handbook_path(path)
+        assert_handbook_path(path, extra_roots=libraries.extra_roots_for(body.handbook_id))
     except SandboxError as exc:
         raise HTTPException(400, str(exc)) from exc
     try:

@@ -29,12 +29,16 @@ DEEPSEEK_BASE = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 
 
+THINKING_LEVELS = ("off", "low", "medium", "high")
+
+
 @dataclass(frozen=True)
 class LLMConfig:
     base_url: str
     api_key: str
     model: str
     key_source: str
+    thinking: str = "off"
 
 
 def apply_pen_home(env_file: Path | None = None) -> Path:
@@ -48,8 +52,11 @@ def apply_pen_home(env_file: Path | None = None) -> Path:
     return PEN_DIR
 
 
-def handbook_allow_roots(env_file: Path | None = None) -> list[Path]:
-    """登记/写回教材必须落在这些根之下。默认只有仓库根；PEN_ALLOW_ROOTS 追加。"""
+def handbook_allow_roots(
+    env_file: Path | None = None,
+    extra_roots: list[Path] | None = None,
+) -> list[Path]:
+    """登记/写回教材必须落在这些根之下。默认仓库根；env 与请求体 extra_roots 追加。"""
     roots = [REPO_ROOT.resolve()]
     file_vals = parse_dotenv(env_file)
     raw = (os.environ.get(ENV_ALLOW_ROOTS) or file_vals.get(ENV_ALLOW_ROOTS) or "").strip()
@@ -58,6 +65,9 @@ def handbook_allow_roots(env_file: Path | None = None) -> list[Path]:
         if not piece:
             continue
         roots.append(Path(piece).expanduser().resolve())
+    if extra_roots:
+        for piece in extra_roots:
+            roots.append(Path(piece).expanduser().resolve())
     return roots
 
 
@@ -114,7 +124,43 @@ def resolve_llm(env_file: Path | None = None) -> LLMConfig | None:
         base = DEEPSEEK_BASE
     if not model:
         model = DEEPSEEK_MODEL
-    return LLMConfig(base_url=base, api_key=key, model=model, key_source=source)
+    return LLMConfig(base_url=base, api_key=key, model=model, key_source=source, thinking="off")
+
+
+def normalize_thinking(raw: str | None) -> str:
+    got = (raw or "").strip().lower()
+    return got if got in THINKING_LEVELS else "off"
+
+
+def merge_llm(
+    *,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    model: str | None = None,
+    thinking: str | None = None,
+    env_file: Path | None = None,
+) -> LLMConfig | None:
+    """请求体非空字段优先，缺的回退 resolve_llm()。两边都没有 key → None。"""
+    env = resolve_llm(env_file)
+    req_key = (api_key or "").strip()
+    key = req_key or (env.api_key if env else "")
+    if not key:
+        return None
+    url = (base_url or "").strip() or (env.base_url if env else DEEPSEEK_BASE)
+    name = (model or "").strip() or (env.model if env else DEEPSEEK_MODEL)
+    if req_key:
+        source = "settings"
+    elif env:
+        source = env.key_source
+    else:
+        source = "settings"
+    return LLMConfig(
+        base_url=url,
+        api_key=key,
+        model=name,
+        key_source=source,
+        thinking=normalize_thinking(thinking),
+    )
 
 
 def openai_config() -> tuple[str | None, str | None, str | None]:
@@ -128,12 +174,19 @@ def llm_public_status() -> dict[str, str | bool]:
     """给前端看的配置摘要，不含密钥。"""
     cfg = resolve_llm()
     if cfg is None:
-        return {"ok": False, "base_url": "", "model": "", "key_source": ""}
+        return {
+            "ok": False,
+            "base_url": "",
+            "model": "",
+            "key_source": "",
+            "thinking": "off",
+        }
     return {
         "ok": True,
         "base_url": cfg.base_url,
         "model": cfg.model,
         "key_source": cfg.key_source,
+        "thinking": cfg.thinking,
     }
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from pen import config
-from pen.config import parse_dotenv, resolve_llm
+from pen.config import merge_llm, parse_dotenv, resolve_llm
 
 
 def test_parse_strips_inline_comment(tmp_path: Path) -> None:
@@ -61,3 +61,36 @@ def test_pen_home_moves_pen_dir(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("PEN_HOME", raising=False)
     config.PEN_DIR = config.REPO_ROOT / ".pen"
     config.LIBRARIES_DIR = config.PEN_DIR / "libraries"
+
+
+def test_merge_llm_request_wins_and_key_alone_works(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("MODEL_NAME", raising=False)
+    empty = tmp_path / "empty.env"
+    empty.write_text("", encoding="utf-8")
+    assert merge_llm(env_file=empty) is None
+    only_req = merge_llm(
+        api_key="sk-from-settings",
+        base_url="https://api.openai.com/v1",
+        model="gpt-4.1-mini",
+        thinking="high",
+        env_file=empty,
+    )
+    assert only_req is not None
+    assert only_req.api_key == "sk-from-settings"
+    assert only_req.base_url == "https://api.openai.com/v1"
+    assert only_req.model == "gpt-4.1-mini"
+    assert only_req.thinking == "high"
+    assert only_req.key_source == "settings"
+
+    envf = tmp_path / ".env"
+    envf.write_text("DEEPSEEK_API_KEY=sk-env\n", encoding="utf-8")
+    mixed = merge_llm(model="override-model", thinking="nope", env_file=envf)
+    assert mixed is not None
+    assert mixed.api_key == "sk-env"
+    assert mixed.model == "override-model"
+    assert mixed.thinking == "off"
+    assert mixed.key_source == "DEEPSEEK_API_KEY"
+    assert mixed.base_url == "https://api.deepseek.com"

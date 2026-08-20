@@ -5,7 +5,13 @@ from pathlib import Path
 import pytest
 
 from pen.config import DEFAULT_HANDBOOK, REPO_ROOT
-from pen.sandbox import SandboxError, assert_handbook_path, assert_readable, assert_write_target
+from pen.sandbox import (
+    SandboxError,
+    assert_handbook_path,
+    assert_readable,
+    assert_write_target,
+    parse_vault_root,
+)
 
 
 def test_write_only_original(tmp_path: Path) -> None:
@@ -59,3 +65,19 @@ def test_handbook_path_allows_default_and_rejects_outsiders(tmp_path: Path, monk
         assert_handbook_path(env)
     monkeypatch.setenv("PEN_ALLOW_ROOTS", str(tmp_path))
     assert assert_handbook_path(outsider) == outsider.resolve()
+
+
+def test_handbook_path_extra_roots_without_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("PEN_ALLOW_ROOTS", raising=False)
+    outsider = tmp_path / "secret.md"
+    outsider.write_text("# x\n", encoding="utf-8")
+    assert assert_handbook_path(outsider, extra_roots=[tmp_path]) == outsider.resolve()
+    with pytest.raises(SandboxError, match="允许的根"):
+        assert_handbook_path(outsider, extra_roots=[tmp_path / "nope"])
+    with pytest.raises(SandboxError, match="文件系统根"):
+        parse_vault_root("/")
+    assert parse_vault_root(None) == []
+    assert parse_vault_root(str(tmp_path)) == [tmp_path.resolve()]
+    missing = tmp_path / "not-a-dir"
+    with pytest.raises(SandboxError, match="不是目录"):
+        parse_vault_root(str(missing))

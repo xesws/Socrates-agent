@@ -1,7 +1,7 @@
 import { ItemView, MarkdownRenderer, Notice, WorkspaceLeaf } from "obsidian";
 import type SocratesPenPlugin from "../main";
 import { makeApi, streamChat } from "../api";
-import { handbookIdFromPath, readEditorPick } from "../selection";
+import { handbookIdFromPath, readEditorPick, vaultRoot } from "../selection";
 import type { ChatMessage, Chip, Proposal, SessionView } from "../types";
 
 export const VIEW_TYPE_PEN = "socrates-pen-view";
@@ -175,9 +175,14 @@ export class PenView extends ItemView {
     try {
       const h = await this.api().health();
       this.sidecarReachable = true;
-      this.health = h.llm.ok
-        ? `sidecar 正常 · ${h.llm.model} · ${h.llm.key_source}`
-        : "sidecar 在，但模型未配置（sidecar 的 .env）";
+      const fromPage = this.plugin.settings.apiKey.trim();
+      if (fromPage) {
+        this.health = `sidecar 正常 · 设置页 · ${this.plugin.settings.model}`;
+      } else if (h.llm.ok) {
+        this.health = `sidecar 正常 · 开发回退 ${h.llm.key_source} · ${h.llm.model}`;
+      } else {
+        this.health = "sidecar 在，请到设置 → Socrates Pen 填写 API Key";
+      }
       this.err = "";
     } catch (e) {
       this.sidecarReachable = false;
@@ -200,7 +205,7 @@ export class PenView extends ItemView {
     }
     try {
       const hid = handbookIdFromPath(pick.absPath);
-      await this.api().importHandbook(pick.absPath, hid);
+      await this.api().importHandbook(pick.absPath, hid, vaultRoot(this.app));
       this.handbookId = hid;
       this.capturedPath = pick.file.path;
       this.quote = pick.text;
@@ -334,6 +339,7 @@ export class PenView extends ItemView {
             this.err = String(ev.message);
           }
         },
+        this.plugin.settings,
       );
     } catch (e) {
       this.err = e instanceof Error ? e.message : String(e);
@@ -351,7 +357,7 @@ export class PenView extends ItemView {
     this.status = "在收折叠块…";
     this.paintBar();
     try {
-      this.proposal = await this.api().propose(this.sessionId);
+      this.proposal = await this.api().propose(this.sessionId, this.plugin.settings);
     } catch (e) {
       this.err = e instanceof Error ? e.message : String(e);
     } finally {
