@@ -300,14 +300,42 @@ def anchor_source(item: dict[str, Any], original_path: Path, extra_roots: list[P
     return "\n".join(out)
 
 
+def _thin_by_level(rows: list[tuple[str, str]], budget: int) -> str:
+    """超预算时**每个 Level 均匀减**，不是砍尾巴。
+
+    砍尾巴的教训是现成的：build_user_packet 原来写 toc_lines[:80]，
+    而那本手册有 87 条，被砍掉的正好是 Capstone 和附录——跨关问题的必需品。
+    这里改成一轮轮往下削每关的条数，保证每关都还有代表。
+    """
+    total = sum(len(r[1]) + 1 for r in rows)
+    if total <= budget:
+        return "\n".join(r[1] for r in rows)
+    keep = 12
+    while keep > 1:
+        seen: dict[str, int] = {}
+        out: list[str] = []
+        used = 0
+        for level, line in rows:
+            n = seen.get(level, 0)
+            if n >= keep:
+                continue
+            seen[level] = n + 1
+            used += len(line) + 1
+            out.append(line)
+        if used <= budget:
+            return "\n".join(out) + f"\n（每关只列了前 {keep} 条，全书更长）"
+        keep -= 2
+    return "\n".join(r[1] for r in rows)[:budget] + "\n（已截断）"
+
+
 def _compact_toc(idx: HandbookIndex) -> str:
     rows = []
     for t in idx.toc:
         if t.beat is None:
-            rows.append(f"{t.level} | L{t.start_line} | {t.heading}")
+            rows.append((t.level, f"{t.level} | L{t.start_line} | {t.heading}"))
         else:
-            rows.append(f"{t.level} / {t.beat} | L{t.start_line}")
-    return "\n".join(rows)
+            rows.append((t.level, f"{t.level} / {t.beat} | L{t.start_line}"))
+    return _thin_by_level(rows, config.PROBE_TOC_CHARS)
 
 
 def _compact_questions(idx: HandbookIndex) -> str:
@@ -316,8 +344,8 @@ def _compact_questions(idx: HandbookIndex) -> str:
         if s.kind != "q" or not s.q_title:
             continue
         title = s.q_title.strip().strip("*")
-        rows.append(f"{s.level} | L{s.start_line}-{s.end_line} | {title}")
-    return "\n".join(rows)
+        rows.append((s.level, f"{s.level} | L{s.start_line}-{s.end_line} | {title}"))
+    return _thin_by_level(rows, config.PROBE_Q_CHARS)
 
 
 def build_system(idx: HandbookIndex, lang: str = "zh") -> str:
@@ -398,6 +426,9 @@ def build_user_message(job: ProbeJob, excerpt: str = "") -> str:
 def should_probe(
     *,
     enabled: bool,
+    # 调用点（_maybe_probe 挂在 done 事件上）恒为 True——出了 error 就不会有
+    # done。留着这个参数是为了让这个纯函数自己说得清完整的判定条件，
+    # 也让「失败轮不花钱」这条规则有测试可断言。
     ok: bool,
     chip: str,
     pending: bool,
@@ -505,11 +536,18 @@ def _read_excerpts(job: ProbeJob, reads: Sequence[dict[str, Any]]) -> str:
                 continue  # 点了一本书架上没有的，忽略而不是回退到当前这本
             target = hit
             label = f"〔出自《{want}》〕\n"
+        # end_line 以前被忽略，一律读 80 行——模型要的「一段」和拿到的
+        # 不一定是一回事。给了就按它要的算，仍受 PROBE_READ_LINES 封顶。
+        try:
+            end = int(r.get("end_line") or 0)
+        except (TypeError, ValueError):
+            end = 0
+        span = end - start + 1 if end >= start else config.PROBE_READ_LINES
         out = read_file_report(
             job.original_path,
             str(target),
             offset=start,
-            limit=config.PROBE_READ_LINES,
+            limit=max(1, min(span, config.PROBE_READ_LINES)),
             extra_roots=job.extra_roots or [config.REPO_ROOT],
         )
         if out.get("ok"):

@@ -44,6 +44,10 @@ PROBE_MIN_REPLY_CHARS = 80
 # 上限由 test_probe.py 的两条断言锁住。
 PROBE_MAX_READS = 2
 PROBE_READ_LINES = 80
+# 目录和 Q 清单进 system 的字符预算。build_user_packet 早就有 TOC_CHARS，
+# 这边一直没有——换一本五倍厚的手册，system 会从 5.7k 涨到 23k token。
+PROBE_TOC_CHARS = 6000
+PROBE_Q_CHARS = 6000
 # 后台任务，没人在等它，超时给宽一点。30 秒实测不够：单次输入约 6k token，
 # 模型还要吐一段 JSON，真跑时直接 APITimeoutError，探索会静默失败，
 # 读者永远看不到深题。主对话那条是 120 秒。

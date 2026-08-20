@@ -476,3 +476,46 @@ def test_shelf_paths_excludes_registrations_outside_allowed_roots(tmp_path, monk
     names = probe._shelf_paths()
     assert any("允许根内" in k for k in names)
     assert not any("根外" in k for k in names), names
+
+
+def test_system_prompt_is_capped_for_a_much_bigger_handbook(idx) -> None:
+    """build_user_packet 早就有 TOC_CHARS 预算，build_system 一直没有——
+    换一本五倍厚的手册，system 会从 5.7k 涨到 23k token。"""
+    import copy
+
+    big = copy.deepcopy(idx)
+    big.toc = idx.toc * 8
+    big.sections = idx.sections * 8
+    grown = len(probe.build_system(big))
+    assert grown < len(probe.build_system(idx)) + config.PROBE_TOC_CHARS + config.PROBE_Q_CHARS
+
+
+def test_thinning_keeps_every_level_represented() -> None:
+    """超预算时每关均匀减，不砍尾巴。砍尾的教训是现成的：
+    build_user_packet 原来写 toc_lines[:80]，砍掉的正好是 Capstone 和附录。"""
+    rows = []
+    for lv in ("Level 0", "Level 3", "Capstone", "附录"):
+        for i in range(30):
+            rows.append((lv, f"{lv} | L{i} | 第 {i} 条足够长的标题在这里占位"))
+    got = probe._thin_by_level(rows, 800)
+    for lv in ("Level 0", "Level 3", "Capstone", "附录"):
+        assert lv in got, f"{lv} 被整关砍掉了"
+    assert len(got) <= 900
+
+
+def test_read_excerpts_honours_end_line(idx, tmp_path, monkeypatch) -> None:
+    """end_line 以前被忽略，一律读 80 行——模型要的「一段」和拿到的不是一回事。"""
+    from pen.config import LLMConfig
+
+    book = tmp_path / "b.md"
+    job = ProbeJob(
+        session_id="s", handbook_id="probe-fx", original_path=book,
+        anchor={"level": "Level 0", "start_line": 5, "end_line": 6}, atom="a", chip="socratic",
+        user_text="", reply="x", born_round=1, lang="zh",
+        cfg=LLMConfig("http://x", "sk", "m", "t", "off"), extra_roots=[tmp_path],
+    )
+    short = probe._read_excerpts(job, [{"start_line": 7, "end_line": 9}])
+    assert len(short.strip().splitlines()) == 3, short
+    # 仍受 PROBE_READ_LINES 封顶
+    long = probe._read_excerpts(job, [{"start_line": 1, "end_line": 9999}])
+    assert len(long.strip().splitlines()) <= config.PROBE_READ_LINES
