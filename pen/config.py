@@ -44,7 +44,10 @@ PROBE_MIN_REPLY_CHARS = 80
 # 上限由 test_probe.py 的两条断言锁住。
 PROBE_MAX_READS = 2
 PROBE_READ_LINES = 80
-PROBE_TIMEOUT = 30.0
+# 后台任务，没人在等它，超时给宽一点。30 秒实测不够：单次输入约 6k token，
+# 模型还要吐一段 JSON，真跑时直接 APITimeoutError，探索会静默失败，
+# 读者永远看不到深题。主对话那条是 120 秒。
+PROBE_TIMEOUT = 90.0
 # 配额。读者选的是「每轮实质回复都探」，所以不设轮次冷却，
 # 这几个只是失控保护，不是降频手段。
 PROBE_MAX_PER_SESSION = 8

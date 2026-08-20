@@ -60,8 +60,7 @@ PROBE_SYSTEM = """你是这本手册的助教，坐在师傅背后。师傅刚�
 
 3. vs_real 对出身——每一关的「第三拍 · 出身」写了真实框架长什么样，拿我们的做法去撞它。
    anchors 至少一条落在某关的第三拍里。
-   「手册说我们三模式和 Claude Code 四档权限同构、只砍了 acceptEdits，
-     那用白名单加危险检测去模拟 acceptEdits，会在哪一步漏？」
+   「我们用白名单去模拟 Claude Code 的 acceptEdits，会在哪一步漏？」
 
 4. failure 找边界——什么条件下这套东西会炸，炸成什么样。触发条件写进 trigger。
    「白名单排在危险检测前面，那危险命令是不是也会被静默放行？这个洞 Level 6 怎么堵？」
@@ -122,7 +121,7 @@ PROBE_ENGLISH = """
 [Language] The reader's interface is in English. Write "text", "why", "alt" and
 "trigger" in English, same voice. Keep every key name, every enum value
 (axis / grounding / timing) and the JSON shape exactly as specified above.
-English length band: 8 to 35 words, must end with a question mark.
+English length band: 8 to 28 words, must end with a question mark.
 Same rules apply: no syntax trivia, no navigation, no echoing the reader,
 no fabricated line numbers, and never pretend you searched the web."""
 
@@ -225,6 +224,12 @@ def validate_slots(
             return False, "open-with-anchors"
         if axis in ("bridge", "vs_real"):
             return False, "open-needs-anchors"
+        # 没出处不等于可以不填槽。以前这里直接放行，等于 open 这条路上只剩
+        # 「axis 拼写正确」一道检查——而读者选了 open 题不加标注，更没法自己分辨。
+        if axis == "tradeoff" and not str(item.get("alt") or "").strip():
+            return False, "tradeoff-needs-alt"
+        if axis == "failure" and not str(item.get("trigger") or "").strip():
+            return False, "failure-needs-trigger"
         return True, ""
 
     if not anchors:
@@ -256,12 +261,41 @@ def validate_slots(
             return False, "vs-real-needs-third-beat"
 
     # 反引号引起来的词必须真在那几行里，否则就是「看着像有出处」
+    # source 必须是 anchors 指向的正文。以前传的是读者框选的那一小段，
+    # 而 prompt 承诺核对的是「那几行」——于是模型照 prompt 给术语加反引号，
+    # 反而被判死。拿不到正文时**跳过**这条检查，不判死：宁可漏也别误杀。
     toks = _quoted_tokens(str(item.get("text") or ""))
     if toks and source:
         for tok in toks:
             if tok not in source:
                 return False, "quote-not-in-source"
     return True, ""
+
+
+def anchor_source(item: dict[str, Any], original_path: Path, extra_roots: list[Path]) -> str:
+    """把 anchors 指向的正文行取出来，给反引号校验当语料。读不到就空串。"""
+    from pen.readtool import read_file_report
+
+    out: list[str] = []
+    for a in list(item.get("anchors") or [])[:2]:
+        if not isinstance(a, dict):
+            continue
+        try:
+            start = max(1, int(a.get("start_line") or 1))
+            end = int(a.get("end_line") or start)
+        except (TypeError, ValueError):
+            continue
+        span = max(1, min(end - start + 1, config.PROBE_READ_LINES))
+        try:
+            got = read_file_report(
+                original_path, str(original_path), offset=start, limit=span,
+                extra_roots=extra_roots or [config.REPO_ROOT],
+            )
+        except Exception:
+            continue
+        if got.get("ok"):
+            out.append(str(got.get("text") or ""))
+    return "\n".join(out)
 
 
 def _compact_toc(idx: HandbookIndex) -> str:
@@ -320,6 +354,10 @@ class ProbeJob:
     footprint: str = ""
     asked: list[str] = field(default_factory=list)
     shelf: str = ""
+    # 前面几轮的对话摘要。只带 ui_messages 的角色和截断文本——
+    # 不能带 session.messages（那里面有 tool_call 配对和 reasoning_content，
+    # 塞进来 token 翻三倍，注意力还会被拉回代码细节）。
+    history: list[dict[str, str]] = field(default_factory=list)
 
 
 def build_user_message(job: ProbeJob, excerpt: str = "") -> str:
@@ -338,6 +376,11 @@ def build_user_message(job: ProbeJob, excerpt: str = "") -> str:
         "（已剥掉代码块，只留论述。细节在代码里，不在这儿——别去问代码里那些符号怎么写）",
         strip_code_fences(job.reply)[:1200],
     ]
+    if job.history:
+        parts += ["", "[前面几轮聊了什么]", "（越靠下越近。看看他一路在纠结哪条线）"]
+        for h in job.history:
+            who = "读者" if h.get("role") == "user" else "师傅"
+            parts.append(f"  {who}：{str(h.get('text') or '')[:120]}")
     if job.footprint:
         parts += ["", "[读者这段时间的足迹]", job.footprint]
     if job.shelf:
@@ -379,7 +422,9 @@ def should_probe(
         # 写回场景下「这段要不要沉淀进第三拍」本身没错，只是不是学习问题。
         # 治法不是禁止模型这么说，是不在那个场景触发。
         return False, "not-a-learning-turn"
-    if len(reply or "") < config.PROBE_MIN_REPLY_CHARS:
+    # 注意是 <=：tutor._finish_text 里 has_substantive 的判据是 len(visible) > 80。
+    # 写成 < 的话，正好 80 字那一轮两边判断相反。
+    if len(reply or "") <= config.PROBE_MIN_REPLY_CHARS:
         return False, "reply-too-short"
     level = str((anchor or {}).get("level") or "")
     # 不照搬 diagnose.is_curriculum：它把「开篇」也排除，而真人的有机记录
@@ -457,7 +502,7 @@ def _harvest(
 ) -> list[DeepQuestion]:
     from pen.session import FIXED_CHIPS, PROMPT_EXAMPLE_LINES
 
-    source = excerpt or str(job.anchor.get("selected_text") or "")
+
     kept: list[DeepQuestion] = []
     seen: set[str] = {normalize_qkey(a) for a in job.asked}
     open_used = 0
@@ -471,7 +516,8 @@ def _harvest(
             depth = 0
         if depth and depth < 4:
             continue
-        ok, _why = validate_slots(raw, idx, source=source)
+        src = excerpt or anchor_source(raw, job.original_path, job.extra_roots)
+        ok, _why = validate_slots(raw, idx, source=src)
         if not ok:
             continue
         grounding = str(raw.get("grounding") or "book")
@@ -529,11 +575,24 @@ def run_probe(job: ProbeJob, probe_id: str) -> None:
 
     acquired = _SEM.acquire(blocking=False)
     if not acquired:
-        # 抢不到就跳过，不排队：排队意味着上下文已经过期还要再花一次钱
-        probe_store.release(job.session_id, probe_id)
+        # 抢不到就跳过，不排队：排队意味着上下文已经过期还要再花一次钱。
+        # 一次调用都没打，配额要退。
+        probe_store.release(job.session_id, probe_id, refund=True)
         return
     try:
         idx = libraries.load_index(job.handbook_id)
+        # 书架要扫盘（登记表 + 逐本读前 400 行），放在这儿而不是 done 事件里。
+        # 之前它顶在 done 前面同步跑，跟「绝不延长这条流」的设计目标直接相冲。
+        if not job.shelf:
+            try:
+                from pen import library_scan
+
+                job.shelf = library_scan.shelf_digest(
+                    job.original_path,
+                    [m.original_path for m in libraries.list_handbooks()],
+                )
+            except Exception:
+                job.shelf = ""
         items, _reason = explore(job, idx)
         probe_store.add_questions(job.session_id, probe_id, items)
     except Exception:

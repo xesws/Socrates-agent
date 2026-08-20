@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import uuid
@@ -117,9 +118,16 @@ def _session_path(session_id: str) -> Path:
 
 def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    # 临时名要带进程和随机后缀。固定用 <path>.tmp 的话，两个 sidecar 指同一个
+    # PEN_HOME（同一 checkout 起两次，或旧进程没死透）会互相把对方的临时文件
+    # replace 掉，抛出未捕获的 FileNotFoundError。
+    tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
 
 
 def chip_label(chip: str) -> str:

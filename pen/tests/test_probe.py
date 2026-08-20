@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -346,3 +347,75 @@ def test_harvest_respects_what_was_already_asked(idx, tmp_path) -> None:
             "timing": "now", "depth": 5,
             "anchors": [{"level": "Level 0", "start_line": 5, "end_line": 8}]}
     assert probe._harvest([item], job, idx) == []
+
+
+# ── v0.8.4 审查修复 ────────────────────────────────────────
+
+
+def test_quote_check_uses_anchor_text_not_the_selection(idx, tmp_path) -> None:
+    """prompt 承诺核对的是「anchors 那几行」。第一版拿读者框选的那一小段去比，
+    模型照 prompt 给术语加反引号反而被判死——那正是读者举的第一个例子。"""
+    item = {
+        "axis": "vs_real", "grounding": "book",
+        "text": "我们跟 `Level 6 正文` 的差距在哪一层？",
+        "anchors": [{"level": "Level 6", "start_line": _third(idx, "Level 6").start_line + 2,
+                     "end_line": _third(idx, "Level 6").start_line + 6}],
+    }
+    src = probe.anchor_source(item, Path(idx.original_path), [])
+    assert src, "没读到 anchors 正文"
+    assert validate_slots(item, idx, source=src)[0]
+    # 拿框选文本当语料 → 误杀
+    assert validate_slots(item, idx, source="（框选了几行）")[1] == "quote-not-in-source"
+
+
+def test_missing_source_skips_the_quote_check_instead_of_failing(idx) -> None:
+    """读不到正文时跳过，不判死。宁可漏也别误杀。"""
+    item = {"axis": "altitude", "grounding": "book", "text": "`某个词` 怎么理解？",
+            "anchors": [{"level": "Level 0", "start_line": 5, "end_line": 8}]}
+    assert validate_slots(item, idx, source="")[0]
+
+
+def test_open_grounding_still_has_to_fill_its_slots(idx) -> None:
+    """没出处不等于可以不填槽——读者选了 open 题不加标注，更没法自己分辨。"""
+    assert validate_slots({"axis": "tradeoff", "grounding": "open", "text": "为什么不是另一种？"}, idx)[1] == "tradeoff-needs-alt"
+    assert validate_slots({"axis": "failure", "grounding": "open", "text": "什么时候会炸？"}, idx)[1] == "failure-needs-trigger"
+    assert validate_slots({"axis": "tradeoff", "grounding": "open", "text": "为什么不是另一种？", "alt": "别的做法"}, idx)[0]
+
+
+def test_probe_prompt_examples_pass_our_own_filter() -> None:
+    """给模型看的范例，系统自己不能删。有一条示范题曾经 69 字，超过上限 60。"""
+    import re
+
+    from pen.questions import clean_candidates, normalize_qkey
+    from pen.session import FIXED_CHIPS
+
+    demos = re.findall(r"^\s{3}「(.+?)」$", probe.PROBE_SYSTEM, re.M)
+    assert len(demos) >= 5
+    labels = [str(c["label"]) for c in FIXED_CHIPS]
+    for d in demos:
+        assert clean_candidates([d], fixed_labels=labels, limit=9), f"示范题过不了自己的过滤器：{d} ({len(normalize_qkey(d))} 字)"
+
+
+def test_reply_threshold_matches_has_substantive() -> None:
+    """两边差一个等号的话，正好 80 字那一轮判断相反。"""
+    base = dict(enabled=True, ok=True, chip="socratic", pending=False,
+                anchor={"level": "Level 0"}, probe_calls=0, pending_pool=0, has_llm=True)
+    for n in (79, 80, 81):
+        got = should_probe(**base, reply="x" * n)[0]
+        assert got is (n > config.PROBE_MIN_REPLY_CHARS), f"{n} 字时不一致"
+
+
+def test_history_lands_in_the_prompt(tmp_path) -> None:
+    """读者明确要求「能看到前面几轮对话」。"""
+    from pen.config import LLMConfig
+
+    job = ProbeJob(
+        session_id="s", handbook_id="probe-fx", original_path=tmp_path / "b.md",
+        anchor={"level": "Level 0", "start_line": 5, "end_line": 6}, atom="a", chip="socratic",
+        user_text="现在这句", reply="师傅刚讲的", born_round=1, lang="zh",
+        cfg=LLMConfig("http://x", "sk", "m", "t", "off"),
+        history=[{"role": "user", "text": "上一轮我问的"}, {"role": "assistant", "text": "上一轮师傅答的"}],
+    )
+    msg = probe.build_user_message(job)
+    assert "[前面几轮聊了什么]" in msg
+    assert "读者：上一轮我问的" in msg and "师傅：上一轮师傅答的" in msg

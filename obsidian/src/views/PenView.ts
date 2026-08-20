@@ -13,7 +13,7 @@ import { makeApi, streamApprove, streamChat } from "../api";
 import { handbookIdFromPath, vaultRoot, type EditorPick } from "../selection";
 import type { ChatMessage, Chip, DynChip, PendingEdit, SessionView } from "../types";
 import { chipHint, chipLabel, phaseText, t } from "../i18n";
-import { pollDeep } from "../deeppoll";
+import { keepDeep, mergeDeep, pollDeep } from "../deeppoll";
 import { measureMonoAdvance, renderSplash, type SplashLevel } from "./splash";
 import { AVATAR } from "../logo";
 
@@ -554,12 +554,7 @@ export class PenView extends ItemView {
 
   /** 深题追加进来，按文本去重。实时层那两条不动。 */
   private mergeDeep(items: DynChip[]): void {
-    const seen = new Set(this.dyn.map((c) => c.text));
-    for (const it of items) {
-      if (!it?.text || seen.has(it.text)) continue;
-      seen.add(it.text);
-      this.dyn.push({ ...it, kind: "deep" });
-    }
+    this.dyn = mergeDeep(this.dyn, items);
   }
 
   private paintStreamBubble(text: string): void {
@@ -802,7 +797,9 @@ export class PenView extends ItemView {
             const ctx = u?.context_tokens ?? u?.prompt_tokens;
             const out = u?.completion_tokens;
             this.usage = { ctx, out };
-            this.dyn = readDynChips(ev);
+            // 只换掉实时层那两条。深题是单独花一次调用挖出来的，服务端已经
+            // 标成 shown、游标也推过去了，整体覆盖等于点一次就再也找不回来。
+            this.dyn = [...keepDeep(this.dyn), ...readDynChips(ev)];
             this.substantive = Boolean(ev.has_substantive);
             // 后台在挖。轮询自己会因为 running 变空而停，不用管它。
             if (ev.deep_running) void this.pollDeep();
@@ -898,7 +895,7 @@ export class PenView extends ItemView {
             const ctx = u?.context_tokens ?? u?.prompt_tokens;
             const out = u?.completion_tokens;
             this.usage = { ctx, out };
-            this.dyn = readDynChips(ev);
+            this.dyn = [...keepDeep(this.dyn), ...readDynChips(ev)];
             this.substantive = Boolean(ev.has_substantive);
           } else if (ev.type === "error") {
             this.err = String(ev.message);

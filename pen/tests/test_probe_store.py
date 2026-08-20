@@ -100,15 +100,47 @@ def test_stale_items_are_dropped_not_shown() -> None:
     assert probe_store.load("s8").pool[0].state == "dropped"
 
 
-def test_visible_cap_holds_the_rest_back() -> None:
+def test_cursor_only_advances_past_what_was_actually_delivered() -> None:
+    """一次探索产两条、每轮只放一条。游标要是推到池子最大 seq，
+    第二条就永远够不着了——later 通道会整条死掉。"""
     pid = probe_store.try_claim("s9", "h", 0)
+    probe_store.add_questions("s9", pid, [_q("甲问题够长吗？"), _q("乙问题也够长？")])
+    first = probe_store.inbox("s9", since=0, atom="A", now_round=0)
+    assert len(first["items"]) == 1
+    assert first["cursor"] == 1, f"只投递了 seq=1，游标不该跳过 seq=2：{first['cursor']}"
+    second = probe_store.inbox("s9", since=first["cursor"], atom="A", now_round=1)
+    assert len(second["items"]) == 1, "第二条必须够得着"
+    assert second["items"][0]["text"] != first["items"][0]["text"]
+
+
+def test_pool_still_drains_after_two_have_been_shown() -> None:
+    """服务端不该拿「同时可见 2 条」当终身闸门：visible_count 只增不减，
+    抛满之后每一条 pending 都会在进 _ripe 之前被跳过，池子再也不衰减，
+    pending 一路堆到 PROBE_PENDING_CAP，从第四轮起永久停探。"""
+    pid = probe_store.try_claim("s9b", "h", 0)
     probe_store.add_questions(
-        "s9", pid, [_q(f"第 {i} 个够长的问题在这？") for i in range(4)]
+        "s9b", pid, [_q(f"第 {i} 个够长的问题在这里？") for i in range(4)]
     )
-    for _ in range(4):
-        probe_store.inbox("s9", since=0, atom="A", now_round=0)
-    led = probe_store.load("s9")
-    assert led.visible_count() <= probe_store.MAX_VISIBLE
+    cur = 0
+    seen = []
+    for r in range(4):
+        got = probe_store.inbox("s9b", since=cur, atom="A", now_round=r)
+        cur = got["cursor"]
+        seen += [i["text"] for i in got["items"]]
+    assert len(set(seen)) == 4, f"四条都该轮到，实际只放出 {len(set(seen))} 条"
+
+
+def test_stale_items_drop_even_when_others_were_already_shown() -> None:
+    """TTL 以前藏在 _ripe 里，放行名额用完就走不到，等于永不生效。"""
+    pid = probe_store.try_claim("s9c", "h", 0)
+    probe_store.add_questions(
+        "s9c", pid, [_q("先放出去这条够长吗？"), _q("这条会过期掉的吧？")]
+    )
+    probe_store.inbox("s9c", since=0, atom="A", now_round=0)
+    probe_store.inbox("s9c", since=0, atom="A", now_round=probe_store.ITEM_TTL_TURNS + 1)
+    states = {q.text: q.state for q in probe_store.load("s9c").pool}
+    assert states["这条会过期掉的吧？"] == "dropped", states
+    assert probe_store.load("s9c").pending_count() == 0
 
 
 def test_mark_clicked_matches_after_normalisation() -> None:
@@ -203,3 +235,46 @@ def test_daily_count_resets_on_a_new_day(monkeypatch) -> None:
     stale = probe_store._daily_path("bk2")
     stale.write_text(json.dumps({"date": "1999-01-01", "count": 99}), encoding="utf-8")
     assert probe_store.daily_count("bk2") == 0
+
+
+def test_release_with_refund_gives_the_quota_back() -> None:
+    """一次 LLM 都没打就失败了（起线程失败、抢不到信号量），不该扣配额。
+    失败越多能用的次数越少，那是反的。"""
+    for i in range(3):
+        pid = probe_store.try_claim(f"refund-{i}", "rb", 0)
+        probe_store.release(f"refund-{i}", pid, refund=True)
+    assert probe_store.daily_count("rb") == 0
+    led = probe_store.load("refund-0")
+    assert led.probe_calls == 0
+
+
+def test_release_without_refund_keeps_the_charge() -> None:
+    pid = probe_store.try_claim("norefund", "rb2", 0)
+    probe_store.release("norefund", pid)
+    assert probe_store.load("norefund").probe_calls == 1
+    assert probe_store.daily_count("rb2") == 1
+
+
+def test_concurrent_writers_leave_no_temp_files() -> None:
+    """固定用 <path>.tmp 的话，两个写者会互相 replace 掉对方的临时文件，
+    抛出未捕获的 FileNotFoundError。"""
+    import threading
+
+    errs: list[str] = []
+
+    def worker() -> None:
+        try:
+            for _ in range(25):
+                led = probe_store.load("conc", "cb")
+                led.seq += 1
+                probe_store.save(led)
+        except Exception as exc:  # noqa: BLE001
+            errs.append(repr(exc))
+
+    ths = [threading.Thread(target=worker) for _ in range(6)]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join()
+    assert not errs, errs
+    assert not list(probe_store.probes_dir().glob("*.tmp"))

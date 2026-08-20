@@ -174,3 +174,24 @@ def test_length_band_picks_by_script() -> None:
 
     assert _length_band("七块积木里 messages 为什么不算文件？")[1] == MAX_CHARS
     assert _length_band("Why is messages not counted as a file here?")[1] == MAX_CHARS_LATIN
+
+
+def test_chore_filter_does_not_eat_legitimate_design_questions() -> None:
+    """第一版拿 替换成/占位/行号 三个词连坐，把正当的 tradeoff / altitude 题
+    也杀了。黄金集里没有这类样本，「零误伤」的结论没覆盖到这一片。"""
+    from pen.questions import is_chore
+
+    for text in [
+        "为什么 dispatch 不直接替换成 match 语句，代价在哪？",
+        "工具返回里带行号前缀，对模型改写原文是帮忙还是添乱？",
+        "手册里那些占位块是编排上的脚手架，还是读者真该去填的作业？",
+        "第七拍的例子替换成真实框架的写法，哪一步会先崩？",
+    ]:
+        assert not is_chore(text), f"误杀了正当问题：{text}"
+
+
+@pytest.mark.parametrize("text", _by("chore"))
+def test_chore_filter_still_catches_real_chores(text: str) -> None:
+    from pen.questions import is_chore
+
+    assert is_chore(text), f"漏掉了写回类操作：{text}"

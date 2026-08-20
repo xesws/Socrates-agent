@@ -18,7 +18,7 @@ const out = await build({
 const mod = await import(
   "data:text/javascript;base64," + Buffer.from(out.outputFiles[0].text).toString("base64")
 );
-const { pollDeep, DEEP_POLL_BUDGET_MS } = mod;
+const { pollDeep, mergeDeep, keepDeep, MAX_VISIBLE_DEEP, DEEP_POLL_BUDGET_MS } = mod;
 
 const checks = [];
 const check = (name, pass) => checks.push([name, Boolean(pass)]);
@@ -43,8 +43,7 @@ function harness(inbox, opts = {}) {
         },
         now: () => st.clock,
         onItems: (items, cursor) => {
-          const seen = new Set(st.items.map((c) => c.text));
-          for (const it of items) if (!seen.has(it.text)) st.items.push(it);
+          st.items = mergeDeep(st.items, items);   // 跑真的 mergeDeep，不是复刻
           st.cursor = cursor;
           st.painted++;
         },
@@ -94,6 +93,37 @@ check("收到后游标推进", h.st.cursor === 7);
 h = harness(async () => ({ items: [], cursor: 0, running: [] }));
 await h.run();
 check("一开始就没有在跑的 → 敲一次就停", h.st.calls === 1);
+
+// ── mergeDeep / keepDeep 的直测 ──
+const quick = (t) => ({ id: t, kind: "quick", text: t });
+check(
+  "mergeDeep 按文本去重",
+  mergeDeep([q("甲？")], [q("甲？"), q("乙？")]).length === 2,
+);
+check(
+  "mergeDeep 把深题排到实时题前面",
+  mergeDeep([quick("实时？")], [q("深？")]).map((c) => c.kind).join() === "deep,quick",
+);
+check(
+  "mergeDeep 守同时可见上限，留最新的",
+  (() => {
+    const got = mergeDeep([], [q("一？"), q("二？"), q("三？"), q("四？")]);
+    const deep = got.filter((c) => c.kind === "deep");
+    return deep.length === MAX_VISIBLE_DEEP && deep[deep.length - 1].text === "四？";
+  })(),
+);
+check(
+  "mergeDeep 不动实时题",
+  mergeDeep([quick("甲实时？"), quick("乙实时？")], []).filter((c) => c.kind === "quick").length === 2,
+);
+check(
+  "keepDeep 换轮时只留深题",
+  keepDeep([q("深？"), quick("实时？")]).length === 1,
+);
+check(
+  "keepDeep 也守上限",
+  keepDeep([q("一？"), q("二？"), q("三？")]).length === MAX_VISIBLE_DEEP,
+);
 
 let bad = 0;
 for (const [name, pass] of checks) {

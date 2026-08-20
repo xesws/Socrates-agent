@@ -1,8 +1,14 @@
 import type { DeepInbox, DynChip } from "./types";
 
-/** 2.5 秒一拍，最多转 90 秒，连失败 3 次放弃。 */
-export const DEEP_POLL_MS = 2500;
-export const DEEP_POLL_BUDGET_MS = 90_000;
+/**
+ * 3 秒一拍，最多转 5 分钟，连失败 3 次放弃。
+ *
+ * 预算不是拍脑袋定的：真跑一次深挖实测约 2 分半（6k token 输入 + 一段 JSON），
+ * 原来的 90 秒等不到结果就走了，等于白花那次调用。轮询本身是本地 HTTP，
+ * 而且这时 busy 早已是 false，界面不受影响，所以宁可等久一点。
+ */
+export const DEEP_POLL_MS = 3000;
+export const DEEP_POLL_BUDGET_MS = 300_000;
 export const DEEP_POLL_MAX_FAILS = 3;
 
 export type PollDeps = {
@@ -45,4 +51,32 @@ export async function pollDeep(deps: PollDeps): Promise<void> {
       if (++fails >= DEEP_POLL_MAX_FAILS) return;
     }
   }
+}
+
+
+/** 同时可见几条深题。多了就成噪音。 */
+export const MAX_VISIBLE_DEEP = 2;
+
+/** 换轮时保留下来的深题。 */
+export function keepDeep(cur: DynChip[]): DynChip[] {
+  return cur.filter((c) => c.kind === "deep").slice(-MAX_VISIBLE_DEEP);
+}
+
+/**
+ * 新到的深题并进现有列表，按文本去重，深题排前面并守显示上限。
+ *
+ * 上限管在这一层而不是服务端：那边一旦按「终身可见数」卡放行，池子就永远
+ * 不衰减——pending 堆满之后 TTL 走不到、backlog 闸门永久关死，功能静默停摆。
+ */
+export function mergeDeep(cur: DynChip[], items: DynChip[]): DynChip[] {
+  const seen = new Set(cur.map((c) => c.text));
+  const next = [...cur];
+  for (const it of items) {
+    if (!it?.text || seen.has(it.text)) continue;
+    seen.add(it.text);
+    next.push({ ...it, kind: "deep" });
+  }
+  const deep = next.filter((c) => c.kind === "deep").slice(-MAX_VISIBLE_DEEP);
+  const quick = next.filter((c) => c.kind !== "deep");
+  return [...deep, ...quick];
 }

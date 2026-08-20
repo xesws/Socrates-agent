@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import uuid
@@ -30,8 +31,11 @@ ITEM_TTL_TURNS = 6
 # 进程被杀时 running 会留在盘上。不回收的话 try_claim 永远抢不到坑，
 # 前端也会对着一个永远不会完成的幽灵轮询到超时。
 ORPHAN_AFTER_SECONDS = 300.0
-# 一次最多放出几条，以及同时可见几条。深题是「跳出来」的，多了就成噪音。
+# 一次最多放出几条。深题是「跳出来」的，一轮蹦两条就成噪音了。
 MAX_RELEASE_PER_TURN = 1
+# 同时可见几条 —— 这是**前端**的显示上限（PenView.mergeDeep 执行）。
+# 别拿它在服务端当放行闸门：visible_count 只增不减，抛满之后 room 恒为 0，
+# 后面每一条 pending 都会在进 _ripe 之前被跳过，池子再也不衰减。
 MAX_VISIBLE = 2
 
 _LOCK = threading.RLock()
@@ -51,9 +55,16 @@ def _path(session_id: str) -> Path:
 
 def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    # 临时名要带进程和随机后缀。固定用 <path>.tmp 的话，两个 sidecar 指同一个
+    # PEN_HOME（同一 checkout 起两次，或旧进程没死透）会互相把对方的临时文件
+    # replace 掉，抛出未捕获的 FileNotFoundError。
+    tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
 
 
 def _now() -> str:
@@ -242,13 +253,32 @@ def try_claim(session_id: str, handbook_id: str, now_round: int) -> str | None:
         return pid
 
 
-def release(session_id: str, probe_id: str) -> None:
+def release(session_id: str, probe_id: str, *, refund: bool = False) -> None:
+    """放掉坑位。refund=True 时连记账一起退——一次 LLM 都没打就失败了
+    （起线程失败、抢不到信号量、书架读盘炸了），不该扣读者的配额。
+    失败越多能用的次数越少，那是反的。"""
     with _LOCK:
         led = load(session_id)
         led.running = [x for x in led.running if x != probe_id]
         if not led.running:
             led.running_since = ""
+        if refund and led.probe_calls > 0:
+            led.probe_calls -= 1
+            _refund_daily(led.handbook_id)
         save(led)
+
+
+def _refund_daily(handbook_id: str) -> None:
+    if not handbook_id:
+        return
+    cur = daily_count(handbook_id)
+    if cur <= 0:
+        return
+    try:
+        dest = _daily_path(handbook_id)
+    except ValueError:
+        return
+    _atomic_write(dest, json.dumps({"date": _today(), "count": cur - 1}, ensure_ascii=False))
 
 
 def add_questions(session_id: str, probe_id: str, items: list[DeepQuestion]) -> None:
@@ -303,28 +333,43 @@ def inbox(
     with _LOCK:
         led = load(session_id)
         out: list[dict[str, Any]] = []
+        seqs: list[int] = []
         touched = False
         fresh = 0
-        room = max(0, MAX_VISIBLE - led.visible_count())
         for q in sorted(led.pool, key=lambda x: x.seq):
-            if q.seq <= since or q.state in ("clicked", "dropped"):
+            if q.state in ("clicked", "dropped"):
+                continue
+            # 过期判定必须无条件跑在最前面。以前它藏在 _ripe 里，而放行名额
+            # 用完后根本走不到 _ripe——池子于是永远不会衰减，pending 一路堆到
+            # PROBE_PENDING_CAP，从第四轮起 should_probe 永久返回 backlog-full。
+            if now_round - q.born_round > ITEM_TTL_TURNS:
+                if q.state == "pending":
+                    q.state = "dropped"
+                    touched = True
+                    continue
+            if q.seq <= since:
                 continue
             if q.state == "shown":
                 # 已经放行过、但前端还没把游标推过去：照样再给一遍。
                 # 投递必须是「至少一次」——丢一个响应不该丢掉一条问题。
                 out.append(q.to_chip())
+                seqs.append(q.seq)
                 continue
-            if fresh >= min(MAX_RELEASE_PER_TURN, room):
+            if fresh >= MAX_RELEASE_PER_TURN:
                 continue
             was = q.state
             if not _ripe(q, atom=atom, level=level, now_round=now_round):
                 touched = touched or q.state != was
                 continue
             out.append(q.to_chip())
+            seqs.append(q.seq)
             q.state = "shown"
             fresh += 1
             touched = True
-        cursor = max([q.seq for q in led.pool] + [since]) if out else since
+        # 只能推到**本次真正投递出去**的最大 seq。推到池子最大 seq 会把没投递的
+        # 高 seq 项永久吞掉：一次探索产两条、每轮只放一条，第二条就再也够不着了，
+        # later 通道整条死掉。
+        cursor = max([since, *seqs]) if seqs else since
         if touched:
             save(led)
         return {

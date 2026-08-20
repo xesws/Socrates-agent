@@ -21,7 +21,7 @@ from pen.outline import file_outline
 from pen import libraries, snapshots
 from pen import diagnose as diagnosemod
 from pen import proposals as proposalsmod
-from pen import library_scan, probe as probemod, probe_store, trajectory
+from pen import probe as probemod, probe_store, trajectory
 from pen import config as configmod
 from pen.config import DEFAULT_HANDBOOK_ID, LLMConfig, llm_public_status, merge_llm
 from pen.i18n import localized, msg, norm_lang
@@ -41,7 +41,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.8.3", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.8.4", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -417,6 +417,24 @@ def _footprint(handbook_id: str) -> str:
     return "\n".join(rows)
 
 
+def _history(sess, keep: int = 6) -> list[dict[str, str]]:
+    """前面几轮的对话摘要，冻结成纯 dict 交给探索线程。
+
+    取 ui_messages 而不是 messages：后者含 tool_call 配对和供应商回传的
+    reasoning_content，塞进探索 prompt 会让 token 翻三倍，还会把注意力
+    拉回代码细节——而这一层要的恰恰是跳出细节。
+    末轮不带，它已经单独在「师傅刚讲了什么」里了。
+    """
+    rows: list[dict[str, str]] = []
+    for m in list(sess.ui_messages or [])[-(keep + 1) : -1]:
+        role = str(m.get("role") or "")
+        text = str(m.get("text") or "").strip()
+        if role not in ("user", "assistant") or not text:
+            continue
+        rows.append({"role": role, "text": text[:120]})
+    return rows
+
+
 def _maybe_probe(sess, body: "ChatBody", anchor: dict[str, Any], path: Path, lang: str) -> bool:
     """在 done 那一刻决定要不要起一次后台深挖。返回是否真的起了。
 
@@ -464,17 +482,17 @@ def _maybe_probe(sess, body: "ChatBody", anchor: dict[str, Any], path: Path, lan
             cfg=cfg,
             extra_roots=libraries.extra_roots_for(sess.handbook_id) or [],
             footprint=_footprint(sess.handbook_id),
+            history=_history(sess),
             asked=probe_store.asked(sess.session_id),
-            shelf=library_scan.shelf_digest(
-                path, [m.original_path for m in libraries.list_handbooks()]
-            ),
+            # shelf 留空：它要扫登记表、逐本读前 400 行，交给后台线程去做。
+            # 这里是 done 事件的构造路径，多一毫秒都是在延长那条流。
         )
         probemod.spawn(job, pid)
         return True
     except Exception:
         # 后台探索炸了不能影响这一轮对话，但坑要还回去
         try:
-            probe_store.release(sess.session_id, pid)
+            probe_store.release(sess.session_id, pid, refund=True)
         except Exception:
             pass
         return False
