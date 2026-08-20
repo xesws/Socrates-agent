@@ -155,7 +155,10 @@ def test_apply_uses_stored_allow_root(tmp_path: Path, monkeypatch) -> None:
         for i, ln in enumerate(book.read_text(encoding="utf-8").splitlines(), 1)
         if ln.startswith("**Q1. shell")
     )
-    monkeypatch.setattr("pen.app.propose_fold_md", lambda _sess, llm=None: FOLD)
+    monkeypatch.setattr(
+        "pen.app.propose_fold_md",
+        lambda _sess, llm=None, allow_env_fallback=True: FOLD,
+    )
     with TestClient(app) as client:
         imported = client.post(
             "/v1/handbooks/import",
@@ -207,7 +210,7 @@ def test_chat_forwards_settings_overrides(monkeypatch) -> None:
             thinking=kw.get("thinking") or "off",
         )
 
-    def fake_stream(sess, path, packet, llm=None, extra_roots=None):
+    def fake_stream(sess, path, packet, llm=None, extra_roots=None, allow_env_fallback=True):
         seen["llm"] = llm
         yield {
             "type": "done",
@@ -247,6 +250,41 @@ def test_chat_forwards_settings_overrides(monkeypatch) -> None:
     assert seen["llm"].thinking == "medium"
 
 
+def test_chat_request_base_url_disables_env_fallback(monkeypatch) -> None:
+    seen: dict = {}
+    monkeypatch.setattr("pen.app.merge_llm", lambda **kw: None)
+
+    def fake_stream(sess, path, packet, llm=None, extra_roots=None, allow_env_fallback=True):
+        seen["llm"] = llm
+        seen["allow_env_fallback"] = allow_env_fallback
+        yield {
+            "type": "error",
+            "message": "找不到模型配置。请到设置 → Socrates Pen 填写 API Key。",
+        }
+
+    monkeypatch.setattr("pen.app.stream_chat", fake_stream)
+    text = DEFAULT_HANDBOOK.read_text(encoding="utf-8").splitlines()
+    line = next(i for i, ln in enumerate(text, 1) if ln.startswith("**Q1. shell 和 Bash"))
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        resp = client.post(
+            "/v1/chat",
+            json={
+                "session_id": sid,
+                "selected_text": "shell 和 Bash",
+                "start_line": line,
+                "end_line": line,
+                "chip": "socratic",
+                "user_text": "",
+                "base_url": "https://api.openai.com/v1",
+            },
+        )
+        assert resp.status_code == 200
+        assert "API Key" in resp.text
+    assert seen["llm"] is None
+    assert seen["allow_env_fallback"] is False
+
+
 def test_chat_forwards_stored_allow_root(tmp_path: Path, monkeypatch) -> None:
     _isolate_pen(tmp_path, monkeypatch)
     monkeypatch.delenv("PEN_ALLOW_ROOTS", raising=False)
@@ -259,7 +297,7 @@ def test_chat_forwards_stored_allow_root(tmp_path: Path, monkeypatch) -> None:
     )
     seen: dict = {}
 
-    def fake_stream(sess, path, packet, llm=None, extra_roots=None):
+    def fake_stream(sess, path, packet, llm=None, extra_roots=None, allow_env_fallback=True):
         seen["extra_roots"] = extra_roots
         yield {
             "type": "done",
@@ -301,7 +339,7 @@ def test_chat_stream_raise_yields_error_and_records_not_ok(tmp_path: Path, monke
 
     _isolate_pen(tmp_path, monkeypatch)
 
-    def boom_stream(sess, path, packet, llm=None, extra_roots=None):
+    def boom_stream(sess, path, packet, llm=None, extra_roots=None, allow_env_fallback=True):
         raise ProviderError("节点不收这把钥匙。请到设置 → Socrates Pen 检查 API Key。")
         yield  # 只是为了让本函数成为生成器：第一次 next 才抛
 
@@ -448,7 +486,10 @@ def test_apply_commit_failure_consumes_proposal(tmp_path: Path, monkeypatch) -> 
     book = tmp_path / "mini.md"
     book.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
     q1 = next(i for i, ln in enumerate(book.read_text(encoding="utf-8").splitlines(), 1) if ln.startswith("**Q1. shell"))
-    monkeypatch.setattr("pen.app.propose_fold_md", lambda _sess, llm=None: FOLD)
+    monkeypatch.setattr(
+        "pen.app.propose_fold_md",
+        lambda _sess, llm=None, allow_env_fallback=True: FOLD,
+    )
 
     def boom(_path, _msg):
         raise gitops.GitError("gpg failed")

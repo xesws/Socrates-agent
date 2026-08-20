@@ -107,3 +107,19 @@ def test_handbook_path_rejects_book_under_obsidian(tmp_path: Path) -> None:
     obs_book.write_text("# x\n", encoding="utf-8")
     with pytest.raises(SandboxError, match="受保护"):
         assert_handbook_path(obs_book, extra_roots=[vault])
+
+
+def test_protected_path_is_case_insensitive(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "book.md"
+    weird = vault / ".OBSIDIAN" / "plugins" / "socrates-pen" / "data.json"
+    env_local = vault / ".env.local"
+    note.parent.mkdir(parents=True)
+    weird.parent.mkdir(parents=True)
+    note.write_text("# x\n", encoding="utf-8")
+    weird.write_text("{}\n", encoding="utf-8")
+    env_local.write_text("K=1\n", encoding="utf-8")
+    with pytest.raises(SandboxError, match="受保护"):
+        assert_readable(note, weird, extra_roots=[vault])
+    with pytest.raises(SandboxError, match="受保护"):
+        assert_readable(note, env_local, extra_roots=[vault])

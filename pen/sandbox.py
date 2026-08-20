@@ -17,6 +17,15 @@ class SandboxError(PermissionError):
     """路径越权。"""
 
 
+def _is_protected(got: Path) -> bool:
+    """禁止 .git / .obsidian / .env*。部件比较不区分大小写（APFS 默认不敏感）。"""
+    parts = [p.lower() for p in got.parts]
+    if ".git" in parts or ".obsidian" in parts:
+        return True
+    name = got.name.lower()
+    return name == ".env" or name.startswith(".env.")
+
+
 def _unwrap(s: str) -> str:
     m = _WRAP.match(s)
     return m.group(1).strip() if m else s
@@ -66,7 +75,7 @@ def assert_handbook_path(
 ) -> Path:
     """登记和写回共用：必须是允许根下的 Markdown，且不是 .env / .git / .obsidian。"""
     got = Path(path).expanduser().resolve()
-    if got.name == ".env" or ".git" in got.parts or ".obsidian" in got.parts:
+    if _is_protected(got):
         raise SandboxError(f"拒绝受保护路径：{got}")
     if got.suffix.lower() not in HANDBOOK_SUFFIXES:
         raise SandboxError(f"只接受 Markdown 教材（.md / .markdown）：{got}")
@@ -82,7 +91,7 @@ def assert_write_target(original_path: Path, target: str | Path) -> Path:
     got = Path(target).expanduser().resolve()
     if got != allowed:
         raise SandboxError(f"拒绝写入 {got}：本手册只能改 {allowed}")
-    if ".git" in got.parts or ".obsidian" in got.parts or got.name == ".env":
+    if _is_protected(got):
         raise SandboxError(f"拒绝写入受保护路径：{got}")
     return got
 
@@ -99,7 +108,7 @@ def assert_readable(
     """
     allowed_file = original_path.expanduser().resolve()
     got = resolve_read_target(original_path, target)
-    if got.name == ".env" or ".git" in got.parts or ".obsidian" in got.parts:
+    if _is_protected(got):
         raise SandboxError(f"拒绝读取受保护路径：{got}")
     if got == allowed_file:
         return got

@@ -273,6 +273,7 @@ def chat(body: ChatBody) -> StreamingResponse:
                 packet,
                 llm=body.merged(),
                 extra_roots=libraries.extra_roots_for(sess.handbook_id),
+                allow_env_fallback=not bool((body.base_url or "").strip()),
             ):
                 if ev.get("type") == "done":
                     has_sub = bool(ev.get("has_substantive"))
@@ -327,7 +328,11 @@ def propose(body: ProposeBody) -> dict[str, Any]:
     idx = libraries.load_index(sess.handbook_id)
     path = Path(meta.original_path)
     try:
-        fold = propose_fold_md(sess, llm=body.merged())
+        fold = propose_fold_md(
+            sess,
+            llm=body.merged(),
+            allow_env_fallback=not bool((body.base_url or "").strip()),
+        )
     except RuntimeError as exc:
         raise HTTPException(400, str(exc)) from exc
     try:

@@ -189,8 +189,10 @@ def stream_chat(
     user_packet: str,
     llm: LLMConfig | None = None,
     extra_roots: list[Path] | None = None,
+    allow_env_fallback: bool = True,
 ) -> Iterator[dict[str, Any]]:
-    cfg = llm or resolve_llm()
+    # 请求换了主机却没带 key 时 merge_llm 会返回 None；不能再 or resolve_llm() 把 .env 钥匙挪用过去。
+    cfg = llm if llm is not None else (resolve_llm() if allow_env_fallback else None)
     if cfg is None:
         yield {
             "type": "error",
@@ -317,8 +319,12 @@ def stream_chat(
     yield from _finish_text(session, raw, usage)
 
 
-def propose_fold_md(session: PenSession, llm: LLMConfig | None = None) -> str:
-    cfg = llm or resolve_llm()
+def propose_fold_md(
+    session: PenSession,
+    llm: LLMConfig | None = None,
+    allow_env_fallback: bool = True,
+) -> str:
+    cfg = llm if llm is not None else (resolve_llm() if allow_env_fallback else None)
     if cfg is None:
         raise RuntimeError(
             "找不到模型配置，无法生成折叠块。请到设置 → Socrates Pen 填写 API Key。"
