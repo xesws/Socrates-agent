@@ -323,10 +323,21 @@ export class PenView extends ItemView {
     void this.send("free", text).then(() => this.els?.input.focus());
   }
 
-  private async paintLog(): Promise<void> {
+  /**
+   * 只有原本就贴在底部时才自动滚到底，否则用户往上翻历史会被一路拽回来。
+   * 24px 容差吃掉一行的抖动。
+   */
+  private atBottom(el: HTMLElement): boolean {
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= 24;
+  }
+
+  /** mode="force"：用户自己刚发了话，无论翻到哪都拉回底部。 */
+  private async paintLog(mode: "auto" | "force" = "auto"): Promise<void> {
     const gen = ++this.paintGen;
     const first = this.els?.log;
     if (!first || this.painting) return; // 在画的循环看到新 gen 会重画到最新
+    // 必须在 empty() 之前测——之后 scrollTop / scrollHeight 已经没有意义了。
+    const stick = mode === "force" || this.atBottom(first);
     this.painting = true;
     try {
       let g = gen;
@@ -375,7 +386,7 @@ export class PenView extends ItemView {
         }
         const done = this.els?.log;
         if (g === this.paintGen && done) {
-          done.scrollTop = done.scrollHeight;
+          if (stick) done.scrollTop = done.scrollHeight;
           return;
         }
         g = this.paintGen; // 期间来了更新的请求，整条重画
@@ -401,8 +412,9 @@ export class PenView extends ItemView {
     const body =
       (turn.querySelector(".sp-body") as HTMLElement | null) ??
       turn.createDiv({ cls: "sp-body" });
+    const stick = this.atBottom(log);
     body.setText(visibleReply(text) || t().streamPlaceholder);
-    log.scrollTop = log.scrollHeight;
+    if (stick) log.scrollTop = log.scrollHeight;
   }
 
   async probeHealth(): Promise<void> {
@@ -487,7 +499,7 @@ export class PenView extends ItemView {
       this.err = e instanceof Error ? e.message : String(e);
     }
     this.paintBar();
-    await this.paintLog();
+    await this.paintLog("force");
   }
 
   private adopt(sess: SessionView): void {
@@ -554,7 +566,7 @@ export class PenView extends ItemView {
       chip;
     this.msgs = [...this.msgs, { role: "user", text: shown }, { role: "assistant", text: "" }];
     this.paintBar();
-    await this.paintLog();
+    await this.paintLog("force");
     let acc = "";
     try {
       await streamChat(
@@ -570,14 +582,16 @@ export class PenView extends ItemView {
         (ev) => {
           if (ev.type === "status") {
             this.status = phaseText(String(ev.phase || ""), String(ev.text || ""));
-            this.paintBar();
+            this.setStatus();
           } else if (ev.type === "token") {
             this.status = phaseText("writing", "");
             acc += String(ev.text || "");
             const last = this.msgs[this.msgs.length - 1];
             if (last?.role === "assistant") last.text = acc;
             this.paintStreamBubble(acc);
-            this.paintBar();
+            // 后端每 48 字符发一个 token 事件。这里绝不能调 paintBar()——
+            // 那会把整条底座重建几十次。只有状态行那一个文本节点需要动。
+            this.setStatus();
           } else if (ev.type === "tool") {
             this.status = phaseText("reading", "");
             const ok = Boolean(ev.ok);
@@ -661,7 +675,7 @@ export class PenView extends ItemView {
         (ev) => {
           if (ev.type === "status") {
             this.status = phaseText(String(ev.phase || ""), String(ev.text || ""));
-            this.paintBar();
+            this.setStatus();
           } else if (ev.type === "token") {
             acc += String(ev.text || "");
             const row = this.msgs[this.msgs.length - 1];
@@ -721,7 +735,7 @@ export class PenView extends ItemView {
         this.status = "";
       }
       this.paintBar();
-      await this.paintLog();
+      await this.paintLog("force");
     }
   }
 
@@ -816,7 +830,7 @@ export class PenView extends ItemView {
       this.busy = false;
       this.status = "";
       this.paintBar();
-      await this.paintLog();
+      await this.paintLog("force");
     }
   }
 
@@ -840,7 +854,7 @@ export class PenView extends ItemView {
       this.busy = false;
       this.status = "";
       this.paintBar();
-      await this.paintLog();
+      await this.paintLog("force");
     }
   }
 }
