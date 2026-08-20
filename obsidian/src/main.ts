@@ -79,6 +79,10 @@ export default class SocratesPenPlugin extends Plugin {
     return readLivePick(this.app) ?? this.lastPick;
   }
 
+  clearPick(): void {
+    this.lastPick = null;
+  }
+
   noteBind(path: string): NoteBinding | undefined {
     return this.notes[path];
   }

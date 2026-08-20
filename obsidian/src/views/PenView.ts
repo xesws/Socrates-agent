@@ -310,10 +310,14 @@ export class PenView extends ItemView {
       new Notice("先框选并登记当前笔记");
       return;
     }
-    if (!window.confirm("新开会话会丢掉当前这场的模型记忆。确定？")) return;
+    if (!window.confirm("新开会话会丢掉当前这场的模型记忆和选区。确定？")) return;
     try {
       const sess = await this.api().createSession(this.handbookId);
       this.adopt(sess);
+      this.quote = "";
+      this.startLine = 1;
+      this.endLine = 1;
+      this.plugin.clearPick();
       if (this.capturedPath) {
         await this.plugin.bindNote(this.capturedPath, {
           handbook_id: this.handbookId,
