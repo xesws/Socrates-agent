@@ -267,7 +267,13 @@ def chat(body: ChatBody) -> StreamingResponse:
         ok = True
         has_sub = False
         try:
-            for ev in stream_chat(sess, path, packet, llm=body.merged()):
+            for ev in stream_chat(
+                sess,
+                path,
+                packet,
+                llm=body.merged(),
+                extra_roots=libraries.extra_roots_for(sess.handbook_id),
+            ):
                 if ev.get("type") == "done":
                     has_sub = bool(ev.get("has_substantive"))
                 elif ev.get("type") == "error":

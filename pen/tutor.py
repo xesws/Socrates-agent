@@ -170,6 +170,7 @@ def stream_chat(
     original_path: Path,
     user_packet: str,
     llm: LLMConfig | None = None,
+    extra_roots: list[Path] | None = None,
 ) -> Iterator[dict[str, Any]]:
     cfg = llm or resolve_llm()
     if cfg is None:
@@ -187,7 +188,7 @@ def stream_chat(
     client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key, timeout=120.0)
     session.messages.append({"role": "user", "content": user_packet})
 
-    extra_roots = [REPO_ROOT]
+    extra_roots = [REPO_ROOT, *(extra_roots or [])]
     tools = [READ_FILE_SCHEMA]
     usage = usage_snapshot(0, 0)
 

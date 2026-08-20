@@ -30,9 +30,10 @@ export function llmPayload(s: PenSettings): {
   model?: string;
   thinking: ThinkingLevel;
 } {
+  const base = s.baseUrl.trim().replace(/\/+$/, "");
   return {
     ...(s.apiKey.trim() ? { api_key: s.apiKey.trim() } : {}),
-    ...(s.baseUrl.trim() ? { base_url: s.baseUrl.trim() } : {}),
+    ...(base ? { base_url: base } : {}),
     ...(s.model.trim() ? { model: s.model.trim() } : {}),
     thinking: coerceThinking(s.thinking),
   };
@@ -84,7 +85,7 @@ export class PenSettingTab extends PluginSettingTab {
           .setPlaceholder("https://api.deepseek.com")
           .setValue(this.plugin.settings.baseUrl)
           .onChange(async (v) => {
-            this.plugin.settings.baseUrl = v.trim() || DEFAULT_SETTINGS.baseUrl;
+            this.plugin.settings.baseUrl = (v.trim().replace(/\/+$/, "") || DEFAULT_SETTINGS.baseUrl);
             await this.plugin.saveSettings();
           }),
       );

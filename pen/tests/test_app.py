@@ -203,7 +203,7 @@ def test_chat_forwards_settings_overrides(monkeypatch) -> None:
             thinking=kw.get("thinking") or "off",
         )
 
-    def fake_stream(sess, path, packet, llm=None):
+    def fake_stream(sess, path, packet, llm=None, extra_roots=None):
         seen["llm"] = llm
         yield {
             "type": "done",

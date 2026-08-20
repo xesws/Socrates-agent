@@ -176,10 +176,11 @@ export class PenView extends ItemView {
       const h = await this.api().health();
       this.sidecarReachable = true;
       const fromPage = this.plugin.settings.apiKey.trim();
+      const model = this.plugin.settings.model.trim() || h.llm.model;
       if (fromPage) {
-        this.health = `sidecar 正常 · 设置页 · ${this.plugin.settings.model}`;
+        this.health = `sidecar 正常 · 设置页 · ${model}`;
       } else if (h.llm.ok) {
-        this.health = `sidecar 正常 · 开发回退 ${h.llm.key_source} · ${h.llm.model}`;
+        this.health = `sidecar 正常 · 开发回退 ${h.llm.key_source} · ${model}`;
       } else {
         this.health = "sidecar 在，请到设置 → Socrates Pen 填写 API Key";
       }
