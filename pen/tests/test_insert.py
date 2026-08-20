@@ -5,7 +5,15 @@ from pathlib import Path
 import pytest
 
 from pen.index import build_index
-from pen.insert import InsertError, apply_insert, plan_insert, render_new_text
+from pen.insert import (
+    InsertError,
+    apply_insert,
+    plan_after_line,
+    plan_insert,
+    plan_replace_range,
+    render_new_text,
+)
+from pen.outline import file_outline
 from pen.snapshots import rollback, take_snapshot
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mini_handbook.md"
@@ -100,3 +108,47 @@ def test_level1_q1_not_polluted(tmp_path: Path) -> None:
     new = render_new_text(dest.read_text(encoding="utf-8"), plan)
     l1 = new.split("**Q1. venv", 1)[1]
     assert "点读笔补的例子" not in l1
+
+
+def test_after_line_on_plain_note(tmp_path: Path) -> None:
+    dest = tmp_path / "note.md"
+    dest.write_text("# 随便\n\nhello\nworld\n", encoding="utf-8")
+    plan = plan_after_line(dest, FOLD, 3)
+    assert plan.mode == "after_line"
+    assert plan.insert_after_line == 3
+    apply_insert(dest, plan)
+    text = dest.read_text(encoding="utf-8")
+    assert text.index("hello") < text.index("点读笔补的例子")
+    assert text.index("点读笔补的例子") < text.index("world")
+
+
+def test_after_line_oob(tmp_path: Path) -> None:
+    dest = tmp_path / "note.md"
+    dest.write_text("a\nb\n", encoding="utf-8")
+    with pytest.raises(InsertError):
+        plan_after_line(dest, FOLD, 99)
+
+
+def test_outline_any_heading(tmp_path: Path) -> None:
+    dest = tmp_path / "note.md"
+    dest.write_text("# 随便\n\nbody\n\n## 子节\n\nx\n", encoding="utf-8")
+    ol = file_outline(dest)
+    titles = [h["text"] for h in ol["headings"]]
+    assert titles == ["随便", "子节"]
+    assert ol["questions"] == []
+    h0 = ol["headings"][0]
+    assert h0["start_line"] == 1
+    assert h0["end_line"] == 7
+
+
+def test_replace_range_drops_only_that_span(tmp_path: Path) -> None:
+    dest = tmp_path / "note.md"
+    dest.write_text("a\nb\nc\nd\n", encoding="utf-8")
+    plan = plan_replace_range(dest, FOLD, 2, 3)
+    apply_insert(dest, plan)
+    text = dest.read_text(encoding="utf-8")
+    assert text.startswith("a\n")
+    assert "\nb\n" not in text and not text.startswith("b")
+    assert "\nc\n" not in text
+    assert text.rstrip().endswith("d")
+    assert "点读笔补的例子" in text

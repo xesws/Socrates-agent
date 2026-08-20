@@ -14,7 +14,14 @@ import {
   vaultRoot,
   type EditorPick,
 } from "../selection";
-import type { ChatMessage, Chip, Proposal, SessionView } from "../types";
+import type {
+  ChatMessage,
+  Chip,
+  NoteOutline,
+  Proposal,
+  RetargetKind,
+  SessionView,
+} from "../types";
 
 export const VIEW_TYPE_PEN = "socrates-pen-view";
 
@@ -30,11 +37,14 @@ function toolCaption(m: ChatMessage): { ok: boolean; file: string } {
 }
 
 function whereSentence(p: Proposal): string {
+  if (p.where) return p.where;
+  if (p.replace_start != null && p.replace_end != null) {
+    return `将替换第 ${p.replace_start}–${p.replace_end} 行，写成「🔍 实例 ${p.instance_n}」。`;
+  }
   const raw = (p.q_title || p.beat || "").replace(/\*+/g, "").trim();
   const place = raw || "你刚划的那段附近";
-  const level = p.level ? `${p.level} · ` : "";
   const line = p.insert_after_line || 0;
-  return `将作为「🔍 实例 ${p.instance_n}」插在 ${level}${place} 后面（约第 ${line} 行）。写入后笔记会跳到那一块。`;
+  return `将作为「🔍 实例 ${p.instance_n}」插在 ${place} 后面（约第 ${line} 行）。`;
 }
 
 export class PenView extends ItemView {
@@ -59,6 +69,14 @@ export class PenView extends ItemView {
   private endLine = 1;
   private proposal: Proposal | null = null;
   private canUndo = false;
+  private outline: NoteOutline | null = null;
+  private targetKind: RetargetKind = "auto";
+  private lineInput = "1";
+  private headingStart = 0;
+  private qStart = 0;
+  private rangeA = "1";
+  private rangeB = "1";
+  private replaceAck = false;
   private logEl: HTMLElement | null = null;
   private barEl: HTMLElement | null = null;
 
@@ -155,18 +173,21 @@ export class PenView extends ItemView {
     if (this.proposal) {
       const box = this.barEl.createDiv({ cls: "sp-preview" });
       box.createEl("h4", { text: "将写入这篇笔记" });
+      this.paintTargetControls(box);
       box.createDiv({ cls: "sp-where", text: whereSentence(this.proposal) });
       box.createDiv({
         cls: "sp-warn",
-        text: "确认前请不要改这篇笔记。写入的是折叠块，不是 git 版本。",
+        text: "位置由你指定，不是模型猜的。确认前请不要改这篇笔记。",
       });
       box.createEl("pre", { cls: "sp-fold", text: this.proposal.fold_md });
       const diff = box.createEl("details");
       diff.createEl("summary", { text: "改动 diff" });
       diff.createEl("pre", { text: this.proposal.diff });
       const actions = box.createDiv({ cls: "sp-preview-actions" });
+      const replacing =
+        this.proposal.replace_start != null && this.proposal.replace_end != null;
       const ok = actions.createEl("button", { text: "确认写入原文" });
-      ok.disabled = this.busy;
+      ok.disabled = this.busy || (replacing && !this.replaceAck);
       ok.onclick = () => void this.doApply();
       const cancel = actions.createEl("button", { text: "取消" });
       cancel.disabled = this.busy;
@@ -462,13 +483,199 @@ export class PenView extends ItemView {
     }
   }
 
+  private paintTargetControls(box: HTMLElement): void {
+    const row = box.createDiv({ cls: "sp-target" });
+    row.createSpan({ cls: "sp-kicker", text: "写入位置" });
+    const sel = row.createEl("select");
+    const opts: [RetargetKind, string][] = [
+      ["auto", "跟选区（默认）"],
+      ["caret", "当前光标之后"],
+      ["after_line", "指定行号之后"],
+      ["after_heading", "某一标题之后"],
+      ["after_q", "某一问之后"],
+      ["replace_heading", "替换某一标题下的正文"],
+      ["replace_range", "替换第 A–B 行"],
+    ];
+    const hasQ = (this.outline?.questions.length ?? 0) > 0;
+    for (const [val, lab] of opts) {
+      if (val === "after_q" && !hasQ) continue;
+      const o = sel.createEl("option", { text: lab, value: val });
+      if (val === this.targetKind) o.selected = true;
+    }
+    sel.disabled = this.busy;
+    sel.onchange = () => {
+      this.targetKind = sel.value as RetargetKind;
+      this.replaceAck = false;
+      void this.onTargetKind();
+    };
+
+    if (this.targetKind === "after_line") {
+      const line = row.createEl("input");
+      line.type = "number";
+      line.min = "0";
+      line.value = this.lineInput;
+      line.disabled = this.busy;
+      const go = row.createEl("button", { text: "应用到该行" });
+      go.disabled = this.busy;
+      go.onclick = () => {
+        this.lineInput = line.value;
+        void this.doRetarget({
+          kind: "after_line",
+          after_line: Number(this.lineInput),
+        });
+      };
+    }
+
+    if (this.targetKind === "after_heading" || this.targetKind === "replace_heading") {
+      const hs = row.createEl("select");
+      hs.createEl("option", { text: "选择标题…", value: "0" });
+      for (const h of this.outline?.headings || []) {
+        const label = `${"#".repeat(h.level)} ${h.text}  (L${h.start_line}–${h.end_line})`;
+        const o = hs.createEl("option", { text: label, value: String(h.start_line) });
+        if (h.start_line === this.headingStart) o.selected = true;
+      }
+      hs.disabled = this.busy;
+      hs.onchange = () => {
+        this.headingStart = Number(hs.value);
+        if (this.headingStart) {
+          void this.doRetarget({
+            kind: this.targetKind,
+            heading_start_line: this.headingStart,
+          });
+        }
+      };
+    }
+
+    if (this.targetKind === "after_q") {
+      const qs = row.createEl("select");
+      qs.createEl("option", { text: "选择问题…", value: "0" });
+      for (const q of this.outline?.questions || []) {
+        const o = qs.createEl("option", {
+          text: `${q.text.replace(/\*/g, "")}  (L${q.start_line})`,
+          value: String(q.start_line),
+        });
+        if (q.start_line === this.qStart) o.selected = true;
+      }
+      qs.disabled = this.busy;
+      qs.onchange = () => {
+        this.qStart = Number(qs.value);
+        if (this.qStart) {
+          void this.doRetarget({ kind: "after_q", q_start_line: this.qStart });
+        }
+      };
+    }
+
+    if (this.targetKind === "replace_range") {
+      const a = row.createEl("input");
+      a.type = "number";
+      a.min = "1";
+      a.value = this.rangeA;
+      const b = row.createEl("input");
+      b.type = "number";
+      b.min = "1";
+      b.value = this.rangeB;
+      const go = row.createEl("button", { text: "应用到该区间" });
+      go.disabled = this.busy;
+      go.onclick = () => {
+        this.rangeA = a.value;
+        this.rangeB = b.value;
+        void this.doRetarget({
+          kind: "replace_range",
+          range_start: Number(this.rangeA),
+          range_end: Number(this.rangeB),
+        });
+      };
+    }
+
+    const p = this.proposal;
+    const replacing = p?.replace_start != null && p.replace_end != null;
+    if (replacing && p) {
+      const lab = box.createEl("label", { cls: "sp-ack" });
+      const ck = lab.createEl("input");
+      ck.type = "checkbox";
+      ck.checked = this.replaceAck;
+      lab.appendText(
+        `确认替换第 ${p.replace_start}–${p.replace_end} 行（可撤销）`,
+      );
+      ck.onchange = () => {
+        this.replaceAck = ck.checked;
+        this.paintBar();
+      };
+    }
+  }
+
+  private caretLine(): number | null {
+    const rel = this.capturedPath;
+    if (!rel) return null;
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const v = leaf.view;
+      if (v instanceof MarkdownView && v.file?.path === rel) {
+        return v.editor.getCursor().line + 1;
+      }
+    }
+    return null;
+  }
+
+  private async onTargetKind(): Promise<void> {
+    if (this.targetKind === "auto") {
+      await this.doRetarget({ kind: "auto" });
+      return;
+    }
+    if (this.targetKind === "caret") {
+      const n = this.caretLine();
+      if (n == null) {
+        new Notice("找不到这篇笔记的编辑器光标");
+        this.paintBar();
+        return;
+      }
+      this.lineInput = String(n);
+      await this.doRetarget({ kind: "after_line", after_line: n });
+      return;
+    }
+    this.paintBar();
+  }
+
+  private async doRetarget(body: {
+    kind: string;
+    after_line?: number;
+    heading_start_line?: number;
+    q_start_line?: number;
+    range_start?: number;
+    range_end?: number;
+  }): Promise<void> {
+    if (!this.proposal || this.busy) return;
+    this.busy = true;
+    this.err = "";
+    this.status = "在重算插入位置…";
+    this.paintBar();
+    try {
+      this.proposal = await this.api().retarget(this.proposal.proposal_id, body);
+      this.replaceAck = false;
+    } catch (e) {
+      this.err = e instanceof Error ? e.message : String(e);
+    } finally {
+      this.busy = false;
+      this.status = "";
+      this.paintBar();
+    }
+  }
+
   private async doPropose(): Promise<void> {
-    if (!this.sessionId) return;
+    if (this.busy || !this.sessionId) return;
     this.busy = true;
     this.status = "在收折叠块…";
     this.paintBar();
     try {
       this.proposal = await this.api().propose(this.sessionId, this.plugin.settings);
+      this.targetKind = "auto";
+      this.replaceAck = false;
+      if (this.handbookId) {
+        try {
+          this.outline = await this.api().outline(this.handbookId);
+        } catch {
+          this.outline = null;
+        }
+      }
     } catch (e) {
       this.err = e instanceof Error ? e.message : String(e);
     } finally {
@@ -510,6 +717,12 @@ export class PenView extends ItemView {
 
   private async doApply(): Promise<void> {
     if (this.busy || !this.sessionId || !this.proposal) return;
+    const replacing =
+      this.proposal.replace_start != null && this.proposal.replace_end != null;
+    if (replacing && !this.replaceAck) {
+      new Notice("替换会删掉指定行，请先勾选确认");
+      return;
+    }
     const prop = this.proposal;
     const rel = this.noteRelPath(prop.original_path);
     this.busy = true;
@@ -529,9 +742,11 @@ export class PenView extends ItemView {
         },
       ];
       const jump =
-        Number.isFinite(prop.insert_after_line) && prop.insert_after_line >= 0
-          ? prop.insert_after_line + 1
-          : 1;
+        replacing && Number.isFinite(prop.replace_start)
+          ? Number(prop.replace_start)
+          : Number.isFinite(prop.insert_after_line) && prop.insert_after_line >= 0
+            ? prop.insert_after_line + 1
+            : 1;
       if (rel) await this.revealInsert(rel, jump);
       new Notice(`已写入「🔍 实例 ${prop.instance_n}」`);
       if (r.commit_error) {

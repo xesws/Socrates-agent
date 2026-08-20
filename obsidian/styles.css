@@ -224,6 +224,26 @@
   gap: 6px;
 }
 
+.socrates-pen .sp-target {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.socrates-pen .sp-target select,
+.socrates-pen .sp-target input[type="number"] {
+  font-size: 12px;
+  max-width: 100%;
+}
+
+.socrates-pen .sp-ack {
+  font-size: 12px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
 .socrates-pen .sp-hint {
   color: var(--text-muted);
 }

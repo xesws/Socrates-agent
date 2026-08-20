@@ -40,6 +40,8 @@ def _plan_to_dict(plan: InsertPlan | dict[str, Any]) -> dict[str, Any]:
 
 
 def _plan_from_dict(raw: dict[str, Any]) -> InsertPlan:
+    rs = raw.get("replace_start")
+    re_ = raw.get("replace_end")
     return InsertPlan(
         mode=str(raw["mode"]),
         level=str(raw["level"]),
@@ -48,6 +50,8 @@ def _plan_from_dict(raw: dict[str, Any]) -> InsertPlan:
         insert_after_line=int(raw["insert_after_line"]),
         instance_n=int(raw["instance_n"]),
         fold_md=str(raw["fold_md"]),
+        replace_start=int(rs) if rs is not None else None,
+        replace_end=int(re_) if re_ is not None else None,
     )
 
 

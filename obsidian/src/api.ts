@@ -1,6 +1,12 @@
 import type { PenSettings } from "./settings";
 import { llmPayload } from "./settings";
-import type { HandbookMeta, LlmStatus, Proposal, SessionView } from "./types";
+import type {
+  HandbookMeta,
+  LlmStatus,
+  NoteOutline,
+  Proposal,
+  SessionView,
+} from "./types";
 
 function joinUrl(base: string, path: string): string {
   return `${base.replace(/\/$/, "")}${path}`;
@@ -67,6 +73,23 @@ export function makeApi(baseUrl: string) {
           body: JSON.stringify({ handbook_id }),
         },
       ),
+    outline: (handbook_id: string) =>
+      j<NoteOutline>(baseUrl, `/v1/handbooks/${handbook_id}/outline`),
+    retarget: (
+      proposal_id: string,
+      body: {
+        kind: string;
+        after_line?: number;
+        heading_start_line?: number;
+        q_start_line?: number;
+        range_start?: number;
+        range_end?: number;
+      },
+    ) =>
+      j<Proposal>(baseUrl, "/v1/writeback/retarget", {
+        method: "POST",
+        body: JSON.stringify({ proposal_id, ...body }),
+      }),
   };
 }
 

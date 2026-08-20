@@ -199,6 +199,66 @@ def test_apply_uses_stored_allow_root(tmp_path: Path, monkeypatch) -> None:
         assert "点读笔补的例子" in book.read_text(encoding="utf-8")
 
 
+def test_retarget_after_line_and_outline(tmp_path: Path, monkeypatch) -> None:
+    _isolate_pen(tmp_path, monkeypatch)
+    monkeypatch.delenv("PEN_ALLOW_ROOTS", raising=False)
+    book = tmp_path / "plain.md"
+    book.write_text("# 随便\n\nkeep-me\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "pen.app.propose_fold_md",
+        lambda _sess, llm=None, allow_env_fallback=True: FOLD,
+    )
+    with TestClient(app) as client:
+        imported = client.post(
+            "/v1/handbooks/import",
+            json={
+                "original_path": str(book),
+                "handbook_id": "plain-note",
+                "vault_root": str(tmp_path),
+            },
+        )
+        assert imported.status_code == 200
+        ol = client.get("/v1/handbooks/plain-note/outline")
+        assert ol.status_code == 200
+        assert ol.json()["headings"][0]["text"] == "随便"
+        sid = client.post("/v1/sessions", json={"handbook_id": "plain-note"}).json()[
+            "session_id"
+        ]
+        sess = STORE.get(sid)
+        sess.last_assistant = "x" * 90
+        sess.last_anchor = {
+            "start_line": 1,
+            "end_line": 1,
+            "selected_text": "随便",
+            "kind": "other",
+            "level": "封面",
+            "q_title": None,
+        }
+        STORE.save(sess)
+        proposed = client.post("/v1/writeback/propose", json={"session_id": sid})
+        assert proposed.status_code == 200
+        pid = proposed.json()["proposal_id"]
+        moved = client.post(
+            "/v1/writeback/retarget",
+            json={"proposal_id": pid, "kind": "after_line", "after_line": 3},
+        )
+        assert moved.status_code == 200
+        assert moved.json()["insert_after_line"] == 3
+        assert "where" in moved.json()
+        bad = client.post(
+            "/v1/writeback/retarget",
+            json={"proposal_id": pid, "kind": "after_line", "after_line": 99},
+        )
+        assert bad.status_code == 400
+        applied = client.post(
+            "/v1/writeback/apply",
+            json={"session_id": sid, "proposal_id": pid, "commit": False},
+        )
+        assert applied.status_code == 200
+        text = book.read_text(encoding="utf-8")
+        assert text.index("keep-me") < text.index("点读笔补的例子")
+
+
 def test_chat_forwards_settings_overrides(monkeypatch) -> None:
     from pen.config import LLMConfig
 

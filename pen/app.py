@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from collections.abc import AsyncIterator
@@ -16,6 +17,7 @@ from pydantic import BaseModel
 
 from pen import gitops
 from pen import insert as insertmod
+from pen.outline import file_outline
 from pen import libraries, snapshots
 from pen import diagnose as diagnosemod
 from pen import proposals as proposalsmod
@@ -37,7 +39,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.2.9", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.3.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -95,6 +97,16 @@ class ProposeBody(LlmOverrideBody):
     summary_hint: str | None = None
 
 
+class RetargetBody(BaseModel):
+    proposal_id: str
+    kind: str = "auto"
+    after_line: int | None = None
+    heading_start_line: int | None = None
+    q_start_line: int | None = None
+    range_start: int | None = None
+    range_end: int | None = None
+
+
 class ApplyBody(BaseModel):
     session_id: str
     proposal_id: str
@@ -115,6 +127,116 @@ def _meta_or_404(handbook_id: str):
 
 def _sse(ev: dict[str, Any]) -> str:
     return f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+
+def _content_fp(path: Path) -> str:
+    return hashlib.sha256(path.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+
+
+def _span(path: Path, start: int, end: int) -> str:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return "\n".join(lines[max(0, start - 1) : end])
+
+
+def _public_proposal(pid: str, path: Path, plan: insertmod.InsertPlan, diff: str) -> dict[str, Any]:
+    return {
+        "proposal_id": pid,
+        "original_path": str(path),
+        "mode": plan.mode,
+        "level": plan.level,
+        "q_title": plan.q_title,
+        "beat": plan.beat,
+        "instance_n": plan.instance_n,
+        "insert_after_line": plan.insert_after_line,
+        "replace_start": plan.replace_start,
+        "replace_end": plan.replace_end,
+        "fold_md": plan.fold_md,
+        "diff": diff,
+        "where": insertmod.describe_plan(plan),
+    }
+
+
+def _plan_for_target(
+    path: Path,
+    fold_md: str,
+    sess,
+    body: RetargetBody,
+) -> insertmod.InsertPlan:
+    kind = (body.kind or "auto").strip()
+    if kind == "auto":
+        if not sess.last_anchor:
+            raise insertmod.InsertError("缺少框选锚点")
+        idx = libraries.load_index(sess.handbook_id)
+        return insertmod.plan_insert(
+            idx,
+            path,
+            line=int(sess.last_anchor["start_line"]),
+            fold_md=fold_md,
+        )
+    if kind == "after_line":
+        if body.after_line is None:
+            raise insertmod.InsertError("需要 after_line")
+        return insertmod.plan_after_line(path, fold_md, int(body.after_line))
+    ol = file_outline(path)
+    if kind == "after_heading":
+        hit = next(
+            (h for h in ol["headings"] if h["start_line"] == body.heading_start_line),
+            None,
+        )
+        if hit is None:
+            raise insertmod.InsertError("找不到该标题")
+        span = _span(path, int(hit["start_line"]), int(hit["end_line"]))
+        return insertmod.plan_after_line(
+            path,
+            fold_md,
+            int(hit["end_line"]),
+            mode="after_heading",
+            beat=str(hit["text"]),
+            count_in=span,
+        )
+    if kind == "after_q":
+        hit = next(
+            (q for q in ol["questions"] if q["start_line"] == body.q_start_line),
+            None,
+        )
+        if hit is None:
+            raise insertmod.InsertError("找不到该问")
+        span = _span(path, int(hit["start_line"]), int(hit["end_line"]))
+        return insertmod.plan_after_line(
+            path,
+            fold_md,
+            int(hit["insert_after_line"]),
+            mode="after_q",
+            q_title=str(hit["text"]),
+            count_in=span,
+        )
+    if kind == "replace_heading":
+        hit = next(
+            (h for h in ol["headings"] if h["start_line"] == body.heading_start_line),
+            None,
+        )
+        if hit is None:
+            raise insertmod.InsertError("找不到该标题")
+        start, end = int(hit["start_line"]), int(hit["end_line"])
+        if end <= start:
+            return insertmod.plan_after_line(
+                path, fold_md, start, mode="after_heading", beat=str(hit["text"])
+            )
+        return insertmod.plan_replace_range(
+            path,
+            fold_md,
+            start + 1,
+            end,
+            mode="replace_heading",
+            beat=str(hit["text"]),
+        )
+    if kind == "replace_range":
+        if body.range_start is None or body.range_end is None:
+            raise insertmod.InsertError("需要 range_start 和 range_end")
+        return insertmod.plan_replace_range(
+            path, fold_md, int(body.range_start), int(body.range_end)
+        )
+    raise insertmod.InsertError(f"未知目标 kind：{kind}")
 
 
 def _proposal_put(pid: str, rec: dict[str, Any]) -> None:
@@ -357,20 +479,50 @@ def propose(body: ProposeBody) -> dict[str, Any]:
             "plan": plan,
             "diff": diff,
             "original_path": str(path),
+            "content_fp": _content_fp(path),
         },
     )
-    return {
-        "proposal_id": pid,
-        "original_path": str(path),
-        "mode": plan.mode,
-        "level": plan.level,
-        "q_title": plan.q_title,
-        "beat": plan.beat,
-        "instance_n": plan.instance_n,
-        "insert_after_line": plan.insert_after_line,
-        "fold_md": plan.fold_md,
-        "diff": diff,
-    }
+    return _public_proposal(pid, path, plan, diff)
+
+
+@app.get("/v1/handbooks/{handbook_id}/outline")
+def handbook_outline(handbook_id: str) -> dict[str, Any]:
+    meta = _meta_or_404(handbook_id)
+    path = Path(meta.original_path)
+    try:
+        assert_handbook_path(path, extra_roots=libraries.extra_roots_for(handbook_id))
+    except SandboxError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return file_outline(path)
+
+
+@app.post("/v1/writeback/retarget")
+def retarget(body: RetargetBody) -> dict[str, Any]:
+    prop = _proposal_get(body.proposal_id)
+    if prop is None:
+        raise HTTPException(404, "提议不存在或已过期")
+    try:
+        sess = STORE.get(prop["session_id"])
+    except KeyError as exc:
+        raise HTTPException(404, "未知会话") from exc
+    path = Path(prop["original_path"])
+    try:
+        assert_handbook_path(path, extra_roots=libraries.extra_roots_for(sess.handbook_id))
+    except SandboxError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    fold = prop["plan"].fold_md
+    try:
+        plan = _plan_for_target(path, fold, sess, body)
+    except insertmod.InsertError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    old = path.read_text(encoding="utf-8")
+    new = insertmod.render_new_text(old, plan)
+    diff = insertmod.unified_diff(old, new, path.name)
+    prop["plan"] = plan
+    prop["diff"] = diff
+    prop["content_fp"] = _content_fp(path)
+    _proposal_put(body.proposal_id, prop)
+    return _public_proposal(body.proposal_id, path, plan, diff)
 
 
 @app.post("/v1/writeback/apply")
@@ -389,6 +541,9 @@ def apply(body: ApplyBody) -> dict[str, Any]:
         assert_handbook_path(path, extra_roots=libraries.extra_roots_for(sess.handbook_id))
     except SandboxError as exc:
         raise HTTPException(400, str(exc)) from exc
+    expected = prop.get("content_fp")
+    if expected and _content_fp(path) != expected:
+        raise HTTPException(400, "笔记在选定位置之后改过了，请再选一次写入位置")
     snap = snapshots.take_snapshot(sess.handbook_id, path, "pre-insert")
     try:
         insertmod.apply_insert(path, prop["plan"])
