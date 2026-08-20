@@ -46,47 +46,6 @@ export type ChatMessage = {
   ok?: boolean;
 };
 
-export type Proposal = {
-  proposal_id: string;
-  original_path: string;
-  mode: string;
-  level: string;
-  q_title: string | null;
-  beat?: string | null;
-  instance_n: number;
-  insert_after_line: number;
-  replace_start?: number | null;
-  replace_end?: number | null;
-  fold_md: string;
-  diff: string;
-  where?: string;
-};
-
-export type NoteOutline = {
-  n_lines: number;
-  headings: {
-    level: number;
-    text: string;
-    start_line: number;
-    end_line: number;
-  }[];
-  questions: {
-    text: string;
-    start_line: number;
-    end_line: number;
-    insert_after_line: number;
-  }[];
-};
-
-export type RetargetKind =
-  | "auto"
-  | "caret"
-  | "after_line"
-  | "after_heading"
-  | "after_q"
-  | "replace_heading"
-  | "replace_range";
-
 export type SnapshotStatus = {
   can_undo: boolean;
   can_redo: boolean;

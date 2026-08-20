@@ -1,12 +1,6 @@
 import type { PenSettings } from "./settings";
 import { llmPayload } from "./settings";
-import type {
-  HandbookMeta,
-  LlmStatus,
-  NoteOutline,
-  Proposal,
-  SessionView,
-} from "./types";
+import type { HandbookMeta, LlmStatus, SessionView } from "./types";
 
 function joinUrl(base: string, path: string): string {
   return `${base.replace(/\/$/, "")}${path}`;
@@ -45,25 +39,6 @@ export function makeApi(baseUrl: string) {
       }),
     getSession: (session_id: string) =>
       j<SessionView>(baseUrl, `/v1/sessions/${session_id}`),
-    propose: (session_id: string, settings?: PenSettings) =>
-      j<Proposal>(baseUrl, "/v1/writeback/propose", {
-        method: "POST",
-        body: JSON.stringify({
-          session_id,
-          ...(settings ? llmPayload(settings) : {}),
-        }),
-      }),
-    apply: (session_id: string, proposal_id: string) =>
-      j<{
-        ok: boolean;
-        original_path: string;
-        snapshot: string;
-        commit: string | null;
-        commit_error?: string | null;
-      }>(baseUrl, "/v1/writeback/apply", {
-        method: "POST",
-        body: JSON.stringify({ session_id, proposal_id, commit: false }),
-      }),
     snapshots: (handbook_id: string) =>
       j<{
         can_undo: boolean;
@@ -96,23 +71,6 @@ export function makeApi(baseUrl: string) {
       }>(baseUrl, "/v1/writeback/redo", {
         method: "POST",
         body: JSON.stringify({ handbook_id }),
-      }),
-    outline: (handbook_id: string) =>
-      j<NoteOutline>(baseUrl, `/v1/handbooks/${handbook_id}/outline`),
-    retarget: (
-      proposal_id: string,
-      body: {
-        kind: string;
-        after_line?: number;
-        heading_start_line?: number;
-        q_start_line?: number;
-        range_start?: number;
-        range_end?: number;
-      },
-    ) =>
-      j<Proposal>(baseUrl, "/v1/writeback/retarget", {
-        method: "POST",
-        body: JSON.stringify({ proposal_id, ...body }),
       }),
   };
 }
