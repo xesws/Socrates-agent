@@ -128,7 +128,10 @@ export class PenView extends ItemView {
   /** 深挖轮询的代号。切笔记/关面板时 ++ 一下，在途的那一拍自己早退。 */
   private deepGen = 0;
   private deepCursor = 0;
-  private deepBusy = false;
+  /** 配额用满时挂在用量那一格后面。不说的话读者只看到「深题突然不来了」。 */
+  private deepNote = "";
+  /** 有新深题刚到：这一轮画完把它滚进可视区。 */
+  private deepArrived = false;
   private els: Els | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: SocratesPenPlugin) {
@@ -310,8 +313,9 @@ export class PenView extends ItemView {
     const line = this.busy
       ? this.status
       : this.usage
-        ? t().usage(this.usage.ctx, this.usage.out)
-        : "";
+        ? t().usage(this.usage.ctx, this.usage.out) +
+          (this.deepNote ? ` \u00b7 ${this.deepNote}` : "")
+        : this.deepNote;
     e.status.classList.toggle("is-off", !line);
     e.status.classList.toggle("is-usage", !this.busy);
     if (e.status.textContent !== line) e.status.textContent = line;
@@ -383,6 +387,13 @@ export class PenView extends ItemView {
     }
     e.chips.classList.toggle("is-off", e.chips.childElementCount === 0);
     this.syncChipDisabled();
+    // 窄侧栏下三个固定芯片就占满了 6.4em，深题「排在最前」也还是在它们之后，
+    // 实测 300px 时完全落在滚动区外——等于没抛。滚一下才真的看得见。
+    if (this.deepArrived) {
+      this.deepArrived = false;
+      const first = e.chips.querySelector(".is-deep");
+      if (first) first.scrollIntoView({ block: "nearest" });
+    }
   }
 
   private paintPanel(): void {
@@ -542,14 +553,23 @@ export class PenView extends ItemView {
       onItems: (items, cursor) => {
         this.deepCursor = cursor;
         this.mergeDeep(items);
+        this.deepArrived = true;
         this.paintChips();
+      },
+      onBudget: (b) => {
+        const spent =
+          (b.window_max ?? 0) > 0 && (b.window_used ?? 0) >= (b.window_max ?? 0);
+        const note = spent ? t().deepQuotaSpent : "";
+        if (note !== this.deepNote) {
+          this.deepNote = note;
+          this.setStatus();
+        }
       },
     });
   }
 
   private stopDeepPoll(): void {
     this.deepGen++;
-    this.deepBusy = false;
   }
 
   /** 深题追加进来，按文本去重。实时层那两条不动。 */

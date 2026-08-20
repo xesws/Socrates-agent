@@ -47,6 +47,9 @@ function harness(inbox, opts = {}) {
           st.cursor = cursor;
           st.painted++;
         },
+        onBudget: (b) => {
+          st.budget = b;
+        },
       }),
   };
 }
@@ -93,6 +96,14 @@ check("收到后游标推进", h.st.cursor === 7);
 h = harness(async () => ({ items: [], cursor: 0, running: [] }));
 await h.run();
 check("一开始就没有在跑的 → 敲一次就停", h.st.calls === 1);
+
+h = harness(async () => ({ items: [], cursor: 0, running: [], budget: { used: 8, max: 8, window_used: 40, window_max: 40 } }));
+await h.run();
+check("配额会报给调用方（用满时读者得知道为什么深题不来了）", h.st.budget?.window_used === 40);
+
+h = harness(async () => ({ items: [], cursor: 0, running: [] }));
+await h.run();
+check("没有 budget 字段也不炸", h.st.budget === undefined);
 
 // ── mergeDeep / keepDeep 的直测 ──
 const quick = (t) => ({ id: t, kind: "quick", text: t });

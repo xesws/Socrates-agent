@@ -88,6 +88,8 @@ PROBE_SYSTEM = """你是这本手册的助教，坐在师傅背后。师傅刚�
 材料不够时：
 如果你觉得非得看一眼某段正文才敢下笔，就在 need_read 里写行区间，最多两段。
 系统会把那几段读给你，再问你一次。不确定就别写，多数时候目录和 Q 清单已经够了。
+要看的是【工作目录里还有这些教材】里那本，就在同一条里加 book 字段写它的书名，
+系统会去那本里取；不写 book 就默认当前这本。
 
 timing 怎么填：
 now = 接着读者刚才那口气就能问，不跳关。
@@ -97,7 +99,7 @@ later = 题是好的，但现在问会把人从当前这格拽走。这时在 ta
 
 只输出一个 JSON 对象，别写解释，别写前言。最多 3 条，宁缺毋滥，一条都想不出就交空数组。
 {
-  "need_read": [{"start_line": 0, "end_line": 0}],
+  "need_read": [{"book": "只在要读别的教材时才写：书名", "start_line": 0, "end_line": 0}],
   "questions": [
     {
       "text": "问题本身，一句话，12 到 40 个汉字，带问号，用师傅对读者说话的口气",
@@ -452,25 +454,66 @@ def _create(cfg: LLMConfig, messages: list[dict[str, str]]) -> str:
     return (resp.choices[0].message.content or "").strip()
 
 
+def _shelf_paths() -> dict[str, Path]:
+    """书名 → 路径。只收**已登记且落在允许根内**的，跟 shelf_digest 同一道闸——
+    登记表里躺着指向 /private/var/folders 的 pytest 夹具。"""
+    from pen import libraries
+    from pen.config import handbook_allow_roots
+    from pen.library_scan import _digest, _within_allowed
+
+    roots = handbook_allow_roots()
+    out: dict[str, Path] = {}
+    for meta in libraries.list_handbooks():
+        p = Path(meta.original_path)
+        if not p.is_file() or not _within_allowed(p, roots):
+            continue
+        d = _digest(p)
+        if d:
+            out.setdefault(str(d["title"]), p)
+        out.setdefault(meta.title, p)
+    return out
+
+
 def _read_excerpts(job: ProbeJob, reads: Sequence[dict[str, Any]]) -> str:
-    """定向读正文。由 Python 执行，不给模型自主循环的机会。"""
+    """定向读正文。由 Python 执行，不给模型自主循环的机会。
+
+    支持点名读书架上的别本（`book` 字段）——不然「结合其他教材」这条就只能
+    停在标题层。目标必须是已登记且落在允许根内的，读取次数上限跨不跨书都一样。
+    """
     from pen.readtool import read_file_report
 
+    shelf: dict[str, Path] | None = None
     chunks = []
     for r in list(reads)[: config.PROBE_MAX_READS]:
         try:
             start = max(1, int(r.get("start_line") or 1))
         except (TypeError, ValueError):
             continue
+        target = job.original_path
+        label = ""
+        want = str(r.get("book") or "").strip()
+        if want:
+            if shelf is None:
+                try:
+                    shelf = _shelf_paths()
+                except Exception:
+                    shelf = {}
+            hit = shelf.get(want) or next(
+                (v for k, v in shelf.items() if want in k or k in want), None
+            )
+            if hit is None:
+                continue  # 点了一本书架上没有的，忽略而不是回退到当前这本
+            target = hit
+            label = f"〔出自《{want}》〕\n"
         out = read_file_report(
             job.original_path,
-            str(job.original_path),
+            str(target),
             offset=start,
             limit=config.PROBE_READ_LINES,
             extra_roots=job.extra_roots or [config.REPO_ROOT],
         )
         if out.get("ok"):
-            chunks.append(str(out.get("text") or ""))
+            chunks.append(label + str(out.get("text") or ""))
     return "\n\n".join(chunks)
 
 

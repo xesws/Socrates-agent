@@ -71,7 +71,7 @@ export type DeepInbox = {
   items: DynChip[];
   cursor: number;
   running: string[];
-  budget: { used: number; max: number };
+  budget: { used: number; max: number; window_used?: number; window_max?: number };
 };
 
 export type SnapshotStatus = {

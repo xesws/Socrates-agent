@@ -419,3 +419,60 @@ def test_history_lands_in_the_prompt(tmp_path) -> None:
     msg = probe.build_user_message(job)
     assert "[前面几轮聊了什么]" in msg
     assert "读者：上一轮我问的" in msg and "师傅：上一轮师傅答的" in msg
+
+
+def test_read_excerpts_can_reach_another_registered_book(idx, tmp_path, monkeypatch) -> None:
+    """「结合 working directory 下的其他教材」不能只停在标题层。"""
+    from pen import libraries
+    from pen.config import LLMConfig
+
+    other = tmp_path / "other.md"
+    other.write_text("# 另一本教材\n\n" + "另一本的正文这一行。\n" * 30, encoding="utf-8")
+    libraries.register(str(other), "other-book", extra_roots=[tmp_path])
+    monkeypatch.setattr(
+        "pen.config.handbook_allow_roots", lambda *a, **k: [tmp_path]
+    )
+
+    job = ProbeJob(
+        session_id="s", handbook_id="probe-fx", original_path=tmp_path / "b.md",
+        anchor={"level": "Level 0", "start_line": 5, "end_line": 6}, atom="a", chip="socratic",
+        user_text="", reply="x", born_round=1, lang="zh",
+        cfg=LLMConfig("http://x", "sk", "m", "t", "off"), extra_roots=[tmp_path],
+    )
+    got = probe._read_excerpts(job, [{"book": "另一本教材", "start_line": 3}])
+    assert "另一本的正文这一行" in got
+    assert "〔出自《另一本教材》〕" in got, "读者要能看出这段来自哪本"
+
+
+def test_read_excerpts_ignores_a_book_not_on_the_shelf(idx, tmp_path, monkeypatch) -> None:
+    """点了一本书架上没有的，忽略而不是悄悄回退到当前这本——
+    回退会让模型以为自己读到了那本，然后编出跨书联系。"""
+    from pen.config import LLMConfig
+
+    monkeypatch.setattr("pen.config.handbook_allow_roots", lambda *a, **k: [tmp_path])
+    job = ProbeJob(
+        session_id="s", handbook_id="probe-fx", original_path=tmp_path / "b.md",
+        anchor={"level": "Level 0", "start_line": 5, "end_line": 6}, atom="a", chip="socratic",
+        user_text="", reply="x", born_round=1, lang="zh",
+        cfg=LLMConfig("http://x", "sk", "m", "t", "off"), extra_roots=[tmp_path],
+    )
+    assert probe._read_excerpts(job, [{"book": "根本不存在的书", "start_line": 3}]) == ""
+
+
+def test_shelf_paths_excludes_registrations_outside_allowed_roots(tmp_path, monkeypatch) -> None:
+    """登记表里躺着指向 /private/var/folders 的 pytest 夹具，不能让模型读到。"""
+    from pen import libraries
+
+    inside = tmp_path / "vault"
+    inside.mkdir()
+    (inside / "ok.md").write_text("# 允许根内的书\n", encoding="utf-8")
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "bad.md").write_text("# 根外的书\n", encoding="utf-8")
+    libraries.register(str(inside / "ok.md"), "shelf-in", extra_roots=[tmp_path])
+    libraries.register(str(outside / "bad.md"), "shelf-out", extra_roots=[tmp_path])
+    monkeypatch.setattr("pen.config.handbook_allow_roots", lambda *a, **k: [inside])
+
+    names = probe._shelf_paths()
+    assert any("允许根内" in k for k in names)
+    assert not any("根外" in k for k in names), names

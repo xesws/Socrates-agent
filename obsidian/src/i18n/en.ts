@@ -133,6 +133,7 @@ export const en: Dict = {
   setThinkingDesc:
     "off is the safe bet. Turn it up only for reasoning models — endpoints that don't support it may hand you a 400.",
   setThinkingOff: "off (default)",
+  deepQuotaSpent: "deep dives used up",
   setDeepName: "Dig deeper in the background",
   setDeepDesc: "After each answer, spend one more call looking for a question that reaches across chapters. It only appears if one turns up. Turn this off to keep just the two instant ones.",
   tipDeepPrefix: "\u25c6 ",

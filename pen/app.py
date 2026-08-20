@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -41,7 +42,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.8.4", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.8.5", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -411,6 +412,24 @@ def _footprint(handbook_id: str) -> str:
     recent = [r for r in recent if r]
     if recent:
         rows.append("最近读过：" + " / ".join(dict.fromkeys(recent)))
+    # 轨迹里每条都存着读者自己打的那句话，先前一个字都没用上——
+    # 「user log」被降级成了「读过哪几道题的标题」。而连续追问同一处时，
+    # 上面那行去重后会塌成一条，等于没有信息。
+    asked_by_reader = []
+    for t in reversed(turns):
+        text = str(t.get("user_text") or "").strip()
+        # 挡掉「看 $E=mc^2$」这种随手敲的渲染测试——真实轨迹里就有两条。
+        # 只数汉字和字母：normalize_qkey 不剥 $ = ^ 这些符号，
+        # 拿它量长度会把一串数学记号当成有内容。
+        if len(re.sub(r"[^\w\u4e00-\u9fff]", "", text)) < 6:
+            continue
+        if text not in asked_by_reader:
+            asked_by_reader.append(text[:80])
+        if len(asked_by_reader) >= 6:
+            break
+    if asked_by_reader:
+        rows.append("他自己打字问过（新→旧）：")
+        rows += [f"  · {x}" for x in asked_by_reader]
     weak = [w.get("label") for w in (rep.get("weak") or [])[:5] if w.get("label")]
     if weak:
         rows.append("反复回到的地方：" + " / ".join(weak))

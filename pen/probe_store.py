@@ -189,23 +189,24 @@ def save(led: SessionLedger) -> None:
     _atomic_write(_path(led.session_id), json.dumps(led.to_dict(), ensure_ascii=False))
 
 
-def _daily_path(handbook_id: str) -> Path:
+def _quota_path(handbook_id: str) -> Path:
     if not _SAFE_ID.match(handbook_id):
         raise ValueError(f"非法 handbook_id：{handbook_id!r}")
     dest = config.PEN_DIR / "probes" / handbook_id
     dest.mkdir(parents=True, exist_ok=True)
-    return dest / "daily.json"
+    return dest / "quota.json"
 
 
-def _today() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+def _window() -> str:
+    """配额窗口。读者选的是「每小时 40 次」——先前实现成了每天，严了 24 倍。"""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H")
 
 
-def daily_count(handbook_id: str) -> int:
-    """今天这本书已经探了几次。跨会话累计——每会话 8 次挡不住
-    「开一堆新会话」这种用法，日配额才是真正的成本上限。"""
+def quota_count(handbook_id: str) -> int:
+    """本小时这本书已经探了几次。跨会话累计——每会话 8 次挡不住
+    「开一堆新会话」这种用法，窗口配额才是真正的成本上限。"""
     try:
-        dest = _daily_path(handbook_id)
+        dest = _quota_path(handbook_id)
     except ValueError:
         return 0
     if not dest.is_file():
@@ -214,7 +215,7 @@ def daily_count(handbook_id: str) -> int:
         raw = json.loads(dest.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return 0
-    if not isinstance(raw, dict) or raw.get("date") != _today():
+    if not isinstance(raw, dict) or raw.get("hour") != _window():
         return 0
     try:
         return int(raw.get("count") or 0)
@@ -222,15 +223,25 @@ def daily_count(handbook_id: str) -> int:
         return 0
 
 
-def _bump_daily(handbook_id: str) -> None:
+def _write_quota(handbook_id: str, count: int) -> None:
     try:
-        dest = _daily_path(handbook_id)
+        dest = _quota_path(handbook_id)
     except ValueError:
         return
-    _atomic_write(
-        dest,
-        json.dumps({"date": _today(), "count": daily_count(handbook_id) + 1}, ensure_ascii=False),
-    )
+    _atomic_write(dest, json.dumps({"hour": _window(), "count": max(0, count)}, ensure_ascii=False))
+
+
+def _bump_quota(handbook_id: str) -> None:
+    _write_quota(handbook_id, quota_count(handbook_id) + 1)
+
+
+def quota_status(handbook_id: str) -> dict[str, Any]:
+    """给设置页看的：本小时用了多少。读者以前只能看到「深题突然不来了」。"""
+    return {
+        "used": quota_count(handbook_id),
+        "max": config.PROBE_MAX_PER_WINDOW,
+        "window": "hour",
+    }
 
 
 def try_claim(session_id: str, handbook_id: str, now_round: int) -> str | None:
@@ -240,7 +251,7 @@ def try_claim(session_id: str, handbook_id: str, now_round: int) -> str | None:
         led = load(session_id, handbook_id)
         if led.running:
             return None
-        if handbook_id and daily_count(handbook_id) >= config.PROBE_MAX_PER_DAY:
+        if handbook_id and quota_count(handbook_id) >= config.PROBE_MAX_PER_WINDOW:
             return None
         pid = uuid.uuid4().hex[:12]
         led.running = [pid]
@@ -249,7 +260,7 @@ def try_claim(session_id: str, handbook_id: str, now_round: int) -> str | None:
         led.last_probe_round = now_round
         save(led)
         if handbook_id:
-            _bump_daily(handbook_id)
+            _bump_quota(handbook_id)
         return pid
 
 
@@ -264,21 +275,9 @@ def release(session_id: str, probe_id: str, *, refund: bool = False) -> None:
             led.running_since = ""
         if refund and led.probe_calls > 0:
             led.probe_calls -= 1
-            _refund_daily(led.handbook_id)
+            if led.handbook_id:
+                _write_quota(led.handbook_id, quota_count(led.handbook_id) - 1)
         save(led)
-
-
-def _refund_daily(handbook_id: str) -> None:
-    if not handbook_id:
-        return
-    cur = daily_count(handbook_id)
-    if cur <= 0:
-        return
-    try:
-        dest = _daily_path(handbook_id)
-    except ValueError:
-        return
-    _atomic_write(dest, json.dumps({"date": _today(), "count": cur - 1}, ensure_ascii=False))
 
 
 def add_questions(session_id: str, probe_id: str, items: list[DeepQuestion]) -> None:
@@ -302,7 +301,12 @@ def add_questions(session_id: str, probe_id: str, items: list[DeepQuestion]) -> 
 
 def budget(session_id: str) -> dict[str, int]:
     led = load(session_id)
-    return {"used": led.probe_calls, "max": config.PROBE_MAX_PER_SESSION}
+    return {
+        "used": led.probe_calls,
+        "max": config.PROBE_MAX_PER_SESSION,
+        "window_used": quota_count(led.handbook_id) if led.handbook_id else 0,
+        "window_max": config.PROBE_MAX_PER_WINDOW,
+    }
 
 
 def _ripe(q: DeepQuestion, *, atom: str, level: str, now_round: int) -> bool:
@@ -377,7 +381,14 @@ def inbox(
             "items": out,
             "cursor": cursor,
             "running": list(led.running),
-            "budget": {"used": led.probe_calls, "max": config.PROBE_MAX_PER_SESSION},
+            "budget": {
+                "used": led.probe_calls,
+                "max": config.PROBE_MAX_PER_SESSION,
+                # 窗口配额是跨会话的那道闸。不报出去的话，读者只会看到
+                # 「深题突然不来了」，没有任何解释。
+                "window_used": quota_count(led.handbook_id) if led.handbook_id else 0,
+                "window_max": config.PROBE_MAX_PER_WINDOW,
+            },
         }
 
 

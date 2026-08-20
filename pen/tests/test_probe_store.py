@@ -43,7 +43,10 @@ def test_claim_is_exclusive_per_session() -> None:
 def test_claim_counts_against_the_session_budget() -> None:
     pid = probe_store.try_claim("s2", "h", 1)
     probe_store.release("s2", pid)
-    assert probe_store.budget("s2") == {"used": 1, "max": config.PROBE_MAX_PER_SESSION}
+    got = probe_store.budget("s2")
+    assert got["used"] == 1 and got["max"] == config.PROBE_MAX_PER_SESSION
+    # 窗口配额也要报出去：不然读者只会看到「深题突然不来了」，没有解释
+    assert got["window_used"] == 1 and got["window_max"] == config.PROBE_MAX_PER_WINDOW
 
 
 def test_add_questions_assigns_monotonic_seq_and_dedupes() -> None:
@@ -214,10 +217,10 @@ def test_unparsable_running_since_is_reaped_too() -> None:
     assert probe_store.load("s17").running == []
 
 
-def test_daily_quota_survives_new_sessions(monkeypatch) -> None:
-    """每会话 8 次挡不住「开一堆新会话」。日配额才是真正的成本上限——
+def test_window_quota_survives_new_sessions(monkeypatch) -> None:
+    """每会话 8 次挡不住「开一堆新会话」。窗口配额才是真正的成本上限——
     这个常量以前定义了却没人读，等于没有上限。"""
-    monkeypatch.setattr(config, "PROBE_MAX_PER_DAY", 3)
+    monkeypatch.setattr(config, "PROBE_MAX_PER_WINDOW", 3)
     got = []
     for i in range(6):
         pid = probe_store.try_claim(f"day-{i}", "bk", 0)
@@ -225,16 +228,22 @@ def test_daily_quota_survives_new_sessions(monkeypatch) -> None:
         if pid:
             probe_store.release(f"day-{i}", pid)
     assert got == [True, True, True, False, False, False]
-    assert probe_store.daily_count("bk") == 3
+    assert probe_store.quota_count("bk") == 3
 
 
-def test_daily_count_resets_on_a_new_day(monkeypatch) -> None:
+def test_quota_resets_on_a_new_hour() -> None:
     import json
 
-    probe_store.try_claim("day-x", "bk2", 0)
-    stale = probe_store._daily_path("bk2")
-    stale.write_text(json.dumps({"date": "1999-01-01", "count": 99}), encoding="utf-8")
-    assert probe_store.daily_count("bk2") == 0
+    probe_store.try_claim("hour-x", "bk2", 0)
+    stale = probe_store._quota_path("bk2")
+    stale.write_text(json.dumps({"hour": "1999-01-01T00", "count": 99}), encoding="utf-8")
+    assert probe_store.quota_count("bk2") == 0
+
+
+def test_quota_status_reports_the_window() -> None:
+    probe_store.try_claim("hour-y", "bk3", 0)
+    got = probe_store.quota_status("bk3")
+    assert got["used"] == 1 and got["window"] == "hour" and got["max"] > 0
 
 
 def test_release_with_refund_gives_the_quota_back() -> None:
@@ -243,7 +252,7 @@ def test_release_with_refund_gives_the_quota_back() -> None:
     for i in range(3):
         pid = probe_store.try_claim(f"refund-{i}", "rb", 0)
         probe_store.release(f"refund-{i}", pid, refund=True)
-    assert probe_store.daily_count("rb") == 0
+    assert probe_store.quota_count("rb") == 0
     led = probe_store.load("refund-0")
     assert led.probe_calls == 0
 
@@ -252,7 +261,7 @@ def test_release_without_refund_keeps_the_charge() -> None:
     pid = probe_store.try_claim("norefund", "rb2", 0)
     probe_store.release("norefund", pid)
     assert probe_store.load("norefund").probe_calls == 1
-    assert probe_store.daily_count("rb2") == 1
+    assert probe_store.quota_count("rb2") == 1
 
 
 def test_concurrent_writers_leave_no_temp_files() -> None:

@@ -51,7 +51,9 @@ PROBE_TIMEOUT = 90.0
 # 配额。读者选的是「每轮实质回复都探」，所以不设轮次冷却，
 # 这几个只是失控保护，不是降频手段。
 PROBE_MAX_PER_SESSION = 8
-PROBE_MAX_PER_DAY = 40
+# 窗口是**小时**，不是天。读者选的就是「每小时 40 次」，
+# 先前实现成每天等于严了 24 倍。
+PROBE_MAX_PER_WINDOW = 40
 PROBE_CONCURRENCY = 2
 # 手里还有这么多没抛出去的好问题时就别再探了——省的不是频率，是浪费。
 PROBE_PENDING_CAP = 3

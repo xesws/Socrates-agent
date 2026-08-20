@@ -18,6 +18,8 @@ export type PollDeps = {
   alive: () => boolean;
   /** 拿到新东西了。 */
   onItems: (items: DynChip[], cursor: number) => void;
+  /** 每拍报一次配额。配额用满时读者需要知道为什么深题不来了。 */
+  onBudget?: (budget: DeepInbox["budget"]) => void;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
   since: () => number;
@@ -41,6 +43,7 @@ export async function pollDeep(deps: PollDeps): Promise<void> {
       const box = await deps.fetch(deps.since());
       if (!deps.alive()) return;
       fails = 0;
+      if (box.budget) deps.onBudget?.(box.budget);
       if (box.items?.length) deps.onItems(box.items, box.cursor);
       // running 为空 = 没有在跑的了。sidecar 重启后走的也是这条路，
       // 所以不需要把「重启了」和「本来就没有」分开处理。
