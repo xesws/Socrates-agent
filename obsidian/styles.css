@@ -2,6 +2,11 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* .socrates-pen 就是 contentEl(.view-content)：主题给它的 padding / overflow-y
+     一直在参与布局，显式接管，否则下面的高度分配会被主题悄悄改掉。 */
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
   font-size: 13px;
 }
 
@@ -11,6 +16,12 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+  /* 审批面板会让这里长到 600px+。封顶并自己滚，别再把 .sp-log 挤没。
+     overscroll-behavior 挡住滚到底后链式传导到对话区。 */
+  flex-shrink: 0;
+  max-height: 60%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .socrates-pen .sp-health,
@@ -61,6 +72,11 @@
 
 .socrates-pen .sp-log {
   flex: 1;
+  /* 防御性，今天是冗余的：flex item 的 min-height 初始值 auto 在纵向 flex 里本会
+     解析成「基于内容的最小尺寸」，但规范规定 overflow 非 visible 时它直接解析为 0，
+     而下面那行正是 auto。写死 0 是为了将来谁把 overflow 改回 visible 时不会静默
+     撑破容器——那种炸法不报错，只表现为输入框被顶出屏幕。 */
+  min-height: 0;
   overflow: auto;
   padding: 8px 10px;
   display: flex;
