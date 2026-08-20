@@ -79,7 +79,7 @@ def handle_edit_file(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
     if n == 0:
         return {
             "ok": False,
-            "text": "错误：原文里找不到这段 old_string。请再 read_file，用文件里的原文逐字复制。",
+            "text": "错误：原文里找不到这段 old_string。请再 read_file，用去掉行号前缀后的纯原文逐字复制（不要带 12\\t）。",
             "resolved": str(target),
             "detail": raw_path,
         }

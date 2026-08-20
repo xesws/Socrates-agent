@@ -10,8 +10,9 @@ from typing import Any
 
 from pen.config import LLMConfig, REPO_ROOT, resolve_llm
 from pen.index import HandbookIndex, neighborhood
-from pen.agent.permissions import decide
+from pen.agent.permissions import decide, read_first_block
 from pen.agent.registry import dispatch, schemas
+from pen.sandbox import resolve_read_target
 from pen.session import PenSession
 
 MAX_TOOL_ROUNDS = 50
@@ -25,7 +26,7 @@ CHIP_INTENT = {
     "explain_zero": "假设读者零基础。按 TL;DR → (a)(b)(c) 讲完，再给两个可运行例子。",
     "examples": "只举两个例子，紧贴本 Level 第七拍的名字。",
     "search": "（未开放）不要假装检索。告诉读者 P2 才有联网。",
-    "writeback": "用 read_file 看准原文，再用 edit_file 精确替换要沉淀的那一小段。不要声称已经写盘。",
+    "writeback": "必须先 read_file 看准带行号的原文，下一轮再单独 edit_file。old_string 去掉 N\\t。不要声称已经写盘。",
     "free": "按用户原话回答，仍守师傅人设。",
 }
 
@@ -163,6 +164,29 @@ def llm_create_kwargs(
     return kwargs
 
 
+def _tool_ctx(
+    session: PenSession,
+    original_path: Path,
+    extra_roots: list[Path],
+) -> dict[str, Any]:
+    return {
+        "original_path": original_path,
+        "extra_roots": extra_roots,
+        "handbook_id": session.handbook_id,
+        "read_ok": {Path(p).expanduser().resolve() for p in session.read_ok_paths},
+    }
+
+
+def _remember_read(session: PenSession, ctx: dict[str, Any], out: dict[str, Any]) -> None:
+    if not out.get("ok") or not out.get("resolved"):
+        return
+    got = Path(str(out["resolved"])).expanduser().resolve()
+    ctx.setdefault("read_ok", set()).add(got)
+    known = {Path(p).expanduser().resolve() for p in session.read_ok_paths}
+    known.add(got)
+    session.read_ok_paths = [str(p) for p in known]
+
+
 def stream_chat(
     session: PenSession,
     original_path: Path,
@@ -186,11 +210,7 @@ def stream_chat(
     session.messages.append({"role": "user", "content": user_packet})
 
     extra_roots = [REPO_ROOT, *(extra_roots or [])]
-    ctx = {
-        "original_path": original_path,
-        "extra_roots": extra_roots,
-        "handbook_id": session.handbook_id,
-    }
+    ctx = _tool_ctx(session, original_path, extra_roots)
     yield from _agent_loop(session, ctx, cfg)
 
 
@@ -288,6 +308,8 @@ def _run_one(
     tool_call_id: str,
 ) -> dict[str, Any]:
     out = dispatch(name, args, ctx)
+    if name == "read_file":
+        _remember_read(session, ctx, out)
     session.messages.append(
         {
             "role": "tool",
@@ -305,6 +327,7 @@ def _run_tool_batch(
 ) -> Iterator[dict[str, Any]]:
     """执行到第一个需要审批的工具则暂停。yields events；return True 表示已 pause。"""
     paused = False
+    read_before = {Path(p).expanduser().resolve() for p in (ctx.get("read_ok") or [])}
     for i, tc in enumerate(calls):
         name = tc.function.name
         try:
@@ -325,6 +348,22 @@ def _run_tool_batch(
             )
             continue
         if verdict == "ask":
+            original = Path(ctx["original_path"])
+            raw = str(args.get("path") or "").strip() or str(original)
+            tried = resolve_read_target(original, raw)
+            blocked = read_first_block(name, tried, read_before)
+            if blocked:
+                yield {
+                    "type": "tool",
+                    "name": name,
+                    "detail": raw,
+                    "ok": False,
+                    "preview": blocked[:200],
+                }
+                session.messages.append(
+                    {"role": "tool", "tool_call_id": tc.id, "content": blocked}
+                )
+                continue
             rest = []
             for later in calls[i + 1 :]:
                 rest.append(
@@ -389,11 +428,7 @@ def resume_chat(
             yield {"type": "error", "message": result}
             return
     extra_roots = [REPO_ROOT, *(extra_roots or [])]
-    ctx = {
-        "original_path": original_path,
-        "extra_roots": extra_roots,
-        "handbook_id": session.handbook_id,
-    }
+    ctx = _tool_ctx(session, original_path, extra_roots)
     name = str(pending.get("name") or "")
     args = dict(pending.get("args") or {})
     tcid = str(pending.get("tool_call_id") or "")

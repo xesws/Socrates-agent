@@ -70,6 +70,15 @@ def test_pending_roundtrip(pen_home: Path) -> None:
     assert loaded.pending["id"] == "abc123"
 
 
+def test_read_ok_paths_roundtrip(pen_home: Path) -> None:
+    store = SessionStore()
+    sess = store.create("swe-agent-v2")
+    sess.read_ok_paths = ["/tmp/note.md"]
+    store.save(sess)
+    loaded = SessionStore().get(sess.session_id)
+    assert loaded.read_ok_paths == ["/tmp/note.md"]
+
+
 def test_corrupt_json_is_missing(pen_home: Path) -> None:
     sess = PenSession(session_id="ab" * 16, handbook_id="swe-agent-v2")
     dest = save_session(sess)

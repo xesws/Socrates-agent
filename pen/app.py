@@ -39,7 +39,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.4.1", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

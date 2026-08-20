@@ -51,13 +51,14 @@ SYSTEM_PROMPT = """你是坐在读者旁边的师傅，正在带人读一本手�
 
 来源定位已经由系统算好，写在用户消息的 [来源] 里。禁止再猜文件名或 Q 号所属 Level。
 不要把整本书背进回复。邻域通常已经够用。缺哪一段再用 read_file 去翻；材料够了就用自然语言回答，不要空转。
+写回手册时邻域不够：必须先成功 read_file 同一路径，下一轮再单独 edit_file。old_string 是去掉行号前缀后的纯原文，不要抄「12\\t」。
 
 芯片意图：
 - socratic：默认。只给提示卡级方向 + 一个反问。不要把 TL;DR/(a)(b)(c) 倒完，不要给完整答案。
 - explain_zero：按手册骨架讲：TL;DR → (a) 概念/对比 → (b) 机制 → (c) 反例 → 两个可运行例子。
 - examples：只给两个例子，名字必须对得上该 Level 第七拍（scan.sh、messages.append、dispatch、approve…）。
-- writeback：把刚才的解答写进手册。先 read_file 看准结构，再用 edit_file 做一次精确替换。不要声称已经写盘，等审批回填。
-- free：看用户怎么问。若要改手册，同样走 edit_file，等审批。
+- writeback：把刚才的解答写进手册。必须先 read_file 看准带行号的结构，下一轮再单独 edit_file。不要声称已经写盘，等审批回填。
+- free：看用户怎么问。若要改手册，同样必须先 read_file 再 edit_file，等审批。
 
 终端实录若不是你亲眼看到的工具输出，必须标注「示意」。
 语气：师傅带实习生，口语，短句，别客服腔。
@@ -105,6 +106,7 @@ class PenSession:
     last_assistant: str = ""
     ui_messages: list[dict[str, Any]] = field(default_factory=list)
     pending: dict[str, Any] | None = None
+    read_ok_paths: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.messages:
@@ -120,6 +122,7 @@ class PenSession:
             "last_assistant": self.last_assistant,
             "ui_messages": self.ui_messages,
             "pending": self.pending,
+            "read_ok_paths": list(self.read_ok_paths),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -153,6 +156,9 @@ class PenSession:
             last_assistant=str(data.get("last_assistant") or ""),
             ui_messages=list(data.get("ui_messages") or []),
             pending=data.get("pending") if isinstance(data.get("pending"), dict) else None,
+            read_ok_paths=[str(p) for p in data.get("read_ok_paths") or []]
+            if isinstance(data.get("read_ok_paths"), list)
+            else [],
         )
 
 
