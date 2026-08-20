@@ -73,6 +73,16 @@ check("phaseText 认识的 phase → 本地化", i18n.phaseText("reading", "在�
 check("phaseText 未知 phase → 照抄后端", i18n.phaseText("brand_new", "新状态") === "新状态");
 check("phaseText 未知且无 fallback → 空串", i18n.phaseText("x", "") === "");
 
+// v0.8.2 深挖芯片的文案：两边都得有，且英文表不能忘了翻
+i18n.setLang("zh");
+const zhDeep = i18n.t().setDeepName;
+i18n.setLang("en");
+const enDeep = i18n.t().setDeepName;
+check("深挖开关标题两边都在", Boolean(zhDeep) && Boolean(enDeep));
+check("深挖开关标题确实翻过", zhDeep !== enDeep);
+check("深挖说明两边都在", Boolean(i18n.t().setDeepDesc) && i18n.t().setDeepDesc !== zhDeep);
+check("深挖芯片前缀是同一个记号", i18n.t().tipDeepPrefix.trim() === "\u25c6");
+
 // 模块加载时的 arity 自检不该报警（报了说明英文表漏用了占位符）
 check("中英表函数形参个数一致（无 arity 警告）", warnings.length === 0);
 if (warnings.length) warnings.forEach((w) => console.error("   " + w));

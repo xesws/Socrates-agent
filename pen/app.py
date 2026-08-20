@@ -41,7 +41,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.8.1", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.8.2", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -98,6 +98,9 @@ class ChatBody(LlmOverrideBody):
     end_line: int
     chip: str = "socratic"
     user_text: str = ""
+    # 设置页的深挖开关。关掉时后端也不起线程——只断前端轮询的话，
+    # 后台照样在烧钱，读者却看不到任何东西。
+    deep: bool = True
 
 
 class ProposeBody(LlmOverrideBody):
@@ -406,7 +409,7 @@ def _maybe_probe(sess, body: "ChatBody", anchor: dict[str, Any], path: Path, lan
         if cfg is None and not (body.base_url or "").strip():
             cfg = configmod.resolve_llm()
         go, _reason = probemod.should_probe(
-            enabled=configmod.probe_enabled(),
+            enabled=configmod.probe_enabled() and bool(body.deep),
             ok=True,
             chip=body.chip,
             pending=bool(sess.pending),

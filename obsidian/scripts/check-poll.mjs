@@ -1,0 +1,104 @@
+/**
+ * 深挖轮询的终止条件。跑的是 src/deeppoll.ts 编译出来的真代码，不是复刻——
+ * 这一段是整个功能里最容易悄悄泄漏的地方：少一个终止条件，读者关掉面板
+ * 之后它还会在后台一直敲 sidecar。
+ */
+import { build } from "esbuild";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const out = await build({
+  entryPoints: [resolve(here, "../src/deeppoll.ts")],
+  bundle: true,
+  write: false,
+  format: "esm",
+  platform: "neutral",
+});
+const mod = await import(
+  "data:text/javascript;base64," + Buffer.from(out.outputFiles[0].text).toString("base64")
+);
+const { pollDeep, DEEP_POLL_BUDGET_MS } = mod;
+
+const checks = [];
+const check = (name, pass) => checks.push([name, Boolean(pass)]);
+const q = (t) => ({ id: t, kind: "deep", text: t, why: "w" });
+
+/** 把 90 秒预算压成毫秒级：sleep 走真定时器，now 走虚拟时钟。 */
+function harness(inbox, opts = {}) {
+  const st = { calls: 0, items: [], cursor: 0, painted: 0, alive: true, clock: 0 };
+  const step = DEEP_POLL_BUDGET_MS / (opts.ticks ?? 12);
+  return {
+    st,
+    run: () =>
+      pollDeep({
+        fetch: (since) => {
+          st.calls++;
+          return inbox(since, st.calls, st);
+        },
+        alive: () => st.alive,
+        since: () => st.cursor,
+        sleep: async () => {
+          st.clock += step;
+        },
+        now: () => st.clock,
+        onItems: (items, cursor) => {
+          const seen = new Set(st.items.map((c) => c.text));
+          for (const it of items) if (!seen.has(it.text)) st.items.push(it);
+          st.cursor = cursor;
+          st.painted++;
+        },
+      }),
+  };
+}
+
+let h = harness(async (_s, n) =>
+  n < 3 ? { items: [], cursor: 0, running: ["p"] } : { items: [q("跨关那个问题？")], cursor: 5, running: [] },
+);
+await h.run();
+check("running 变空后停止，深题上屏", h.st.calls === 3 && h.st.items.length === 1 && h.st.cursor === 5);
+
+h = harness(async () => ({ items: [], cursor: 0, running: ["p"] }), { ticks: 12 });
+await h.run();
+check("服务端一直 running 时到点自停", h.st.calls === 12);
+
+h = harness(async () => {
+  throw new Error("HTTP 404 unknown session");
+});
+await h.run();
+check("404 立刻停（会话没了）", h.st.calls === 1);
+
+h = harness(async () => {
+  throw new Error("ECONNREFUSED");
+});
+await h.run();
+check("连失败 3 次放弃（sidecar 连不上）", h.st.calls === 3);
+
+h = harness(async (_s, _n, st) => {
+  st.alive = false;
+  return { items: [q("x")], cursor: 1, running: ["p"] };
+});
+await h.run();
+check("视图关掉后不再上屏", h.st.items.length === 0 && h.st.painted === 0);
+
+h = harness(async (_s, n) =>
+  n === 1 ? { items: [q("同一条？")], cursor: 3, running: ["p"] } : { items: [q("同一条？")], cursor: 3, running: [] },
+);
+await h.run();
+check("重复投递不会变成两个按钮", h.st.items.length === 1);
+
+h = harness(async (since) => ({ items: since === 0 ? [q("甲？")] : [], cursor: 7, running: [] }));
+await h.run();
+check("收到后游标推进", h.st.cursor === 7);
+
+h = harness(async () => ({ items: [], cursor: 0, running: [] }));
+await h.run();
+check("一开始就没有在跑的 → 敲一次就停", h.st.calls === 1);
+
+let bad = 0;
+for (const [name, pass] of checks) {
+  if (!pass) bad++;
+  console.log(`${pass ? "  ok  " : "  FAIL"} ${name}`);
+}
+console.log(bad ? `\n${bad}/${checks.length} 项失败` : `\n${checks.length} 项全部通过`);
+process.exit(bad ? 1 : 0);

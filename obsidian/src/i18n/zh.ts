@@ -142,6 +142,9 @@ export const zh = {
   setModelDesc: "节点上的 model 字符串，例如 deepseek-v4-flash 或 gpt-4.1-mini。",
   setThinkingDesc: "off 最稳。只有推理模型才打开；不支持的节点开了可能 400。",
   setThinkingOff: "off（默认）",
+  setDeepName: "后台深挖",
+  setDeepDesc: "师傅答完之后，后台再花一次调用去想一个跨关的问题，想到了才冒出来。关掉就只留即时的那两条。",
+  tipDeepPrefix: "◆ ",
   setSidecarDesc:
     "本机点读笔地址。一般不用改。先在本机终端运行：python -m pen --host 127.0.0.1 --port 8765",
 };

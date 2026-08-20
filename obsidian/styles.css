@@ -470,6 +470,30 @@
   box-shadow: inset 0 0 0 1px var(--text-accent);
 }
 
+/* 后台挖出来的：比即时那两条重一档，且排在最前（顺序由 dynRank 决定）。
+   它是「跳出来」的问题，最容易被忽略，长得跟旁边一样就等于没有。 */
+.socrates-pen .sp-chips button.is-deep {
+  color: var(--text-normal);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--interactive-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--interactive-accent) 7%, transparent);
+  animation: sp-deep-in 260ms ease-out;
+}
+.socrates-pen .sp-chips button.is-deep:hover:not(:disabled) {
+  box-shadow: inset 0 0 0 1px var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 14%, transparent);
+}
+
+@keyframes sp-deep-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 .socrates-pen .sp-status {
   flex: 0 0 auto;
   font-family: var(--font-monospace);
@@ -677,6 +701,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .socrates-pen .sp-chips button.is-deep {
+    animation: none;
+  }
   .socrates-pen .sp-splash.is-enter .sp-art-row,
   .socrates-pen .sp-splash.is-enter .sp-art.is-word,
   .socrates-pen .sp-splash.is-enter .sp-splash-tag,

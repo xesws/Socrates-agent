@@ -11,6 +11,8 @@ export interface PenSettings {
   baseUrl: string;
   model: string;
   thinking: ThinkingLevel;
+  /** 后台深挖。关掉时前端不轮询，且请求带 deep:false 让后端也不起线程。 */
+  deepQuestions: boolean;
 }
 
 export const DEFAULT_SETTINGS: PenSettings = {
@@ -20,6 +22,7 @@ export const DEFAULT_SETTINGS: PenSettings = {
   baseUrl: "https://api.deepseek.com",
   model: "deepseek-v4-flash",
   thinking: "off",
+  deepQuestions: true,
 };
 
 const THINKING: ThinkingLevel[] = ["off", "low", "medium", "high"];
@@ -137,6 +140,16 @@ export class PenSettingTab extends PluginSettingTab {
             this.plugin.saveSettingsSoon();
           });
       });
+
+    new Setting(containerEl)
+      .setName(s.setDeepName)
+      .setDesc(s.setDeepDesc)
+      .addToggle((c) =>
+        c.setValue(this.plugin.settings.deepQuestions !== false).onChange((v) => {
+          this.plugin.settings.deepQuestions = v;
+          this.plugin.saveSettingsSoon();
+        }),
+      );
 
     new Setting(containerEl)
       .setName("Sidecar URL")

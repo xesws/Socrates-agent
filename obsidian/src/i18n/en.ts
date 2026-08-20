@@ -133,6 +133,9 @@ export const en: Dict = {
   setThinkingDesc:
     "off is the safe bet. Turn it up only for reasoning models — endpoints that don't support it may hand you a 400.",
   setThinkingOff: "off (default)",
+  setDeepName: "Dig deeper in the background",
+  setDeepDesc: "After each answer, spend one more call looking for a question that reaches across chapters. It only appears if one turns up. Turn this off to keep just the two instant ones.",
+  tipDeepPrefix: "\u25c6 ",
   setSidecarDesc:
     "Where the local pen listens. You rarely need to touch this. Start it with: python -m pen --host 127.0.0.1 --port 8765",
 };

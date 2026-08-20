@@ -13,10 +13,14 @@ import { makeApi, streamApprove, streamChat } from "../api";
 import { handbookIdFromPath, vaultRoot, type EditorPick } from "../selection";
 import type { ChatMessage, Chip, DynChip, PendingEdit, SessionView } from "../types";
 import { chipHint, chipLabel, phaseText, t } from "../i18n";
+import { pollDeep } from "../deeppoll";
 import { measureMonoAdvance, renderSplash, type SplashLevel } from "./splash";
 import { AVATAR } from "../logo";
 
 export const VIEW_TYPE_PEN = "socrates-pen-view";
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((r) => window.setTimeout(r, ms));
 
 /**
  * 面板里长生命周期的元素句柄。
@@ -121,6 +125,10 @@ export class PenView extends ItemView {
   private splashLevel: SplashLevel = "none";
   /** paintLog 正在跑时新来的 force 请求存这里，别让它被吞掉。 */
   private forceStick = false;
+  /** 深挖轮询的代号。切笔记/关面板时 ++ 一下，在途的那一拍自己早退。 */
+  private deepGen = 0;
+  private deepCursor = 0;
+  private deepBusy = false;
   private els: Els | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: SocratesPenPlugin) {
@@ -163,6 +171,7 @@ export class PenView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    this.stopDeepPoll();
     this.els = null;
     this.chipsSig = "";
   }
@@ -362,8 +371,12 @@ export class PenView extends ItemView {
     }
     // 深挖的排在前面：它们是「跳出来」的问题，读者最容易忽略，别沉到底下。
     for (const d of [...this.dyn].sort((a, b2) => dynRank(a) - dynRank(b2))) {
-      const cls = d.kind === "deep" ? "is-dyn is-deep" : "is-dyn";
-      const b = e.chips.createEl("button", { text: d.text, cls });
+      const deep = d.kind === "deep";
+      const cls = deep ? "is-dyn is-deep" : "is-dyn";
+      const b = e.chips.createEl("button", {
+        text: deep ? `${t().tipDeepPrefix}${d.text}` : d.text,
+        cls,
+      });
       b.dataset.off = "0";
       if (d.why) setTooltip(b, d.why);
       b.onclick = () => void this.send("free", d.text);
@@ -506,6 +519,49 @@ export class PenView extends ItemView {
     }
   }
 
+  /**
+   * 深挖收件箱的轮询。
+   *
+   * 用代号而不是 setInterval：切笔记的一瞬间 deepGen++ 就能让在途的那一拍
+   * 自己早退，不用去追一个 timer id。五个终止条件缺一不可——少任何一个，
+   * 关掉面板之后它还会在后台转。
+   */
+  private async pollDeep(): Promise<void> {
+    if (!this.plugin.settings.deepQuestions) return;
+    const gen = ++this.deepGen;
+    const sid = this.sessionId;
+    if (!sid) return;
+    const alive = (): boolean =>
+      gen === this.deepGen && Boolean(this.els) && this.sessionId === sid;
+    await pollDeep({
+      fetch: (since) => this.api().deepInbox(sid, since),
+      alive,
+      since: () => this.deepCursor,
+      sleep,
+      now: () => Date.now(),
+      onItems: (items, cursor) => {
+        this.deepCursor = cursor;
+        this.mergeDeep(items);
+        this.paintChips();
+      },
+    });
+  }
+
+  private stopDeepPoll(): void {
+    this.deepGen++;
+    this.deepBusy = false;
+  }
+
+  /** 深题追加进来，按文本去重。实时层那两条不动。 */
+  private mergeDeep(items: DynChip[]): void {
+    const seen = new Set(this.dyn.map((c) => c.text));
+    for (const it of items) {
+      if (!it?.text || seen.has(it.text)) continue;
+      seen.add(it.text);
+      this.dyn.push({ ...it, kind: "deep" });
+    }
+  }
+
   private paintStreamBubble(text: string): void {
     // 流式只刷最后一条助手正文；全量 markdown 重绘留给 done/finally
     const log = this.els?.log;
@@ -620,6 +676,9 @@ export class PenView extends ItemView {
     this.chips = sess.chips;
     this.msgs = sess.ui_messages || [];
     this.substantive = Boolean(sess.has_substantive);
+    // 换会话就换了一个收件箱，游标必须归零，在途的那一拍也要作废
+    this.stopDeepPoll();
+    this.deepCursor = 0;
     // 以前这里无条件清空，刷新一次上一轮的追问就永久丢了。
     this.dyn = (sess.dyn_chips || []).filter((c) => c && c.text);
     const p = sess.pending;
@@ -692,6 +751,7 @@ export class PenView extends ItemView {
           end_line: this.endLine,
           chip,
           user_text: userText,
+          deep: this.plugin.settings.deepQuestions !== false,
         },
         (ev) => {
           if (ev.type === "status") {
@@ -744,6 +804,8 @@ export class PenView extends ItemView {
             this.usage = { ctx, out };
             this.dyn = readDynChips(ev);
             this.substantive = Boolean(ev.has_substantive);
+            // 后台在挖。轮询自己会因为 running 变空而停，不用管它。
+            if (ev.deep_running) void this.pollDeep();
           } else if (ev.type === "error") {
             this.status = "";
             this.err = String(ev.message);

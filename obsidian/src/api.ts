@@ -2,6 +2,7 @@ import { currentLang } from "./i18n";
 import type { PenSettings } from "./settings";
 import { llmPayload } from "./settings";
 import type {
+  DeepInbox,
   HandbookMeta,
   LlmStatus,
   SessionView,
@@ -51,6 +52,8 @@ export function makeApi(baseUrl: string) {
       }),
     getSession: (session_id: string) =>
       j<SessionView>(baseUrl, `/v1/sessions/${session_id}`),
+    deepInbox: (session_id: string, since: number) =>
+      j<DeepInbox>(baseUrl, `/v1/sessions/${session_id}/deep?since=${since}`),
     snapshots: (handbook_id: string) =>
       j<SnapshotStatus>(baseUrl, `/v1/handbooks/${handbook_id}/snapshots`),
     rollback: (handbook_id: string) =>
@@ -75,6 +78,7 @@ export async function streamChat(
     end_line: number;
     chip: string;
     user_text: string;
+    deep?: boolean;
   },
   onEvent: (ev: Record<string, unknown>) => void,
   settings?: PenSettings,

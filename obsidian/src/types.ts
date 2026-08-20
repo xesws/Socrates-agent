@@ -65,6 +65,15 @@ export type ChatMessage = {
   chip?: string;
 };
 
+/** GET /v1/sessions/{id}/deep 的回包。running 为空 = 可以停轮询了。 */
+export type DeepInbox = {
+  session_id: string;
+  items: DynChip[];
+  cursor: number;
+  running: string[];
+  budget: { used: number; max: number };
+};
+
 export type SnapshotStatus = {
   can_undo: boolean;
   can_redo: boolean;
