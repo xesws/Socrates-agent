@@ -58,6 +58,7 @@ def build_user_packet(
     chip: str,
     user_text: str,
     asked: Sequence[str] = (),
+    intent_extra: str = "",
 ) -> tuple[str, dict[str, Any]]:
     section = idx.locate(start_line)
     nb = neighborhood(original_path, section, (start_line, end_line))
@@ -90,6 +91,7 @@ lines: {start_line}-{end_line}
 [意图]
 chip = {chip}
 {CHIP_INTENT.get(chip, CHIP_INTENT["free"])}
+{intent_extra}
 
 [用户补充]
 {user_text or "（无，按芯片意图行动）"}

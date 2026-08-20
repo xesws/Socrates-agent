@@ -32,6 +32,30 @@ DEEPSEEK_MODEL = "deepseek-v4-flash"
 
 THINKING_LEVELS = ("off", "low", "medium", "high")
 
+# ── 异步深挖（v0.8.1）──────────────────────────────────────────
+# 总开关。PEN_PROBE=off 一刀关掉后台探索。
+ENV_PROBE = "PEN_PROBE"
+# 「实质回复」的门槛，和 tutor._finish_text 里 has_substantive 的判据保持一致。
+PROBE_MIN_REPLY_CHARS = 80
+# 每次探索的硬上限。不给模型 tools，读取由 Python 执行——
+# 广度必须由代码封死，后台任务自主循环烧钱是看不见的。
+PROBE_MAX_CALLS = 2
+PROBE_MAX_READS = 2
+PROBE_READ_LINES = 80
+PROBE_TIMEOUT = 30.0
+# 配额。读者选的是「每轮实质回复都探」，所以不设轮次冷却，
+# 这几个只是失控保护，不是降频手段。
+PROBE_MAX_PER_SESSION = 8
+PROBE_MAX_PER_DAY = 40
+PROBE_CONCURRENCY = 2
+# 手里还有这么多没抛出去的好问题时就别再探了——省的不是频率，是浪费。
+PROBE_PENDING_CAP = 3
+
+
+def probe_enabled(env_file: Path | None = None) -> bool:
+    raw = (os.environ.get(ENV_PROBE) or parse_dotenv(env_file).get(ENV_PROBE) or "").strip().lower()
+    return raw not in ("off", "0", "false", "no")
+
 
 @dataclass(frozen=True)
 class LLMConfig:

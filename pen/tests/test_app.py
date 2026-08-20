@@ -758,3 +758,68 @@ def test_snapshot_status_undo_redo_api(tmp_path: Path, monkeypatch) -> None:
         missing = client.post("/v1/writeback/rollback", json={"handbook_id": hid})
         assert missing.status_code == 400
 
+
+
+# ── v0.8.1：深挖收件箱 ──────────────────────────────────────
+
+
+def test_deep_inbox_unknown_session_is_404() -> None:
+    with TestClient(app) as client:
+        assert client.get("/v1/sessions/deadbeefdeadbeefdeadbeefdeadbeef/deep").status_code == 404
+
+
+def test_deep_inbox_starts_empty_and_reports_no_runner() -> None:
+    """sidecar 刚起来时返回 running: []，语义明确「没有在跑的，停轮询」——
+    这正是选会话为键而不是 probe 为键的理由之一。"""
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        got = client.get(f"/v1/sessions/{sid}/deep").json()
+        assert got["items"] == [] and got["running"] == []
+        assert got["budget"]["max"] > 0
+
+
+def test_deep_inbox_does_not_take_the_session_lock() -> None:
+    """那把锁在 /v1/chat 整个请求期间被持有。轮询去抢会把读者的下一次
+    提问顶成 409——所以这个端点在会话被锁着时也必须照常 200。"""
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        lock = STORE.lock_for(sid)
+        assert lock.acquire(blocking=False)
+        try:
+            assert client.get(f"/v1/sessions/{sid}/deep").status_code == 200
+        finally:
+            lock.release()
+
+
+def test_deep_inbox_surfaces_a_ripe_question(tmp_path, monkeypatch) -> None:
+    _isolate_pen(tmp_path, monkeypatch)
+    from pen import diagnose, probe_store
+    from pen.probe_store import DeepQuestion
+
+    monkeypatch.setattr(probe_store, "probes_dir", lambda: tmp_path / "probes")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        sess = STORE.get(sid)
+        sess.last_anchor = {"level": "Level 0", "kind": "q", "q_title": "**Q1. 甲？**"}
+        sess.turns = 1
+        STORE.save(sess)
+        pid = probe_store.try_claim(sid, "swe-agent-v2", 1)
+        probe_store.add_questions(
+            sid,
+            pid,
+            [
+                DeepQuestion(
+                    id="d1",
+                    text="白名单排在危险检测前面，危险命令会不会被静默放行？",
+                    why="读者刚碰到权限",
+                    timing="now",
+                    atom=diagnose.atom_key(sess.last_anchor),
+                    born_round=1,
+                )
+            ],
+        )
+        got = client.get(f"/v1/sessions/{sid}/deep?since=0").json()
+        assert len(got["items"]) == 1
+        assert got["items"][0]["kind"] == "deep"
+        assert got["items"][0]["why"]
+        assert got["cursor"] > 0

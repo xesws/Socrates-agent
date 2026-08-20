@@ -21,7 +21,8 @@ from pen.outline import file_outline
 from pen import libraries, snapshots
 from pen import diagnose as diagnosemod
 from pen import proposals as proposalsmod
-from pen import trajectory
+from pen import library_scan, probe as probemod, probe_store, trajectory
+from pen import config as configmod
 from pen.config import DEFAULT_HANDBOOK_ID, LLMConfig, llm_public_status, merge_llm
 from pen.i18n import localized, msg, norm_lang
 from pen.libraries import RegisterError
@@ -40,7 +41,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.8.0", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.8.1", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -370,6 +371,111 @@ def get_session(session_id: str, lang: str = Depends(req_lang)) -> dict[str, Any
     return sess.to_public()
 
 
+def _footprint(handbook_id: str) -> str:
+    """读者这段时间的足迹。diagnose.aggregate 已经把轨迹压好了，白捡。
+
+    措辞上刻意不说「薄弱点」——aggregate 的判据是 hits × CHIP_WEIGHT，
+    把「同一次坐下追着问三遍」也算成薄弱，而那明明是正在消化。
+    对提问这个用途，「反复回到的地方」才是准确的说法。
+    """
+    try:
+        turns = trajectory.load_turns(handbook_id)
+        rep = diagnosemod.aggregate(turns)
+    except Exception:
+        return ""
+    rows: list[str] = []
+    recent = [diagnosemod.label_of(t.get("anchor") or {}) for t in turns[-12:]]
+    recent = [r for r in recent if r]
+    if recent:
+        rows.append("最近读过：" + " / ".join(dict.fromkeys(recent)))
+    weak = [w.get("label") for w in (rep.get("weak") or [])[:5] if w.get("label")]
+    if weak:
+        rows.append("反复回到的地方：" + " / ".join(weak))
+    return "\n".join(rows)
+
+
+def _maybe_probe(sess, body: "ChatBody", anchor: dict[str, Any], path: Path, lang: str) -> bool:
+    """在 done 那一刻决定要不要起一次后台深挖。返回是否真的起了。
+
+    这里所有东西都要**当场冻结**进 job：cfg 尤其不能让线程晚点自己 resolve，
+    那会绕过 merge_llm 的跨主机钥匙保护。
+    """
+    try:
+        led = probe_store.load(sess.session_id, sess.handbook_id)
+        cfg = body.merged()
+        if cfg is None and not (body.base_url or "").strip():
+            cfg = configmod.resolve_llm()
+        go, _reason = probemod.should_probe(
+            enabled=configmod.probe_enabled(),
+            ok=True,
+            chip=body.chip,
+            pending=bool(sess.pending),
+            reply=sess.last_assistant or "",
+            anchor=anchor,
+            probe_calls=led.probe_calls,
+            pending_pool=led.pending_count(),
+            has_llm=cfg is not None,
+        )
+        if not go or cfg is None:
+            return False
+        pid = probe_store.try_claim(sess.session_id, sess.handbook_id, sess.turns)
+        if pid is None:
+            return False
+        job = probemod.ProbeJob(
+            session_id=sess.session_id,
+            handbook_id=sess.handbook_id,
+            original_path=path,
+            anchor=dict(anchor),
+            atom=diagnosemod.atom_key(anchor),
+            chip=body.chip,
+            user_text=body.user_text or "",
+            reply=sess.last_assistant or "",
+            born_round=sess.turns,
+            lang=lang,
+            cfg=cfg,
+            extra_roots=libraries.extra_roots_for(sess.handbook_id) or [],
+            footprint=_footprint(sess.handbook_id),
+            asked=probe_store.asked(sess.session_id),
+            shelf=library_scan.shelf_digest(
+                path, [m.original_path for m in libraries.list_handbooks()]
+            ),
+        )
+        probemod.spawn(job, pid)
+        return True
+    except Exception:
+        # 后台探索炸了不能影响这一轮对话
+        return False
+
+
+@app.get("/v1/sessions/{session_id}/deep")
+def deep_inbox(
+    session_id: str,
+    since: int = 0,
+    lang: str = Depends(req_lang),
+) -> dict[str, Any]:
+    """深挖问题的收件箱。
+
+    **绝不取 STORE.lock_for()**：那把锁在 /v1/chat 整个请求期间被持有，
+    来抢会把读者下一次提问顶成 409。这里只读 probe_store。
+
+    以会话为键而不是以 probe 为键，是为了让四件事都变简单：探索期间读者又发
+    一轮、视图关掉再打开、sidecar 重启（返回 running: [] 而不是语义含混的 404）、
+    以及 later 类问题的安放。前端拿 running 为空当终止条件。
+    """
+    try:
+        sess = STORE.get(session_id)
+    except KeyError as exc:
+        raise HTTPException(404, msg("session.unknown", lang)) from exc
+    anchor = sess.last_anchor or {}
+    return probe_store.inbox(
+        session_id,
+        since=since,
+        atom=diagnosemod.atom_key(anchor) if anchor else "",
+        level=str(anchor.get("level") or ""),
+        now_round=sess.turns,
+    )
+
+
 @app.post("/v1/chat")
 def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
     try:
@@ -399,6 +505,17 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
         meta = _meta_or_404(sess.handbook_id, lang)
         idx = libraries.load_index(sess.handbook_id)
         path = Path(meta.original_path)
+        # 读者点幽灵按钮时会以 chip="free" 把原文当 user_text 发回来，
+        # 在这里精确匹配即可——这是整个深挖功能唯一的真实质量反馈信号。
+        # 顺带认出 open 题：光在生成问题时标记没用，读者点下去以后模型如果
+        # 侃侃而谈报一堆假 API，前面所有诚实标记都白搭。
+        intent_extra = ""
+        try:
+            clicked = probe_store.mark_clicked(sess.session_id, body.user_text or "")
+            if clicked is not None and clicked.grounding == "open":
+                intent_extra = probemod.open_intent(lang)
+        except Exception:
+            pass
         try:
             packet, anchor = build_user_packet(
                 idx,
@@ -409,6 +526,7 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
                 chip=body.chip,
                 user_text=body.user_text,
                 asked=[str(c.get("text") or "") for c in sess.last_chips],
+                intent_extra=intent_extra,
             )
         except ValueError as exc:
             raise HTTPException(400, localized(exc, lang)) from exc
@@ -443,6 +561,9 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
             ):
                 if ev.get("type") == "done":
                     has_sub = bool(ev.get("has_substantive"))
+                    # 探索和「伪流式吐字」并行跑，多数情况读者读完回复时结果已就绪。
+                    # 绝不延长这条流——busy=false 要等流关闭，多挂一秒就多冻一秒输入框。
+                    ev = {**ev, "deep_running": _maybe_probe(sess, body, anchor, path, lang)}
                 elif ev.get("type") == "error":
                     ok = False
                 yield _sse(ev)
