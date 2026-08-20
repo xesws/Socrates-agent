@@ -1,38 +1,18 @@
-"""对话脑：L2 外环 + 可选只读 read_file。不写盘。"""
+"""对话脑：L2 外环 + registry 工具。edit_file 须人批；无 bash / write_file。"""
 
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 from pen.config import LLMConfig, REPO_ROOT, resolve_llm
 from pen.index import HandbookIndex, neighborhood
-from pen.readtool import read_file_report
+from pen.agent.permissions import decide
+from pen.agent.registry import dispatch, schemas
 from pen.session import PenSession
-
-READ_FILE_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "read_file",
-        "description": (
-            "按行读取当前手册原文或同仓库对照文件。offset 从 1 起。"
-            "path 优先复制 [来源] handbook_path；相对路径相对手册目录。"
-            "读完该回答时用自然语言收工，不要空转同一段。"
-            "不要读 ~/.zshrc、/etc、.env。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "offset": {"type": "integer", "default": 1},
-                "limit": {"type": "integer", "default": 80},
-            },
-            "required": ["path"],
-        },
-    },
-}
 
 MAX_TOOL_ROUNDS = 50
 FORCE_ANSWER = (
@@ -45,7 +25,7 @@ CHIP_INTENT = {
     "explain_zero": "假设读者零基础。按 TL;DR → (a)(b)(c) 讲完，再给两个可运行例子。",
     "examples": "只举两个例子，紧贴本 Level 第七拍的名字。",
     "search": "（未开放）不要假装检索。告诉读者 P2 才有联网。",
-    "writeback": "把刚才的实质解答收成一个可插入的 <details> Meta Instance。不要声称已经写入磁盘。",
+    "writeback": "用 read_file 看准原文，再用 edit_file 精确替换要沉淀的那一小段。不要声称已经写盘。",
     "free": "按用户原话回答，仍守师傅人设。",
 }
 
@@ -203,13 +183,26 @@ def stream_chat(
         }
         return
 
-    from openai import OpenAI, OpenAIError
-
-    client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key, timeout=120.0)
     session.messages.append({"role": "user", "content": user_packet})
 
     extra_roots = [REPO_ROOT, *(extra_roots or [])]
-    tools = [READ_FILE_SCHEMA]
+    ctx = {
+        "original_path": original_path,
+        "extra_roots": extra_roots,
+        "handbook_id": session.handbook_id,
+    }
+    yield from _agent_loop(session, ctx, cfg)
+
+
+def _agent_loop(
+    session: PenSession,
+    ctx: dict[str, Any],
+    cfg: LLMConfig,
+) -> Iterator[dict[str, Any]]:
+    from openai import OpenAI, OpenAIError
+
+    client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key, timeout=120.0)
+    tools = schemas()
     usage = usage_snapshot(0, 0)
 
     def _create(*, with_tools: bool) -> Any:
@@ -250,56 +243,9 @@ def stream_chat(
             yield from _finish_text(session, raw, usage)
             return
         yield {"type": "status", "phase": "reading", "text": "在翻手册…"}
-        for tc in msg.tool_calls:
-            try:
-                args = json.loads(tc.function.arguments or "{}")
-            except json.JSONDecodeError as exc:
-                result = f"错误：工具参数不是合法 JSON：{exc}"
-                yield {
-                    "type": "tool",
-                    "name": tc.function.name,
-                    "detail": "",
-                    "ok": False,
-                    "preview": result[:200],
-                }
-                session.messages.append(
-                    {"role": "tool", "tool_call_id": tc.id, "content": result}
-                )
-                continue
-            if tc.function.name == "read_file":
-                raw_path = (args.get("path") or "").strip() or str(original_path)
-                report = read_file_report(
-                    original_path,
-                    raw_path,
-                    offset=int(args.get("offset", 1) or 1),
-                    limit=int(args.get("limit", 80) or 80),
-                    extra_roots=extra_roots,
-                )
-                result = str(report["text"])
-                yield {
-                    "type": "tool",
-                    "name": "read_file",
-                    "detail": raw_path,
-                    "resolved": report["resolved"],
-                    "ok": bool(report["ok"]),
-                    "preview": result[:200],
-                }
-            else:
-                result = f"错误：未知工具 {tc.function.name}"
-                yield {
-                    "type": "tool",
-                    "name": tc.function.name,
-                    "detail": str(args.get("path") or ""),
-                    "ok": False,
-                    "preview": result[:200],
-                }
-            session.messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": result,
-                }
-            )
+        paused = yield from _run_tool_batch(session, ctx, list(msg.tool_calls))
+        if paused:
+            return
 
     session.messages.append({"role": "user", "content": FORCE_ANSWER})
     yield {"type": "status", "phase": "thinking", "text": "师傅在想…"}
@@ -317,6 +263,189 @@ def stream_chat(
         }
         return
     yield from _finish_text(session, raw, usage)
+
+
+def _tool_event(name: str, out: dict[str, Any]) -> dict[str, Any]:
+    ev: dict[str, Any] = {
+        "type": "tool",
+        "name": name,
+        "detail": str(out.get("detail") or ""),
+        "resolved": str(out.get("resolved") or ""),
+        "ok": bool(out.get("ok")),
+        "preview": str(out.get("text") or "")[:200],
+    }
+    if out.get("line"):
+        ev["line"] = int(out["line"])
+    return ev
+
+
+def _run_one(
+    session: PenSession,
+    ctx: dict[str, Any],
+    *,
+    name: str,
+    args: dict[str, Any],
+    tool_call_id: str,
+) -> dict[str, Any]:
+    out = dispatch(name, args, ctx)
+    session.messages.append(
+        {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": str(out.get("text") or ""),
+        }
+    )
+    return _tool_event(name, out)
+
+
+def _run_tool_batch(
+    session: PenSession,
+    ctx: dict[str, Any],
+    calls: list[Any],
+) -> Iterator[dict[str, Any]]:
+    """执行到第一个需要审批的工具则暂停。yields events；return True 表示已 pause。"""
+    paused = False
+    for i, tc in enumerate(calls):
+        name = tc.function.name
+        try:
+            args = json.loads(tc.function.arguments or "{}")
+        except json.JSONDecodeError as exc:
+            result = f"错误：工具参数不是合法 JSON：{exc}"
+            yield {"type": "tool", "name": name, "detail": "", "ok": False, "preview": result[:200]}
+            session.messages.append(
+                {"role": "tool", "tool_call_id": tc.id, "content": result}
+            )
+            continue
+        verdict = decide(name)
+        if verdict == "deny":
+            result = f"错误：未知或禁用的工具 {name}"
+            yield {"type": "tool", "name": name, "detail": "", "ok": False, "preview": result[:200]}
+            session.messages.append(
+                {"role": "tool", "tool_call_id": tc.id, "content": result}
+            )
+            continue
+        if verdict == "ask":
+            rest = []
+            for later in calls[i + 1 :]:
+                rest.append(
+                    {
+                        "id": later.id,
+                        "name": later.function.name,
+                        "arguments": later.function.arguments or "{}",
+                    }
+                )
+            session.pending = {
+                "id": uuid.uuid4().hex,
+                "name": name,
+                "args": args,
+                "tool_call_id": tc.id,
+                "rest": rest,
+                "original_path": str(Path(ctx["original_path"]).expanduser().resolve()),
+            }
+            yield {
+                "type": "approval",
+                "pending_id": session.pending["id"],
+                "name": name,
+                "args": args,
+            }
+            paused = True
+            break
+        yield {"type": "status", "phase": "tool", "text": f"在用 {name}…"}
+        yield _run_one(session, ctx, name=name, args=args, tool_call_id=tc.id)
+    return paused
+
+
+def resume_chat(
+    session: PenSession,
+    original_path: Path,
+    *,
+    allow: bool,
+    pending_id: str,
+    llm: LLMConfig | None = None,
+    extra_roots: list[Path] | None = None,
+    allow_env_fallback: bool = True,
+) -> Iterator[dict[str, Any]]:
+    pending = session.pending
+    if not pending or pending.get("id") != pending_id:
+        yield {"type": "error", "message": "没有待审批的编辑，或已经过期。"}
+        return
+    cfg = llm if llm is not None else (resolve_llm() if allow_env_fallback else None)
+    if cfg is None:
+        yield {
+            "type": "error",
+            "message": "找不到模型配置。请到设置 → Socrates Pen 填写 API Key。",
+        }
+        return
+    frozen = str(pending.get("original_path") or "").strip()
+    if frozen:
+        frozen_p = Path(frozen).expanduser().resolve()
+        if frozen_p != original_path.expanduser().resolve():
+            tcid_bad = str(pending.get("tool_call_id") or "")
+            result = "错误：手册路径已经变了，这次编辑作废。请重新框选。"
+            session.messages.append(
+                {"role": "tool", "tool_call_id": tcid_bad, "content": result}
+            )
+            session.pending = None
+            yield {"type": "error", "message": result}
+            return
+    extra_roots = [REPO_ROOT, *(extra_roots or [])]
+    ctx = {
+        "original_path": original_path,
+        "extra_roots": extra_roots,
+        "handbook_id": session.handbook_id,
+    }
+    name = str(pending.get("name") or "")
+    args = dict(pending.get("args") or {})
+    tcid = str(pending.get("tool_call_id") or "")
+    run_it = bool(allow) and decide(name) == "ask"
+    if run_it:
+        yield {"type": "status", "phase": "writing", "text": "在改原文…"}
+        try:
+            yield _run_one(session, ctx, name=name, args=args, tool_call_id=tcid)
+        except Exception as exc:
+            result = f"错误：编辑失败：{type(exc).__name__}"
+            session.messages.append(
+                {"role": "tool", "tool_call_id": tcid, "content": result}
+            )
+            yield {
+                "type": "tool",
+                "name": name,
+                "detail": str(args.get("path") or ""),
+                "ok": False,
+                "preview": result,
+            }
+    else:
+        if allow:
+            result = f"错误：不能执行未审批的工具 {name}"
+        else:
+            result = "师傅不允许这次编辑，原文没动。"
+        yield {
+            "type": "tool",
+            "name": name,
+            "detail": str(args.get("path") or ""),
+            "ok": False,
+            "preview": result,
+        }
+        session.messages.append(
+            {"role": "tool", "tool_call_id": tcid, "content": result}
+        )
+    session.pending = None
+    rest = list(pending.get("rest") or [])
+    if rest:
+        class _Fn:
+            def __init__(self, n: str, a: str) -> None:
+                self.name = n
+                self.arguments = a
+
+        class _Tc:
+            def __init__(self, rec: dict[str, Any]) -> None:
+                self.id = rec.get("id") or ""
+                self.function = _Fn(str(rec.get("name") or ""), str(rec.get("arguments") or "{}"))
+
+        paused = yield from _run_tool_batch(session, ctx, [_Tc(r) for r in rest])
+        if paused:
+            return
+    yield from _agent_loop(session, ctx, cfg)
 
 
 def propose_fold_md(

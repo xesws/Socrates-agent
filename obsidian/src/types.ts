@@ -15,6 +15,12 @@ export type HandbookMeta = {
   toc?: { level: string; beat: string | null; start_line: number; heading: string }[];
 };
 
+export type PendingEdit = {
+  pending_id: string;
+  name: string;
+  args: { path?: string; old_string?: string; new_string?: string };
+};
+
 export type SessionView = {
   session_id: string;
   handbook_id: string;
@@ -31,6 +37,7 @@ export type SessionView = {
   } | null;
   ui_messages: ChatMessage[];
   last_assistant?: string;
+  pending?: PendingEdit | null;
 };
 
 export type ChatMessage = {

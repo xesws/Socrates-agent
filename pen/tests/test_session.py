@@ -49,6 +49,27 @@ def test_missing_session_raises(pen_home: Path) -> None:
         store.get("deadbeefdeadbeefdeadbeefdeadbeef")
 
 
+def test_pending_roundtrip(pen_home: Path) -> None:
+    store = SessionStore()
+    sess = store.create("swe-agent-v2")
+    sess.pending = {
+        "id": "abc123",
+        "name": "edit_file",
+        "args": {"path": "/tmp/n.md", "old_string": "a", "new_string": "b"},
+        "tool_call_id": "c1",
+        "rest": [],
+    }
+    store.save(sess)
+    public = sess.to_public()
+    assert public["pending"]["pending_id"] == "abc123"
+    assert public["pending"]["args"]["old_string"] == "a"
+
+    other = SessionStore()
+    loaded = other.get(sess.session_id)
+    assert loaded.pending is not None
+    assert loaded.pending["id"] == "abc123"
+
+
 def test_corrupt_json_is_missing(pen_home: Path) -> None:
     sess = PenSession(session_id="ab" * 16, handbook_id="swe-agent-v2")
     dest = save_session(sess)

@@ -114,6 +114,30 @@ export async function streamChat(
       ...(settings ? llmPayload(settings) : {}),
     }),
   });
+  await readSse(res, onEvent);
+}
+
+export async function streamApprove(
+  baseUrl: string,
+  body: { session_id: string; pending_id: string; allow: boolean },
+  onEvent: (ev: Record<string, unknown>) => void,
+  settings?: PenSettings,
+): Promise<void> {
+  const res = await fetch(joinUrl(baseUrl, "/v1/chat/approve"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...body,
+      ...(settings ? llmPayload(settings) : {}),
+    }),
+  });
+  await readSse(res, onEvent);
+}
+
+async function readSse(
+  res: Response,
+  onEvent: (ev: Record<string, unknown>) => void,
+): Promise<void> {
   if (!res.ok || !res.body) {
     let detail = res.statusText;
     try {
@@ -126,12 +150,9 @@ export async function streamChat(
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    const parts = buf.split("\n\n");
-    buf = parts.pop() || "";
+  const takeFrames = (chunk: string): string => {
+    const parts = chunk.split("\n\n");
+    const rest = parts.pop() || "";
     for (const part of parts) {
       const line = part
         .split("\n")
@@ -141,5 +162,17 @@ export async function streamChat(
       if (!line) continue;
       onEvent(JSON.parse(line) as Record<string, unknown>);
     }
+    return rest;
+  };
+  while (true) {
+    const { done, value } = await reader.read();
+    if (value) buf += dec.decode(value, { stream: true });
+    if (done) {
+      buf += dec.decode();
+      if (buf && !buf.endsWith("\n\n")) buf += "\n\n";
+      takeFrames(buf);
+      break;
+    }
+    buf = takeFrames(buf);
   }
 }

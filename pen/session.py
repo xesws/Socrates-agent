@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -55,8 +56,8 @@ SYSTEM_PROMPT = """你是坐在读者旁边的师傅，正在带人读一本手�
 - socratic：默认。只给提示卡级方向 + 一个反问。不要把 TL;DR/(a)(b)(c) 倒完，不要给完整答案。
 - explain_zero：按手册骨架讲：TL;DR → (a) 概念/对比 → (b) 机制 → (c) 反例 → 两个可运行例子。
 - examples：只给两个例子，名字必须对得上该 Level 第七拍（scan.sh、messages.append、dispatch、approve…）。
-- writeback：不要自己改文件。把要沉淀的要点写成一个 Meta Instance 折叠块（<details>），等用户在界面确认。
-- free：看用户怎么问，仍先确认他卡在哪。
+- writeback：把刚才的解答写进手册。先 read_file 看准结构，再用 edit_file 做一次精确替换。不要声称已经写盘，等审批回填。
+- free：看用户怎么问。若要改手册，同样走 edit_file，等审批。
 
 终端实录若不是你亲眼看到的工具输出，必须标注「示意」。
 语气：师傅带实习生，口语，短句，别客服腔。
@@ -103,6 +104,7 @@ class PenSession:
     has_substantive: bool = False
     last_assistant: str = ""
     ui_messages: list[dict[str, Any]] = field(default_factory=list)
+    pending: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not self.messages:
@@ -117,10 +119,18 @@ class PenSession:
             "has_substantive": self.has_substantive,
             "last_assistant": self.last_assistant,
             "ui_messages": self.ui_messages,
+            "pending": self.pending,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
     def to_public(self) -> dict[str, Any]:
+        pending = None
+        if isinstance(self.pending, dict) and self.pending.get("id"):
+            pending = {
+                "pending_id": self.pending.get("id"),
+                "name": self.pending.get("name") or "edit_file",
+                "args": dict(self.pending.get("args") or {}),
+            }
         return {
             "session_id": self.session_id,
             "handbook_id": self.handbook_id,
@@ -129,6 +139,7 @@ class PenSession:
             "last_anchor": self.last_anchor,
             "ui_messages": self.ui_messages,
             "last_assistant": self.last_assistant,
+            "pending": pending,
         }
 
     @classmethod
@@ -141,6 +152,7 @@ class PenSession:
             has_substantive=bool(data.get("has_substantive")),
             last_assistant=str(data.get("last_assistant") or ""),
             ui_messages=list(data.get("ui_messages") or []),
+            pending=data.get("pending") if isinstance(data.get("pending"), dict) else None,
         )
 
 
@@ -170,6 +182,16 @@ def save_session(sess: PenSession) -> Path:
 class SessionStore:
     def __init__(self) -> None:
         self._items: dict[str, PenSession] = {}
+        self._locks: dict[str, threading.Lock] = {}
+        self._lock_meta = threading.Lock()
+
+    def lock_for(self, session_id: str) -> threading.Lock:
+        with self._lock_meta:
+            lock = self._locks.get(session_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._locks[session_id] = lock
+            return lock
 
     def create(self, handbook_id: str) -> PenSession:
         sid = uuid.uuid4().hex

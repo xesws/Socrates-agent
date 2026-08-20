@@ -599,3 +599,124 @@ def test_apply_commit_failure_consumes_proposal(tmp_path: Path, monkeypatch) -> 
         )
         assert again.status_code == 404
         assert book.read_text(encoding="utf-8") == mid
+
+
+def _q1_line() -> int:
+    text = DEFAULT_HANDBOOK.read_text(encoding="utf-8").splitlines()
+    return next(i for i, ln in enumerate(text, 1) if ln.startswith("**Q1. shell 和 Bash"))
+
+
+def test_chat_blocks_when_pending() -> None:
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        sess = STORE.get(sid)
+        sess.pending = {
+            "id": "pend1",
+            "name": "edit_file",
+            "args": {"path": "x.md", "old_string": "a", "new_string": "b"},
+            "tool_call_id": "c1",
+            "rest": [],
+        }
+        STORE.save(sess)
+        public = client.get(f"/v1/sessions/{sid}").json()
+        assert public["pending"]["pending_id"] == "pend1"
+        resp = client.post(
+            "/v1/chat",
+            json={
+                "session_id": sid,
+                "selected_text": "shell",
+                "start_line": _q1_line(),
+                "end_line": _q1_line(),
+                "chip": "socratic",
+                "user_text": "",
+            },
+        )
+        assert resp.status_code == 400
+        assert "审批" in resp.json()["detail"]
+
+
+def test_approve_wrong_id_and_missing_session() -> None:
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        missing = client.post(
+            "/v1/chat/approve",
+            json={"session_id": sid, "pending_id": "nope", "allow": True},
+        )
+        assert missing.status_code == 400
+        ghost = client.post(
+            "/v1/chat/approve",
+            json={
+                "session_id": "deadbeefdeadbeefdeadbeefdeadbeef",
+                "pending_id": "x",
+                "allow": True,
+            },
+        )
+        assert ghost.status_code == 404
+
+
+def test_approve_allow_runs_resume(monkeypatch) -> None:
+    seen: dict = {}
+
+    def fake_resume(sess, path, *, allow, pending_id, llm=None, extra_roots=None, allow_env_fallback=True):
+        seen["allow"] = allow
+        seen["pending_id"] = pending_id
+        seen["path"] = path
+        yield {
+            "type": "tool",
+            "name": "edit_file",
+            "ok": True,
+            "resolved": str(path),
+            "detail": "",
+            "preview": "已编辑",
+            "line": 3,
+        }
+        yield {
+            "type": "done",
+            "usage": {"context_tokens": 1, "completion_tokens": 1, "prompt_tokens": 1},
+            "dynamic_chips": [],
+            "has_substantive": True,
+        }
+
+    monkeypatch.setattr("pen.app.resume_chat", fake_resume)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        sess = STORE.get(sid)
+        sess.pending = {
+            "id": "pend2",
+            "name": "edit_file",
+            "args": {"old_string": "a", "new_string": "b"},
+            "tool_call_id": "c1",
+            "rest": [],
+        }
+        STORE.save(sess)
+        resp = client.post(
+            "/v1/chat/approve",
+            json={"session_id": sid, "pending_id": "pend2", "allow": True},
+        )
+        assert resp.status_code == 200
+        assert "edit_file" in resp.text
+        assert '"type": "done"' in resp.text
+    assert seen["allow"] is True
+    assert seen["pending_id"] == "pend2"
+
+
+def test_chat_409_when_session_busy() -> None:
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        lock = STORE.lock_for(sid)
+        assert lock.acquire(blocking=False)
+        try:
+            resp = client.post(
+                "/v1/chat",
+                json={
+                    "session_id": sid,
+                    "selected_text": "shell",
+                    "start_line": _q1_line(),
+                    "end_line": _q1_line(),
+                    "chip": "socratic",
+                    "user_text": "",
+                },
+            )
+            assert resp.status_code == 409
+        finally:
+            lock.release()

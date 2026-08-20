@@ -26,7 +26,7 @@ from pen.config import DEFAULT_HANDBOOK_ID, LLMConfig, llm_public_status, merge_
 from pen.libraries import RegisterError
 from pen.sandbox import SandboxError, assert_handbook_path, parse_vault_root
 from pen.session import FIXED_CHIPS, STORE, chip_label
-from pen.tutor import ProviderError, build_user_packet, propose_fold_md, stream_chat
+from pen.tutor import ProviderError, build_user_packet, propose_fold_md, resume_chat, stream_chat
 
 SEARCH_REPLY = (
     "论文检索还没开。这是诚实挂起：P2 才有联网，"
@@ -39,7 +39,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.4.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -81,6 +81,12 @@ class ImportBody(BaseModel):
 class SessionBody(BaseModel):
     handbook_id: str = DEFAULT_HANDBOOK_ID
     session_id: str | None = None
+
+
+class ApproveBody(LlmOverrideBody):
+    session_id: str
+    pending_id: str
+    allow: bool
 
 
 class ChatBody(LlmOverrideBody):
@@ -127,6 +133,13 @@ def _meta_or_404(handbook_id: str):
 
 def _sse(ev: dict[str, Any]) -> str:
     return f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+
+def _try_lock_session(session_id: str):
+    lock = STORE.lock_for(session_id)
+    if not lock.acquire(blocking=False):
+        raise HTTPException(409, "这场对话还在跑，先等它结束。")
+    return lock
 
 
 def _content_fp(path: Path) -> str:
@@ -352,6 +365,9 @@ def chat(body: ChatBody) -> StreamingResponse:
     except KeyError as exc:
         raise HTTPException(404, "未知会话") from exc
     if body.chip == "search":
+        if sess.pending:
+            raise HTTPException(400, "有一次编辑在等你审批，先点允许或拒绝。")
+
         def search_gen() -> Any:
             yield _sse({"type": "token", "text": SEARCH_REPLY})
             yield _sse(
@@ -364,26 +380,33 @@ def chat(body: ChatBody) -> StreamingResponse:
             )
 
         return StreamingResponse(search_gen(), media_type="text/event-stream")
-    meta = _meta_or_404(sess.handbook_id)
-    idx = libraries.load_index(sess.handbook_id)
-    path = Path(meta.original_path)
+    lock = _try_lock_session(sess.session_id)
     try:
-        packet, anchor = build_user_packet(
-            idx,
-            path,
-            selected_text=body.selected_text,
-            start_line=body.start_line,
-            end_line=body.end_line,
-            chip=body.chip,
-            user_text=body.user_text,
-        )
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    sess.last_anchor = anchor
-    shown = (body.user_text or "").strip() or chip_label(body.chip)
-    sess.ui_messages.append({"role": "user", "text": shown})
-    prior_assistant = sess.last_assistant
-    STORE.save(sess)
+        if sess.pending:
+            raise HTTPException(400, "有一次编辑在等你审批，先点允许或拒绝。")
+        meta = _meta_or_404(sess.handbook_id)
+        idx = libraries.load_index(sess.handbook_id)
+        path = Path(meta.original_path)
+        try:
+            packet, anchor = build_user_packet(
+                idx,
+                path,
+                selected_text=body.selected_text,
+                start_line=body.start_line,
+                end_line=body.end_line,
+                chip=body.chip,
+                user_text=body.user_text,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        sess.last_anchor = anchor
+        shown = (body.user_text or "").strip() or chip_label(body.chip)
+        sess.ui_messages.append({"role": "user", "text": shown})
+        prior_assistant = sess.last_assistant
+        STORE.save(sess)
+    except Exception:
+        lock.release()
+        raise
 
     def gen():
         ok = True
@@ -432,6 +455,58 @@ def chat(body: ChatBody) -> StreamingResponse:
                 )
             except Exception:
                 pass
+            lock.release()
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.post("/v1/chat/approve")
+def chat_approve(body: ApproveBody) -> StreamingResponse:
+    try:
+        sess = STORE.get(body.session_id)
+    except KeyError as exc:
+        raise HTTPException(404, "未知会话") from exc
+    lock = _try_lock_session(sess.session_id)
+    try:
+        if not sess.pending or sess.pending.get("id") != body.pending_id:
+            raise HTTPException(400, "没有待审批的编辑，或已经过期")
+        meta = _meta_or_404(sess.handbook_id)
+        path = Path(meta.original_path)
+        prior_assistant = sess.last_assistant
+    except Exception:
+        lock.release()
+        raise
+
+    def gen():
+        ok = True
+        try:
+            for ev in resume_chat(
+                sess,
+                path,
+                allow=body.allow,
+                pending_id=body.pending_id,
+                llm=body.merged(),
+                extra_roots=libraries.extra_roots_for(sess.handbook_id),
+                allow_env_fallback=not bool((body.base_url or "").strip()),
+            ):
+                if ev.get("type") == "error":
+                    ok = False
+                yield _sse(ev)
+        except ProviderError as exc:
+            ok = False
+            yield _sse({"type": "error", "message": str(exc)})
+        except Exception:
+            ok = False
+            yield _sse({"type": "error", "message": "审批后续出错，请重试。"})
+        finally:
+            if sess.last_assistant and sess.last_assistant != prior_assistant:
+                sess.ui_messages.append({"role": "assistant", "text": sess.last_assistant})
+            try:
+                STORE.save(sess)
+            except Exception:
+                pass
+            lock.release()
+            _ = ok
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 

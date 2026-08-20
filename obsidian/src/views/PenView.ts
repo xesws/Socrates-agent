@@ -7,7 +7,7 @@ import {
   WorkspaceLeaf,
 } from "obsidian";
 import type SocratesPenPlugin from "../main";
-import { makeApi, streamChat } from "../api";
+import { makeApi, streamApprove, streamChat } from "../api";
 import {
   handbookIdFromPath,
   relFromAbs,
@@ -29,11 +29,13 @@ function visibleReply(text: string): string {
   return text.replace(/<!--pen:chips[\s\S]*?-->/g, "").trim();
 }
 
-function toolCaption(m: ChatMessage): { ok: boolean; file: string } {
+function toolCaption(m: ChatMessage): { ok: boolean; file: string; kicker: string } {
   const ok = m.ok !== false;
+  const name = m.text.split(" ")[0] || "tool";
   const path = m.text.split("→").slice(1).join("→").trim();
   const file = path.split("/").filter(Boolean).pop() || (path || "（无路径）");
-  return { ok, file };
+  const kicker = name === "edit_file" ? "改原文" : "翻手册";
+  return { ok, file, kicker };
 }
 
 function whereSentence(p: Proposal): string {
@@ -77,6 +79,12 @@ export class PenView extends ItemView {
   private rangeA = "1";
   private rangeB = "1";
   private replaceAck = false;
+  private pending: {
+    pending_id: string;
+    name: string;
+    args: { path?: string; old_string?: string; new_string?: string };
+  } | null = null;
+  private approving = false;
   private logEl: HTMLElement | null = null;
   private barEl: HTMLElement | null = null;
 
@@ -139,37 +147,61 @@ export class PenView extends ItemView {
     this.bindKeepFocus(row.createEl("button", { text: "用当前选区" }), () => {
       void this.captureSelection();
     });
-    row.createEl("button", { text: "新开会话" }).onclick = () => {
-      void this.newSession();
-    };
+    const ns = row.createEl("button", { text: "新开会话" });
+    ns.disabled = this.busy || Boolean(this.pending);
+    ns.onclick = () => void this.newSession();
     if (this.canUndo) {
       const undo = row.createEl("button", { text: "撤销刚才写入" });
       undo.disabled = this.busy;
       undo.onclick = () => void this.doRollback();
     }
+    const blocked = this.busy || Boolean(this.pending);
     const chips = this.barEl.createDiv({ cls: "sp-chips" });
     for (const c of this.chips) {
       const on = c.id === "writeback" ? this.substantive : c.enabled;
       const b = chips.createEl("button", { text: c.label });
-      b.disabled = !on || this.busy;
+      b.disabled = !on || blocked;
       if (c.hint) b.title = c.hint;
       b.onclick = () => void this.send(c.id, "");
     }
     for (const d of this.dyn) {
       const b = chips.createEl("button", { text: d, cls: "is-dyn" });
-      b.disabled = this.busy;
+      b.disabled = blocked;
       b.onclick = () => void this.send("free", d);
     }
     const form = this.barEl.createDiv({ cls: "sp-form" });
     const input = form.createEl("input");
     input.placeholder = "自己问一句…";
-    input.disabled = this.busy;
+    input.disabled = blocked;
     const ask = form.createEl("button", { text: "问" });
-    ask.disabled = this.busy;
+    ask.disabled = blocked;
     ask.onclick = () => {
       const t = input.value.trim();
       if (t) void this.send("free", t);
     };
+    if (this.pending) {
+      const box = this.barEl.createDiv({ cls: "sp-preview" });
+      box.createEl("h4", { text: "审批这次编辑" });
+      box.createDiv({
+        cls: "sp-where",
+        text: `${this.pending.name} → ${this.pending.args.path || "当前手册"}`,
+      });
+      box.createEl("pre", {
+        cls: "sp-fold",
+        text: `--- old ---\n${(this.pending.args.old_string || "").slice(0, 800)}\n\n+++ new ---\n${(this.pending.args.new_string || "").slice(0, 800)}`,
+      });
+      box.createDiv({
+        cls: "sp-warn",
+        text: "模型自己选要换的那一小段。点允许才会改这篇笔记。",
+      });
+      const actions = box.createDiv({ cls: "sp-preview-actions" });
+      const yes = actions.createEl("button", { text: "允许这次编辑" });
+      yes.disabled = this.approving;
+      yes.onclick = () => void this.doApprove(true);
+      const no = actions.createEl("button", { text: "拒绝" });
+      no.disabled = this.approving;
+      no.onclick = () => void this.doApprove(false);
+    }
     if (this.proposal) {
       const box = this.barEl.createDiv({ cls: "sp-preview" });
       box.createEl("h4", { text: "将写入这篇笔记" });
@@ -223,13 +255,14 @@ export class PenView extends ItemView {
             const row = log.createDiv({
               cls: cap.ok ? "sp-tool" : "sp-tool is-bad",
             });
-            row.createSpan({ cls: "sp-kicker", text: "翻手册" });
+            row.createSpan({ cls: "sp-kicker", text: cap.kicker });
             row.createSpan({
               cls: "sp-tool-msg",
               text: `${cap.ok ? "成功" : "拒绝"} · ${cap.file}`,
             });
             continue;
           }
+          if (m.role === "assistant" && !m.text && this.pending) continue;
           const turn = log.createDiv({ cls: `sp-turn is-${m.role}` });
           turn.createDiv({
             cls: "sp-kicker",
@@ -369,6 +402,16 @@ export class PenView extends ItemView {
     this.substantive = Boolean(sess.has_substantive);
     this.dyn = [];
     this.proposal = null;
+    const p = sess.pending;
+    this.pending =
+      p && p.pending_id
+        ? {
+            pending_id: p.pending_id,
+            name: p.name || "edit_file",
+            args: p.args || {},
+          }
+        : null;
+    if (this.pending) this.status = "等你批准这次编辑";
   }
 
   async newSession(): Promise<void> {
@@ -399,8 +442,8 @@ export class PenView extends ItemView {
 
   private async send(chip: string, userText: string): Promise<void> {
     if (chip === "search") return;
-    if (chip === "writeback") {
-      await this.doPropose();
+    if (this.pending) {
+      new Notice("先批准或拒绝这次编辑");
       return;
     }
     if (!this.sessionId || !this.quote) {
@@ -445,12 +488,27 @@ export class PenView extends ItemView {
             this.status = "在翻手册…";
             const ok = Boolean(ev.ok);
             const path = String(ev.resolved || ev.detail || "");
+            const name = String(ev.name || "tool");
             this.msgs.splice(this.msgs.length - 1, 0, {
               role: "tool",
               ok,
-              text: `read_file ${ok ? "成功" : "拒绝"} → ${path}`,
+              text: `${name} ${ok ? "成功" : "拒绝"} → ${path}`,
             });
+            if (name === "edit_file" && ok) this.canUndo = true;
             void this.paintLog();
+            this.paintBar();
+          } else if (ev.type === "approval") {
+            const args = (ev.args || {}) as {
+              path?: string;
+              old_string?: string;
+              new_string?: string;
+            };
+            this.pending = {
+              pending_id: String(ev.pending_id || ""),
+              name: String(ev.name || "edit_file"),
+              args,
+            };
+            this.status = "等你批准这次编辑";
             this.paintBar();
           } else if (ev.type === "done") {
             this.status = "";
@@ -476,8 +534,102 @@ export class PenView extends ItemView {
     } catch (e) {
       this.err = e instanceof Error ? e.message : String(e);
     } finally {
-      this.busy = false;
-      this.status = "";
+      if (!this.pending) {
+        this.busy = false;
+        this.status = "";
+      }
+      this.paintBar();
+      await this.paintLog();
+    }
+  }
+
+  private async doApprove(allow: boolean): Promise<void> {
+    if (!this.sessionId || !this.pending || this.approving) return;
+    const sid = this.sessionId;
+    const pid = this.pending.pending_id;
+    this.approving = true;
+    this.busy = true;
+    this.err = "";
+    this.status = allow ? "在改原文…" : "已拒绝，让师傅收尾…";
+    this.paintBar();
+    if (allow && this.capturedPath) {
+      try {
+        await this.saveOpenNote(this.capturedPath);
+      } catch {
+        /* 仍尝试写盘：sidecar 读的是磁盘 */
+      }
+    }
+    let acc = "";
+    const last = this.msgs[this.msgs.length - 1];
+    if (last?.role === "assistant") acc = last.text;
+    try {
+      await streamApprove(
+        this.plugin.settings.sidecarUrl,
+        { session_id: sid, pending_id: pid, allow },
+        (ev) => {
+          if (ev.type === "status") {
+            this.status = String(ev.text || "");
+            this.paintBar();
+          } else if (ev.type === "token") {
+            acc += String(ev.text || "");
+            const row = this.msgs[this.msgs.length - 1];
+            if (row?.role === "assistant") row.text = acc;
+            this.paintStreamBubble(acc);
+          } else if (ev.type === "tool") {
+            const ok = Boolean(ev.ok);
+            const path = String(ev.resolved || ev.detail || "");
+            const name = String(ev.name || "tool");
+            this.msgs.splice(this.msgs.length - 1, 0, {
+              role: "tool",
+              ok,
+              text: `${name} ${ok ? "成功" : "拒绝"} → ${path}`,
+            });
+            if (name === "edit_file" && ok) {
+              this.canUndo = true;
+              const line = Number(ev.line) || this.startLine;
+              if (this.capturedPath) void this.revealInsert(this.capturedPath, line);
+            }
+            void this.paintLog();
+          } else if (ev.type === "approval") {
+            const args = (ev.args || {}) as {
+              path?: string;
+              old_string?: string;
+              new_string?: string;
+            };
+            this.pending = {
+              pending_id: String(ev.pending_id || ""),
+              name: String(ev.name || "edit_file"),
+              args,
+            };
+          } else if (ev.type === "done") {
+            this.pending = null;
+            this.status = "";
+            const u = ev.usage as {
+              context_tokens?: number;
+              completion_tokens?: number;
+              prompt_tokens?: number;
+            };
+            const ctx = u?.context_tokens ?? u?.prompt_tokens;
+            const out = u?.completion_tokens;
+            const fmt = (n: number | undefined) =>
+              typeof n === "number" ? n.toLocaleString("zh-CN") : "?";
+            this.usage = `上下文 ${fmt(ctx)} · 回复 ${fmt(out)}`;
+            this.dyn = (ev.dynamic_chips as string[]) || [];
+            this.substantive = Boolean(ev.has_substantive);
+          } else if (ev.type === "error") {
+            this.err = String(ev.message);
+          }
+        },
+        this.plugin.settings,
+      );
+    } catch (e) {
+      this.err = e instanceof Error ? e.message : String(e);
+    } finally {
+      this.approving = false;
+      if (!this.pending) {
+        this.busy = false;
+        this.status = "";
+      }
       this.paintBar();
       await this.paintLog();
     }

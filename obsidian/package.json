@@ -1,7 +1,7 @@
 {
   "name": "socrates-pen-obsidian",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Obsidian client for the Socrates pen sidecar",
   "main": "main.js",
   "scripts": {
