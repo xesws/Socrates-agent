@@ -26,10 +26,7 @@ export const en: Dict = {
   askPlaceholder: "Ask something…",
   tipUseSelection: "Highlight a passage in your note, then hand it over here",
 
-  btnNewSession: "New session",
   tipNewSession: "Start over — drops this session's memory and selection",
-  btnUndo: "Back one version",
-  btnRedo: "Redo",
   tipUndoEmpty: "Nothing to roll back yet. Approve an edit first.",
   tipUndo: (count) => `Roll the whole note back one version (${count} left)`,
   tipRedoEmpty: "Nothing to redo",
@@ -77,6 +74,7 @@ export const en: Dict = {
   approvalTitle: "Approve this edit",
   approvalTarget: (tool, path) => `${tool} → ${path}`,
   approvalCurrentHandbook: "current manual",
+  approvalTruncated: (n) => `… ${n} more characters not shown`,
   approvalWarn:
     "The model picked this snippet itself. Nothing touches your note until you allow it.",
   approvalOldLabel: "--- before ---",

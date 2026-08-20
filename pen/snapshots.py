@@ -77,7 +77,10 @@ def undo(handbook_id: str, original_path: Path) -> Path:
     target = assert_write_target(original_path, original_path)
     files = _undo_files(handbook_id)
     if not files:
-        raise FileNotFoundError(f"没有可回退的快照：{handbook_id}")
+        exc = FileNotFoundError(f"没有可回退的快照：{handbook_id}")
+        exc.i18n_key = "snapshot.none_to_undo"  # type: ignore[attr-defined]
+        exc.i18n_args = {"handbook_id": handbook_id}  # type: ignore[attr-defined]
+        raise exc
     snap = files[-1]
     _push(_redo_dir(handbook_id), target, "undone")
     shutil.copy2(snap, target)
@@ -91,7 +94,10 @@ def redo(handbook_id: str, original_path: Path) -> Path:
     target = assert_write_target(original_path, original_path)
     files = _redo_files(handbook_id)
     if not files:
-        raise FileNotFoundError(f"没有可重做的快照：{handbook_id}")
+        exc = FileNotFoundError(f"没有可重做的快照：{handbook_id}")
+        exc.i18n_key = "snapshot.none_to_redo"  # type: ignore[attr-defined]
+        exc.i18n_args = {"handbook_id": handbook_id}  # type: ignore[attr-defined]
+        raise exc
     snap = files[-1]
     _push(snapshot_dir(handbook_id), target, "pre-redo")
     shutil.copy2(snap, target)

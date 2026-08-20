@@ -42,7 +42,10 @@ class HandbookIndex:
 
     def locate(self, line: int) -> Section:
         if line < 1 or line > max(self.n_lines, 1):
-            raise ValueError(f"行号越界：{line}（全书 {self.n_lines} 行）")
+            exc = ValueError(f"行号越界：{line}（全书 {self.n_lines} 行）")
+            exc.i18n_key = "index.line_out_of_range"  # type: ignore[attr-defined]
+            exc.i18n_args = {"line": line, "n_lines": self.n_lines}  # type: ignore[attr-defined]
+            raise exc
         qs = [
             s
             for s in self.sections

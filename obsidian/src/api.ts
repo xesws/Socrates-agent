@@ -1,7 +1,12 @@
 import { currentLang } from "./i18n";
 import type { PenSettings } from "./settings";
 import { llmPayload } from "./settings";
-import type { HandbookMeta, LlmStatus, SessionView } from "./types";
+import type {
+  HandbookMeta,
+  LlmStatus,
+  SessionView,
+  SnapshotStatus,
+} from "./types";
 
 function joinUrl(base: string, path: string): string {
   return `${base.replace(/\/$/, "")}${path}`;
@@ -47,35 +52,14 @@ export function makeApi(baseUrl: string) {
     getSession: (session_id: string) =>
       j<SessionView>(baseUrl, `/v1/sessions/${session_id}`),
     snapshots: (handbook_id: string) =>
-      j<{
-        can_undo: boolean;
-        can_redo: boolean;
-        undo_n: number;
-        redo_n: number;
-      }>(baseUrl, `/v1/handbooks/${handbook_id}/snapshots`),
+      j<SnapshotStatus>(baseUrl, `/v1/handbooks/${handbook_id}/snapshots`),
     rollback: (handbook_id: string) =>
-      j<{
-        ok: boolean;
-        restored_from: string;
-        original_path: string;
-        can_undo: boolean;
-        can_redo: boolean;
-        undo_n: number;
-        redo_n: number;
-      }>(baseUrl, "/v1/writeback/rollback", {
+      j<SnapshotStatus & { ok: boolean; restored_from: string; original_path: string }>(baseUrl, "/v1/writeback/rollback", {
         method: "POST",
         body: JSON.stringify({ handbook_id }),
       }),
     redo: (handbook_id: string) =>
-      j<{
-        ok: boolean;
-        restored_from: string;
-        original_path: string;
-        can_undo: boolean;
-        can_redo: boolean;
-        undo_n: number;
-        redo_n: number;
-      }>(baseUrl, "/v1/writeback/redo", {
+      j<SnapshotStatus & { ok: boolean; restored_from: string; original_path: string }>(baseUrl, "/v1/writeback/redo", {
         method: "POST",
         body: JSON.stringify({ handbook_id }),
       }),

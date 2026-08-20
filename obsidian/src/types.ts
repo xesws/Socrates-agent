@@ -44,6 +44,11 @@ export type ChatMessage = {
   role: "user" | "assistant" | "tool";
   text: string;
   ok?: boolean;
+  /**
+   * 点芯片发起时后端会带上芯片 id（sidecar >= v0.7.1）。
+   * 有它就能把落盘的中文 label 换成当前语言，旧快照没有则回落 text。
+   */
+  chip?: string;
 };
 
 export type SnapshotStatus = {

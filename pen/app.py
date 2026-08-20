@@ -23,7 +23,7 @@ from pen import diagnose as diagnosemod
 from pen import proposals as proposalsmod
 from pen import trajectory
 from pen.config import DEFAULT_HANDBOOK_ID, LLMConfig, llm_public_status, merge_llm
-from pen.i18n import msg, norm_lang
+from pen.i18n import localized, msg, norm_lang
 from pen.libraries import RegisterError
 from pen.sandbox import SandboxError, assert_handbook_path, parse_vault_root
 from pen.session import FIXED_CHIPS, STORE, chip_label
@@ -40,7 +40,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.7.0", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.7.1", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -135,7 +135,12 @@ def _meta_or_404(handbook_id: str, lang: str = "zh"):
     meta = libraries.get(handbook_id)
     if meta is None:
         raise HTTPException(404, msg("handbook.unknown", lang, handbook_id=handbook_id))
-    return libraries.refresh_if_stale(handbook_id)
+    try:
+        return libraries.refresh_if_stale(handbook_id)
+    except FileNotFoundError as exc:
+        # 用户在 Obsidian 里重命名或移走了已登记的笔记。以前这里没人接，
+        # 直接冒成 500 Internal Server Error。
+        raise HTTPException(404, localized(exc, lang)) from exc
 
 
 def _sse(ev: dict[str, Any]) -> str:
@@ -291,7 +296,7 @@ def list_handbooks() -> dict[str, Any]:
 
 
 @app.post("/v1/handbooks/import")
-def import_handbook(body: ImportBody) -> dict[str, Any]:
+def import_handbook(body: ImportBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
     try:
         extra = parse_vault_root(body.vault_root)
         meta = libraries.register(
@@ -300,9 +305,9 @@ def import_handbook(body: ImportBody) -> dict[str, Any]:
             extra_roots=extra or None,
         )
     except FileNotFoundError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, localized(exc, lang)) from exc
     except (RegisterError, SandboxError) as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, localized(exc, lang)) from exc
     return meta.__dict__
 
 
@@ -324,7 +329,7 @@ def get_content(handbook_id: str, lang: str = Depends(req_lang)) -> dict[str, An
     try:
         assert_handbook_path(path, extra_roots=libraries.extra_roots_for(handbook_id))
     except SandboxError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, localized(exc, lang)) from exc
     return {
         "original_path": str(path),
         "text": path.read_text(encoding="utf-8"),
@@ -333,12 +338,12 @@ def get_content(handbook_id: str, lang: str = Depends(req_lang)) -> dict[str, An
 
 
 @app.get("/v1/handbooks/{handbook_id}/locate")
-def locate(handbook_id: str, line: int) -> dict[str, Any]:
+def locate(handbook_id: str, line: int, lang: str = Depends(req_lang)) -> dict[str, Any]:
     idx = libraries.load_index(handbook_id)
     try:
         sec = idx.locate(line)
     except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, localized(exc, lang)) from exc
     return sec.__dict__
 
 
@@ -405,10 +410,16 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
                 user_text=body.user_text,
             )
         except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
+            raise HTTPException(400, localized(exc, lang)) from exc
         sess.last_anchor = anchor
-        shown = (body.user_text or "").strip() or chip_label(body.chip)
-        sess.ui_messages.append({"role": "user", "text": shown})
+        typed = (body.user_text or "").strip()
+        shown = typed or chip_label(body.chip)
+        # 点芯片时多存一个 chip id：label 是中文且会落盘，只存文本的话，
+        # 英文用户恢复旧会话时自己的历史气泡会是中文。存了 id，前端就能查表。
+        row: dict[str, Any] = {"role": "user", "text": shown}
+        if not typed:
+            row["chip"] = body.chip
+        sess.ui_messages.append(row)
         prior_assistant = sess.last_assistant
         STORE.save(sess)
     except Exception:
@@ -541,7 +552,7 @@ def propose(body: ProposeBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
             lang=lang,
         )
     except RuntimeError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, localized(exc, lang)) from exc
     try:
         plan = insertmod.plan_insert(
             idx,
@@ -551,7 +562,7 @@ def propose(body: ProposeBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
             summary_hint=body.summary_hint,
         )
     except insertmod.InsertError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, localized(exc, lang)) from exc
     old = path.read_text(encoding="utf-8")
     new = insertmod.render_new_text(old, plan)
     diff = insertmod.unified_diff(old, new, path.name)
@@ -577,7 +588,7 @@ def handbook_outline(handbook_id: str, lang: str = Depends(req_lang)) -> dict[st
     try:
         assert_handbook_path(path, extra_roots=libraries.extra_roots_for(handbook_id))
     except SandboxError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, localized(exc, lang)) from exc
     return file_outline(path)
 
 
@@ -594,12 +605,12 @@ def retarget(body: RetargetBody, lang: str = Depends(req_lang)) -> dict[str, Any
     try:
         assert_handbook_path(path, extra_roots=libraries.extra_roots_for(sess.handbook_id))
     except SandboxError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, localized(exc, lang)) from exc
     fold = prop["plan"].fold_md
     try:
         plan = _plan_for_target(path, fold, sess, body)
     except insertmod.InsertError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, localized(exc, lang)) from exc
     old = path.read_text(encoding="utf-8")
     new = insertmod.render_new_text(old, plan)
     diff = insertmod.unified_diff(old, new, path.name)
@@ -625,7 +636,7 @@ def apply(body: ApplyBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
     try:
         assert_handbook_path(path, extra_roots=libraries.extra_roots_for(sess.handbook_id))
     except SandboxError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, localized(exc, lang)) from exc
     expected = prop.get("content_fp")
     if expected and _content_fp(path) != expected:
         raise HTTPException(400, msg("writeback.stale", lang))
@@ -633,7 +644,7 @@ def apply(body: ApplyBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
     try:
         insertmod.apply_insert(path, prop["plan"])
     except insertmod.InsertError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, localized(exc, lang)) from exc
     libraries.refresh_if_stale(sess.handbook_id)
     commit_out = None
     commit_error: str | None = None
@@ -669,11 +680,11 @@ def rollback(body: RollbackBody, lang: str = Depends(req_lang)) -> dict[str, Any
     try:
         assert_handbook_path(path, extra_roots=libraries.extra_roots_for(body.handbook_id))
     except SandboxError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, localized(exc, lang)) from exc
     try:
         snap = snapshots.undo(body.handbook_id, path)
     except FileNotFoundError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, localized(exc, lang)) from exc
     libraries.refresh_if_stale(body.handbook_id)
     st = snapshots.status(body.handbook_id)
     return {
@@ -691,11 +702,11 @@ def redo(body: RollbackBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
     try:
         assert_handbook_path(path, extra_roots=libraries.extra_roots_for(body.handbook_id))
     except SandboxError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, localized(exc, lang)) from exc
     try:
         snap = snapshots.redo(body.handbook_id, path)
     except FileNotFoundError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, localized(exc, lang)) from exc
     libraries.refresh_if_stale(body.handbook_id)
     st = snapshots.status(body.handbook_id)
     return {
@@ -729,5 +740,5 @@ def narrate_diagnosis(handbook_id: str, lang: str = Depends(req_lang)) -> dict[s
     try:
         text = diagnosemod.narrate(report)
     except RuntimeError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, localized(exc, lang)) from exc
     return {"handbook_id": handbook_id, "narrative": text}

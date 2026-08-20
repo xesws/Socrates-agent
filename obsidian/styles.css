@@ -115,7 +115,8 @@
 .socrates-pen .sp-alert {
   flex: 0 5 auto;
   min-height: 0;
-  max-height: 5em;
+  /* 窄栏 5em 兜底，高栏跟着长——带绝对路径的 sandbox 错误一条就超过 3 行 */
+  max-height: clamp(5em, 22%, 14em);
   overflow: auto;
   overscroll-behavior: contain;
   padding: 5px 10px;
@@ -145,7 +146,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
 }
 
 .socrates-pen .sp-kicker {
@@ -303,8 +304,8 @@
 .socrates-pen .sp-panel {
   flex: 0 1000 auto;
   min-height: 0;
-  /* 宽栏下尽量把 diff 铺开（上限 560px 时百分比根本不触发）；
-     窄栏下让到 45%，把高度还给对话区，超出部分自己滚。 */
+  /* 45% 是常态那一档：面板高 1244px 以下时都是它在管；560px 只在超高侧栏接管。
+     窄栏下 120px 保底。剩下的由内部的 .sp-fold 自己滚。 */
   max-height: clamp(120px, 45%, 560px);
   overflow: auto;
   overscroll-behavior: contain;
@@ -336,7 +337,11 @@
 .socrates-pen .sp-panel .sp-fold {
   margin: 0;
   padding: 0;
-  max-height: 240px;
+  /* 不写死高度：面板是 flex column，让 diff 区吃满标题/警告/按钮之外的全部空间。
+     面板自己有上限，所以这里 grow 不会失控；用户批准写盘前看的就是这一块，
+     它才是最该铺开的。 */
+  flex: 1 1 auto;
+  min-height: 90px;
   overflow: auto;
   overscroll-behavior: contain;
   font-size: 11px;
@@ -375,6 +380,7 @@
 
 /* ── 底座：贴底，内部有让位优先级 ── */
 .socrates-pen .sp-dock {
+  container-type: inline-size;
   flex: 0 1 auto;
   min-height: 0;
   display: flex;
@@ -397,6 +403,19 @@
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* 宽侧栏下摘录不必钉死两行 */
+@container (min-width: 420px) {
+  .socrates-pen .sp-quote {
+    -webkit-line-clamp: 4;
+  }
+}
+
+@container (min-width: 640px) {
+  .socrates-pen .sp-quote {
+    -webkit-line-clamp: 6;
+  }
 }
 
 /* 芯片：换行排列，但有界。窄栏下自己滚，宽栏下根本碰不到上限。
@@ -489,9 +508,24 @@
    --sp-adv（字宽比）由 PenView 实测一次写在根上，随主题换字体重测。
    ============================================================ */
 
+/* 底色跟着用户在「设置 → 外观 → 强调色」里选的颜色走：color-mix 把
+   --interactive-accent 掺进 --background-secondary，深浅两套主题、各种强调色
+   下都成立（紫/绿/橙/红/青实测过）。全程零硬编码色值。
+
+   container-type 在这里，所以 100cqi 解析的是**内容盒**，padding 已经扣掉，
+   下面字符画的字号反解不受影响。 */
 .socrates-pen .sp-splash {
   container-type: inline-size;
   width: 100%;
+  padding: 16px 12px 14px;
+  border-radius: 10px;
+  background: linear-gradient(
+    150deg,
+    color-mix(in srgb, var(--interactive-accent) 16%, var(--background-secondary)) 0%,
+    color-mix(in srgb, var(--interactive-accent) 4%, var(--background-secondary)) 60%,
+    var(--background-secondary) 100%
+  );
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 18%, transparent);
   user-select: none;
   -webkit-user-select: none;
   cursor: default;
@@ -528,35 +562,27 @@
   color: var(--text-muted);
 }
 
-/* 字标：em 单位的分层挤出。偏移用 em 而不是 px，随反解出来的字号等比缩放，
-   任何侧栏宽度下厚度观感一致。
-   远端一层必须用 --text-faint，不能用 --background-modifier-border——
-   后者在深色主题里比背景亮，阴影会变高光，立体方向就反了。 */
+/* 字标：和肖像同一套密度阶画出来的，所以也用同一种处理——单色，不加投影。
+   密度字符自带明暗层次，再叠一层 3D 挤出只会把笔画糊掉。字标比肖像亮一档
+   （text-normal vs text-muted），层次靠这个拉开。 */
 .socrates-pen .sp-art.is-word {
   --sp-art-max: 13px;
-  margin-top: 14px;
+  margin-top: 15px;
   color: var(--text-normal);
-  text-shadow:
-    0.09em 0.09em 0 color-mix(in srgb, var(--interactive-accent) 62%, transparent),
-    0.18em 0.18em 0 color-mix(in srgb, var(--interactive-accent) 34%, transparent),
-    0.27em 0.27em 0 color-mix(in srgb, var(--text-faint) 45%, transparent);
 }
 
-/* 中文标语走真字形 + CSS 挤出，不走点阵：
-   「苏格拉底学习法」半块点阵实测要 98 列，而侧栏可用约 46 列，缩到 5px 会糊成一团。 */
+/* 标语是一行字，不是一幅画：跟字标同一支等宽字体、同一个色阶，靠字距对齐
+   字符画的疏密感，不做 3D 挤出——那会和密度字符的手工感打架。 */
 .socrates-pen .sp-splash-tag {
-  margin-top: 14px;
+  margin-top: 13px;
   text-align: center;
-  font-size: clamp(12px, 6cqi, 19px);
-  font-weight: 700;
-  line-height: 1.2;
-  letter-spacing: 0.28em;
-  text-indent: 0.28em; /* 抵消末字后多出的字距，视觉才真居中 */
+  font-family: var(--font-monospace);
+  font-size: clamp(11px, 4.4cqi, 15px);
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: 0.34em;
+  text-indent: 0.34em; /* 抵消末字后多出的字距，视觉才真居中 */
   color: var(--text-normal);
-  text-shadow:
-    0.055em 0.055em 0 color-mix(in srgb, var(--interactive-accent) 62%, transparent),
-    0.11em 0.11em 0 color-mix(in srgb, var(--interactive-accent) 34%, transparent),
-    0.165em 0.165em 0 color-mix(in srgb, var(--text-faint) 42%, transparent);
 }
 
 .socrates-pen .sp-splash-sub {
@@ -589,6 +615,16 @@
   }
   .socrates-pen .sp-art.is-word {
     --sp-art-max: 16px;
+  }
+}
+
+/* 超宽侧栏：别让 Logo 停止生长 */
+@container (min-width: 680px) {
+  .socrates-pen .sp-art.is-portrait {
+    --sp-art-max: 18px;
+  }
+  .socrates-pen .sp-art.is-word {
+    --sp-art-max: 21px;
   }
 }
 

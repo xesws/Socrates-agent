@@ -86,10 +86,10 @@ export class PenSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("API Key")
       .setDesc(s.setApiKeyDesc)
-      .addText((t) => {
-        t.inputEl.type = "password";
-        t.inputEl.autocomplete = "off";
-        t.setPlaceholder("sk-…")
+      .addText((c) => {
+        c.inputEl.type = "password";
+        c.inputEl.autocomplete = "off";
+        c.setPlaceholder("sk-…")
           .setValue(this.plugin.settings.apiKey)
           .onChange((v) => {
             this.plugin.settings.apiKey = v.trim();
@@ -100,8 +100,8 @@ export class PenSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Base URL")
       .setDesc(s.setBaseUrlDesc)
-      .addText((t) =>
-        t
+      .addText((c) =>
+        c
           .setPlaceholder("https://api.deepseek.com")
           .setValue(this.plugin.settings.baseUrl)
           .onChange((v) => {
@@ -113,8 +113,8 @@ export class PenSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName(s.setModelName)
       .setDesc(s.setModelDesc)
-      .addText((t) =>
-        t
+      .addText((c) =>
+        c
           .setPlaceholder("deepseek-v4-flash")
           .setValue(this.plugin.settings.model)
           .onChange((v) => {
@@ -141,8 +141,8 @@ export class PenSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Sidecar URL")
       .setDesc(s.setSidecarDesc)
-      .addText((t) =>
-        t
+      .addText((c) =>
+        c
           .setPlaceholder("http://127.0.0.1:8765")
           .setValue(this.plugin.settings.sidecarUrl)
           .onChange((v) => {

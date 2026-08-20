@@ -94,6 +94,8 @@ export class PenView extends ItemView {
   private approving = false;
   private chipsSig = "";
   private splashLevel: SplashLevel = "none";
+  /** paintLog 正在跑时新来的 force 请求存这里，别让它被吞掉。 */
+  private forceStick = false;
   private els: Els | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: SocratesPenPlugin) {
@@ -160,8 +162,10 @@ export class PenView extends ItemView {
   }
 
   /**
-   * 建骨架。**只在 onOpen 跑一次**——所有元素和事件监听的生命周期等于视图本身，
-   * 之后的每次刷新都只改属性、不重建节点。
+   * 建骨架。正常情况下只在 onOpen 跑一次——所有元素和事件监听的生命周期等于视图
+   * 本身，之后的每次刷新都只改属性、不重建节点。**唯一的例外是 relocalize()**，
+   * 切语言时会重跑一遍；`root.empty()` 会连带清掉这里绑的监听，所以不会泄漏，
+   * 但如果以后往这里加 registerDomEvent 之类挂在 document 上的监听，要自己去重。
    *
    * 五层，自上而下：品牌条 / 错误条 / 对话区 / 审批面板 / 底座。
    * 只有对话区 grow，其余按 flex-shrink 权重依次让位，输入行永不压缩。
@@ -255,14 +259,16 @@ export class PenView extends ItemView {
   private paintQuote(): void {
     const e = this.els;
     if (!e) return;
-    const text = this.quote.slice(0, 180);
+    // 宽栏下 CSS 会放开到 4-6 行，文本上限也跟着放宽；真正的裁剪交给 line-clamp
+    const text = this.quote.slice(0, 420);
     e.quote.classList.toggle("is-off", !this.quote);
     if (e.quote.textContent !== text) e.quote.textContent = text;
   }
 
   /**
    * 状态行一格两用：忙的时候显示「师傅在想…」，闲下来显示用量。
-   * 这样底座高度不会因为状态出现/消失而跳动。
+   * 一轮对话跑完之后用量一直在，所以后续来回不会因为状态出现/消失而跳高度；
+   * 只有全新会话发第一问之前这一行是空的（隐藏）。
    */
   private setStatus(): void {
     const e = this.els;
@@ -350,14 +356,22 @@ export class PenView extends ItemView {
       cls: "sp-where",
       text: t().approvalTarget(p.name, p.args.path || t().approvalCurrentHandbook),
     });
+    // 超长时必须标出来：用户是看着这段决定要不要放行写盘的，
+    // 静默截断会让他以为自己看全了。
+    const clip = (raw: string): string => {
+      const text = raw || "";
+      return text.length <= 800
+        ? text
+        : `${text.slice(0, 800)}\n${t().approvalTruncated(text.length - 800)}`;
+    };
     const pre = e.panel.createEl("pre", { cls: "sp-fold" });
     pre.createDiv({
       cls: "sp-diff is-old",
-      text: `${t().approvalOldLabel}\n${(p.args.old_string || "").slice(0, 800)}`,
+      text: `${t().approvalOldLabel}\n${clip(p.args.old_string || "")}`,
     });
     pre.createDiv({
       cls: "sp-diff is-new",
-      text: `${t().approvalNewLabel}\n${(p.args.new_string || "").slice(0, 800)}`,
+      text: `${t().approvalNewLabel}\n${clip(p.args.new_string || "")}`,
     });
     e.panel.createDiv({ cls: "sp-warn", text: t().approvalWarn });
     const actions = e.panel.createDiv({ cls: "sp-panel-actions" });
@@ -389,6 +403,9 @@ export class PenView extends ItemView {
 
   /** mode="force"：用户自己刚发了话，无论翻到哪都拉回底部。 */
   private async paintLog(mode: "auto" | "force" = "auto"): Promise<void> {
+    // 先落到实例字段：下面可能因为已有重画在跑而直接返回，那时这个意图必须留住。
+    // 否则「用户在助手还在流式时发了一句」会静默丢掉滚到底，正是 force 要解决的场景。
+    if (mode === "force") this.forceStick = true;
     const gen = ++this.paintGen;
     const first = this.els?.log;
     if (!first || this.painting) return; // 在画的循环看到新 gen 会重画到最新
@@ -435,7 +452,8 @@ export class PenView extends ItemView {
           });
           const body = host.createDiv({ cls: "sp-body" });
           if (m.role === "user") {
-            body.setText(m.text);
+            // 历史气泡：后端存的 label 是建会话时那个语言的，有 chip id 就重查一次
+            body.setText(m.chip ? chipLabel(m.chip, m.text) : m.text);
           } else {
             await MarkdownRenderer.render(
               this.app,
@@ -448,7 +466,9 @@ export class PenView extends ItemView {
         }
         const done = this.els?.log;
         if (g === this.paintGen && done) {
-          if (stick) done.scrollTop = done.scrollHeight;
+          // forceStick 现读：期间可能有新的 force 请求被上面那个早退吞掉了
+          if (stick || this.forceStick) done.scrollTop = done.scrollHeight;
+          this.forceStick = false;
           return;
         }
         g = this.paintGen; // 期间来了更新的请求，整条重画
@@ -462,10 +482,11 @@ export class PenView extends ItemView {
     // 流式只刷最后一条助手正文；全量 markdown 重绘留给 done/finally
     const log = this.els?.log;
     if (!log || this.painting) return;
-    let turn = log.lastElementChild as HTMLElement | null;
-    while (turn && !turn.hasClass("is-assistant")) {
-      turn = turn.previousElementSibling as HTMLElement | null;
-    }
+    // 只认最后一个元素。以前是向前遍历找最近的 is-assistant，但审批流里
+    // 那条空占位会被 paintLog 跳过（见 msgs 循环里的 pending 判断），于是
+    // 这里会一路找到**上一轮**的助手气泡，把它已渲染的 Markdown 覆盖掉。
+    const last = log.lastElementChild as HTMLElement | null;
+    let turn = last && last.hasClass("is-assistant") ? last : null;
     if (!turn) {
       turn = log.createDiv({ cls: "sp-turn is-assistant" });
       const host = assistantShell(turn);
@@ -771,6 +792,10 @@ export class PenView extends ItemView {
               name: String(ev.name || "edit_file"),
               args,
             };
+            // 不更新状态行的话，它会一直停在「在改原文…」，而下面的面板
+            // 却写着「审批这次编辑」，两句话互相打架。
+            this.status = t().statusAwaitApproval;
+            this.paintBar();
           } else if (ev.type === "done") {
             this.pending = null;
             this.status = "";

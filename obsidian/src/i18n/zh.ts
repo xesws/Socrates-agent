@@ -34,10 +34,7 @@ export const zh = {
   tipUseSelection: "在笔记里划一段，再点这里登记给师傅",
 
   // ── 品牌条工具按钮 ──
-  btnNewSession: "新开会话",
   tipNewSession: "另起一场，丢掉这场的模型记忆和选区",
-  btnUndo: "回到上一版",
-  btnRedo: "重做",
   tipUndoEmpty: "还没有可回退的版本。允许一次编辑后才会亮。",
   tipUndo: (count: number): string => `整篇笔记回到上一版（还能退 ${count} 次）`,
   tipRedoEmpty: "没有可重做的版本",
@@ -92,6 +89,7 @@ export const zh = {
   approvalTitle: "审批这次编辑",
   approvalTarget: (tool: string, path: string): string => `${tool} → ${path}`,
   approvalCurrentHandbook: "当前手册",
+  approvalTruncated: (n: number): string => `… 还有 ${n} 个字符没显示`,
   approvalWarn: "模型自己选要换的那一小段。点允许才会改这篇笔记。",
   approvalOldLabel: "--- 原文 ---",
   approvalNewLabel: "+++ 换成 +++",

@@ -92,6 +92,45 @@ MESSAGES: dict[str, dict[str, str]] = {
         "zh": "笔记在选定位置之后改过了，请再选一次写入位置",
         "en": "The note changed after that spot was chosen. Pick the insert position again.",
     },
+    # ── 上游模块抛出、经 str(exc) 冒到 detail 的热路径几条 ──
+    "handbook.file_missing": {
+        "zh": "原文找不到了：{path}。笔记可能被改名或移走了，请重新框选一次。",
+        "en": "The source note is gone: {path}. It was probably renamed or moved — pick the passage again.",
+    },
+    "handbook.not_found": {
+        "zh": "找不到教材：{path}",
+        "en": "Manual not found: {path}",
+    },
+    "handbook.bad_id": {"zh": "非法 handbook_id：{got}", "en": "Invalid handbook_id: {got}"},
+    "sandbox.not_markdown": {
+        "zh": "只接受 Markdown 教材（.md / .markdown）：{got}",
+        "en": "Only Markdown manuals are accepted (.md / .markdown): {got}",
+    },
+    "sandbox.outside_roots": {
+        "zh": "教材不在允许的根内：{got}",
+        "en": "That manual is outside the allowed roots: {got}",
+    },
+    "sandbox.protected": {"zh": "拒绝受保护路径：{got}", "en": "Refused a protected path: {got}"},
+    "sandbox.vault_root_is_fs_root": {
+        "zh": "vault_root 不能是文件系统根",
+        "en": "vault_root can't be the filesystem root",
+    },
+    "sandbox.vault_root_not_dir": {
+        "zh": "vault_root 不是目录：{got}",
+        "en": "vault_root is not a directory: {got}",
+    },
+    "index.line_out_of_range": {
+        "zh": "行号越界：{line}（全书 {n_lines} 行）",
+        "en": "Line out of range: {line} (the manual has {n_lines} lines)",
+    },
+    "snapshot.none_to_undo": {
+        "zh": "没有可回退的快照：{handbook_id}",
+        "en": "No snapshot to roll back to: {handbook_id}",
+    },
+    "snapshot.none_to_redo": {
+        "zh": "没有可重做的快照：{handbook_id}",
+        "en": "No snapshot to redo: {handbook_id}",
+    },
     "proposal.unknown": {
         "zh": "提议不存在或已过期",
         "en": "That proposal doesn't exist or has expired",
@@ -114,6 +153,19 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "Something went wrong after the approval. Please retry.",
     },
 }
+
+
+def localized(exc: BaseException, lang: str | None = DEFAULT_LANG) -> str:
+    """把上游异常转成用户语言。
+
+    异常带 `i18n_key` 就查表，否则回落 `str(exc)`（中文原文）。这样上游模块
+    可以一条一条地补 key，没补的照旧工作，不需要一次性改完所有抛出点。
+    """
+    key = getattr(exc, "i18n_key", None)
+    if not key:
+        return str(exc)
+    args = getattr(exc, "i18n_args", None) or {}
+    return msg(str(key), lang, **args)
 
 
 def msg(key: str, lang: str | None = DEFAULT_LANG, **kw: object) -> str:

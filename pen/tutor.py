@@ -247,13 +247,14 @@ def _agent_loop(
     for _step in range(MAX_TOOL_ROUNDS):
         yield {"type": "status", "phase": "thinking", "text": "师傅在想…"}
         try:
-            msg = _create(with_tools=True)
+            # 不要叫 msg：会遮蔽模块级的 i18n msg()，下面那条空正文文案就调不到了
+            reply = _create(with_tools=True)
         except ProviderError as exc:
             yield {"type": "error", "message": str(exc)}
             return
-        session.messages.append(msg.model_dump(exclude_none=True))
-        if not msg.tool_calls:
-            raw = (msg.content or "").strip()
+        session.messages.append(reply.model_dump(exclude_none=True))
+        if not reply.tool_calls:
+            raw = (reply.content or "").strip()
             if not raw:
                 yield {
                     "type": "error",
@@ -263,19 +264,19 @@ def _agent_loop(
             yield from _finish_text(session, raw, usage)
             return
         yield {"type": "status", "phase": "reading", "text": "在翻手册…"}
-        paused = yield from _run_tool_batch(session, ctx, list(msg.tool_calls))
+        paused = yield from _run_tool_batch(session, ctx, list(reply.tool_calls))
         if paused:
             return
 
     session.messages.append({"role": "user", "content": FORCE_ANSWER})
     yield {"type": "status", "phase": "thinking", "text": "师傅在想…"}
     try:
-        msg = _create(with_tools=False)
+        reply = _create(with_tools=False)
     except ProviderError as exc:
         yield {"type": "error", "message": str(exc)}
         return
-    session.messages.append(msg.model_dump(exclude_none=True))
-    raw = (msg.content or "").strip()
+    session.messages.append(reply.model_dump(exclude_none=True))
+    raw = (reply.content or "").strip()
     if not raw:
         yield {
             "type": "error",

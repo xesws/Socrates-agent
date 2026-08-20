@@ -21,7 +21,12 @@ _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class RegisterError(ValueError):
-    """教材路径或 handbook_id 不合法。"""
+    """登记失败。带 i18n_key 时 app 层按用户语言查表，否则回落中文原文。"""
+
+    def __init__(self, message: str, *, key: str | None = None, **args: object) -> None:
+        super().__init__(message)
+        self.i18n_key = key
+        self.i18n_args = args
 
 
 @dataclass
@@ -47,7 +52,7 @@ def _meta_from_dict(data: dict) -> HandbookMeta:
 
 def _require_id(handbook_id: str) -> str:
     if not _SAFE_ID.match(handbook_id):
-        raise RegisterError(f"非法 handbook_id：{handbook_id!r}")
+        raise RegisterError(f"非法 handbook_id：{handbook_id!r}", key="handbook.bad_id", got=repr(handbook_id))
     return handbook_id
 
 
@@ -75,9 +80,14 @@ def register(
     try:
         path = assert_handbook_path(original_path, extra_roots=extra_roots)
     except SandboxError as exc:
-        raise RegisterError(str(exc)) from exc
+        # 把 i18n key 一起带过去，否则重新包装会把它丢掉，英文用户又看到中文
+        raise RegisterError(
+            str(exc),
+            key=getattr(exc, "i18n_key", None),
+            **(getattr(exc, "i18n_args", None) or {}),
+        ) from exc
     if not path.is_file():
-        raise FileNotFoundError(f"找不到教材：{path}")
+        raise _tagged(FileNotFoundError(f"找不到教材：{path}"), "handbook.not_found", path=str(path))
     hid = _require_id(handbook_id or _suggest_id(path))
     allow_root: str | None = None
     resolved = path.resolve()
@@ -151,13 +161,20 @@ def load_index(handbook_id: str) -> HandbookIndex:
     return HandbookIndex.from_json(json.loads(_index_path(handbook_id).read_text(encoding="utf-8")))
 
 
+def _tagged(exc: Exception, key: str, **args: object) -> Exception:
+    """给标准库异常挂上 i18n key，供 app 层查表。"""
+    exc.i18n_key = key  # type: ignore[attr-defined]
+    exc.i18n_args = args  # type: ignore[attr-defined]
+    return exc
+
+
 def refresh_if_stale(handbook_id: str) -> HandbookMeta:
     meta = get(handbook_id)
     if meta is None:
         raise KeyError(handbook_id)
     path = Path(meta.original_path)
     if not path.is_file():
-        raise FileNotFoundError(f"原文消失：{path}")
+        raise _tagged(FileNotFoundError(f"原文消失：{path}"), "handbook.file_missing", path=str(path))
     mtime = path.stat().st_mtime
     if abs(mtime - meta.mtime) > 0.001 or not _index_path(handbook_id).is_file():
         idx = build_index(path)

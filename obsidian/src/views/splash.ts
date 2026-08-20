@@ -71,6 +71,8 @@ export function renderSplash(parent: HTMLElement, o: SplashOpts): void {
   }
   paintArt(wrap, WORDMARK_WIDE, "is-word is-wide");
   paintArt(wrap, WORDMARK_NARROW, "is-word is-narrow");
+  // 标语就是一行普通文字。字符画只用在肖像和字标上——那两个是"图"，
+  // 标语是"字"，让它保持可读、可选、可被读屏正常念出来。
   wrap.createDiv({ cls: "sp-splash-tag", text: t().splashTagline });
   wrap.createDiv({ cls: "sp-splash-sub", text: t().splashSubline });
 }

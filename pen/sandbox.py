@@ -14,7 +14,12 @@ _LINE_SUFFIX = re.compile(r":\d+(-\d+)?$")
 
 
 class SandboxError(PermissionError):
-    """路径越权。"""
+    """沙箱拒绝。带 i18n_key 时 app 层会按用户语言查表，否则回落这里的中文。"""
+
+    def __init__(self, message: str, *, key: str | None = None, **args: object) -> None:
+        super().__init__(message)
+        self.i18n_key = key
+        self.i18n_args = args
 
 
 def _is_protected(got: Path) -> bool:
@@ -63,9 +68,9 @@ def parse_vault_root(raw: str | None) -> list[Path]:
         return []
     p = Path(str(raw).strip()).expanduser().resolve()
     if p == p.parent:
-        raise SandboxError("vault_root 不能是文件系统根")
+        raise SandboxError("vault_root 不能是文件系统根", key="sandbox.vault_root_is_fs_root")
     if not p.is_dir():
-        raise SandboxError(f"vault_root 不是目录：{p}")
+        raise SandboxError(f"vault_root 不是目录：{p}", key="sandbox.vault_root_not_dir", got=str(p))
     return [p]
 
 
@@ -76,12 +81,12 @@ def assert_handbook_path(
     """登记和写回共用：必须是允许根下的 Markdown，且不是 .env / .git / .obsidian。"""
     got = Path(path).expanduser().resolve()
     if _is_protected(got):
-        raise SandboxError(f"拒绝受保护路径：{got}")
+        raise SandboxError(f"拒绝受保护路径：{got}", key="sandbox.protected", got=str(got))
     if got.suffix.lower() not in HANDBOOK_SUFFIXES:
-        raise SandboxError(f"只接受 Markdown 教材（.md / .markdown）：{got}")
+        raise SandboxError(f"只接受 Markdown 教材（.md / .markdown）：{got}", key="sandbox.not_markdown", got=str(got))
     roots = handbook_allow_roots(extra_roots=extra_roots)
     if not any(got == root or root in got.parents for root in roots):
-        raise SandboxError(f"教材不在允许的根内：{got}")
+        raise SandboxError(f"教材不在允许的根内：{got}", key="sandbox.outside_roots", got=str(got))
     return got
 
 
