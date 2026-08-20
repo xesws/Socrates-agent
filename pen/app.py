@@ -41,7 +41,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.8.2", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.8.3", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -351,6 +351,26 @@ def locate(handbook_id: str, line: int, lang: str = Depends(req_lang)) -> dict[s
     return sec.__dict__
 
 
+def _public_session(sess) -> dict[str, Any]:
+    """to_public() 再拼上已经抛给读者看过的深题。
+
+    深题不进 PenSession（后台线程碰它会和请求线程抢 to_dict() 快照），
+    所以恢复时得在这一层现拼——否则关一次侧栏，已经花钱挖出来、
+    也给读者看过的问题就永久丢了。
+    """
+    out = sess.to_public()
+    try:
+        led = probe_store.load(sess.session_id)
+        deep = [q.to_chip() for q in sorted(led.pool, key=lambda x: x.seq)
+                if q.state in ("shown", "clicked")]
+    except Exception:
+        deep = []
+    if deep:
+        seen = {str(c.get("text") or "") for c in out.get("dyn_chips") or []}
+        out["dyn_chips"] = [d for d in deep if d["text"] not in seen] + list(out.get("dyn_chips") or [])
+    return out
+
+
 @app.post("/v1/sessions")
 def create_session(body: SessionBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
     _meta_or_404(body.handbook_id, lang)
@@ -358,11 +378,11 @@ def create_session(body: SessionBody, lang: str = Depends(req_lang)) -> dict[str
         try:
             sess = STORE.get(body.session_id)
             if sess.handbook_id == body.handbook_id:
-                return sess.to_public()
+                return _public_session(sess)
         except KeyError:
             pass
     sess = STORE.create(body.handbook_id, lang=lang)
-    return sess.to_public()
+    return _public_session(sess)
 
 
 @app.get("/v1/sessions/{session_id}")
@@ -371,7 +391,7 @@ def get_session(session_id: str, lang: str = Depends(req_lang)) -> dict[str, Any
         sess = STORE.get(session_id)
     except KeyError as exc:
         raise HTTPException(404, msg("session.unknown", lang)) from exc
-    return sess.to_public()
+    return _public_session(sess)
 
 
 def _footprint(handbook_id: str) -> str:
@@ -424,6 +444,12 @@ def _maybe_probe(sess, body: "ChatBody", anchor: dict[str, Any], path: Path, lan
         pid = probe_store.try_claim(sess.session_id, sess.handbook_id, sess.turns)
         if pid is None:
             return False
+    except Exception:
+        return False
+    # 坑已经占上了：从这里往下的任何异常都必须先把它放掉，
+    # 否则要等五分钟孤儿回收，期间这个会话一次都探不了，
+    # 而正在轮询的前端会对着一个永远不会完成的幽灵白等 90 秒。
+    try:
         job = probemod.ProbeJob(
             session_id=sess.session_id,
             handbook_id=sess.handbook_id,
@@ -446,7 +472,11 @@ def _maybe_probe(sess, body: "ChatBody", anchor: dict[str, Any], path: Path, lan
         probemod.spawn(job, pid)
         return True
     except Exception:
-        # 后台探索炸了不能影响这一轮对话
+        # 后台探索炸了不能影响这一轮对话，但坑要还回去
+        try:
+            probe_store.release(sess.session_id, pid)
+        except Exception:
+            pass
         return False
 
 

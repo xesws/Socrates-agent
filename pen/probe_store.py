@@ -178,6 +178,50 @@ def save(led: SessionLedger) -> None:
     _atomic_write(_path(led.session_id), json.dumps(led.to_dict(), ensure_ascii=False))
 
 
+def _daily_path(handbook_id: str) -> Path:
+    if not _SAFE_ID.match(handbook_id):
+        raise ValueError(f"非法 handbook_id：{handbook_id!r}")
+    dest = config.PEN_DIR / "probes" / handbook_id
+    dest.mkdir(parents=True, exist_ok=True)
+    return dest / "daily.json"
+
+
+def _today() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def daily_count(handbook_id: str) -> int:
+    """今天这本书已经探了几次。跨会话累计——每会话 8 次挡不住
+    「开一堆新会话」这种用法，日配额才是真正的成本上限。"""
+    try:
+        dest = _daily_path(handbook_id)
+    except ValueError:
+        return 0
+    if not dest.is_file():
+        return 0
+    try:
+        raw = json.loads(dest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    if not isinstance(raw, dict) or raw.get("date") != _today():
+        return 0
+    try:
+        return int(raw.get("count") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _bump_daily(handbook_id: str) -> None:
+    try:
+        dest = _daily_path(handbook_id)
+    except ValueError:
+        return
+    _atomic_write(
+        dest,
+        json.dumps({"date": _today(), "count": daily_count(handbook_id) + 1}, ensure_ascii=False),
+    )
+
+
 def try_claim(session_id: str, handbook_id: str, now_round: int) -> str | None:
     """占坑。同一会话同时只允许一个 probe 在跑——抢不到就跳过，不排队：
     排队意味着上下文已经过期了还要再花一次钱。"""
@@ -185,12 +229,16 @@ def try_claim(session_id: str, handbook_id: str, now_round: int) -> str | None:
         led = load(session_id, handbook_id)
         if led.running:
             return None
+        if handbook_id and daily_count(handbook_id) >= config.PROBE_MAX_PER_DAY:
+            return None
         pid = uuid.uuid4().hex[:12]
         led.running = [pid]
         led.running_since = _now()
         led.probe_calls += 1
         led.last_probe_round = now_round
         save(led)
+        if handbook_id:
+            _bump_daily(handbook_id)
         return pid
 
 

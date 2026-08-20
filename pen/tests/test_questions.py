@@ -141,3 +141,36 @@ def test_navigation_does_not_overreach() -> None:
     """第一版规则拿「第X拍开头且无问号」判导航，误伤了这条。"""
     assert not is_navigation("第五拍 Q2 的 heredoc 引号题怎么解")
     assert not is_chore("为什么第一个参考实现偏偏是 mini-swe-agent，而不是 LangChain？")
+
+
+# ── 双语：长度带不能拿中文的尺子去卡英文 ──────────────────────
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Why is mini-swe-agent the first reference implementation and not LangChain?",
+        "In the seven building blocks, why is messages not counted as a file?",
+        "What breaks if the allowlist is checked before the danger scan runs?",
+    ],
+)
+def test_english_good_questions_survive(text: str) -> None:
+    """插件是双语的。中文一个字就是一个信息单位，英文去掉空格后字符数是它的
+    两三倍——拿中文那条带去卡英文，好问题会被整批挡掉。"""
+    assert _passes(text), f"英文好问题被长度带误杀：{text}"
+
+
+@pytest.mark.parametrize("text", ["Why?", "Does echo need quotes?", "OK?"])
+def test_english_too_short_is_still_dropped(text: str) -> None:
+    assert not _passes(text)
+
+
+def test_english_wall_of_text_is_dropped() -> None:
+    assert not _passes("word " * 80 + "why?")
+
+
+def test_length_band_picks_by_script() -> None:
+    from pen.questions import MAX_CHARS, MAX_CHARS_LATIN, _length_band
+
+    assert _length_band("七块积木里 messages 为什么不算文件？")[1] == MAX_CHARS
+    assert _length_band("Why is messages not counted as a file here?")[1] == MAX_CHARS_LATIN

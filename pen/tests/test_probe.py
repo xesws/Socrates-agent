@@ -250,3 +250,99 @@ def test_explore_never_passes_tools(idx, monkeypatch, tmp_path) -> None:
     assert len(seen) == 1, "没要求读正文时应恰好一次调用"
     assert all("tools" not in kw for kw in seen), "探索绝不能带 tools"
     assert all(kw.get("stream") is False for kw in seen)
+
+
+def test_explore_makes_exactly_two_calls_when_it_asks_to_read(idx, monkeypatch, tmp_path) -> None:
+    """调用次数的硬上限没有常量可改，只有这条断言守着——
+    explore() 的结构就是「一次，需要正文时再一次」。"""
+    import json as _json
+
+    seen: list[list[dict]] = []
+    replies = [
+        _json.dumps({"need_read": [{"start_line": 6, "end_line": 20}], "questions": []}),
+        _json.dumps({"questions": []}),
+        _json.dumps({"questions": []}),
+    ]
+
+    def fake_create(cfg, messages):
+        seen.append(messages)
+        return replies[min(len(seen) - 1, len(replies) - 1)]
+
+    monkeypatch.setattr(probe, "_create", fake_create)
+    from pen.config import LLMConfig
+
+    job = ProbeJob(
+        session_id="s", handbook_id="probe-fx", original_path=tmp_path / "b.md",
+        anchor={"level": "Level 0", "start_line": 6, "end_line": 7}, atom="a", chip="socratic",
+        user_text="", reply="讲了一段。" * 30, born_round=1, lang="zh",
+        cfg=LLMConfig("http://x", "sk", "m", "t", "off"), extra_roots=[tmp_path],
+    )
+    probe.explore(job, idx)
+    assert len(seen) == 2, "要正文时应恰好两次，绝不能变成循环"
+    assert "[你要的那几段正文]" in seen[1][-1]["content"]
+
+
+def test_explore_reads_at_most_two_segments(idx, monkeypatch, tmp_path) -> None:
+    import json as _json
+
+    grabbed: list[int] = []
+
+    def fake_create(cfg, messages):
+        if not grabbed:
+            grabbed.append(1)
+            return _json.dumps(
+                {"need_read": [{"start_line": i * 3 + 6} for i in range(7)], "questions": []}
+            )
+        return _json.dumps({"questions": []})
+
+    seen_reads: list[list] = []
+    orig = probe._read_excerpts
+    monkeypatch.setattr(probe, "_create", fake_create)
+    monkeypatch.setattr(
+        probe, "_read_excerpts", lambda job, r: (seen_reads.append(list(r)), orig(job, r))[1]
+    )
+    from pen.config import LLMConfig
+
+    job = ProbeJob(
+        session_id="s", handbook_id="probe-fx", original_path=tmp_path / "b.md",
+        anchor={"level": "Level 0", "start_line": 6, "end_line": 7}, atom="a", chip="socratic",
+        user_text="", reply="讲了一段。" * 30, born_round=1, lang="zh",
+        cfg=LLMConfig("http://x", "sk", "m", "t", "off"), extra_roots=[tmp_path],
+    )
+    probe.explore(job, idx)
+    assert seen_reads and len(seen_reads[0]) <= config.PROBE_MAX_READS
+
+
+def test_harvest_drops_near_duplicates_within_one_batch(idx, tmp_path) -> None:
+    """逐条过 clean_candidates 时相互去重是失效的（每次只喂一条）。
+    「每轮都探」会把近似重复放大，所以 _harvest 必须自己再查一遍。"""
+    from pen.config import LLMConfig
+
+    job = ProbeJob(
+        session_id="s", handbook_id="probe-fx", original_path=tmp_path / "b.md",
+        anchor={"level": "Level 0", "start_line": 5, "end_line": 6}, atom="a", chip="socratic",
+        user_text="", reply="x", born_round=1, lang="zh",
+        cfg=LLMConfig("http://x", "sk", "m", "t", "off"),
+    )
+    a = {"text": "白名单排在危险检测前面，危险命令会不会被静默放行？", "axis": "failure",
+         "grounding": "book", "trigger": "顺序调换", "timing": "now", "depth": 5,
+         "anchors": [{"level": "Level 0", "start_line": 5, "end_line": 8}]}
+    b = {**a, "text": "白名单排在危险检测前面，危险命令是不是会被静默放行？"}
+    got = probe._harvest([a, b], job, idx)
+    assert len(got) == 1, [g.text for g in got]
+
+
+def test_harvest_respects_what_was_already_asked(idx, tmp_path) -> None:
+    from pen.config import LLMConfig
+
+    asked = "白名单排在危险检测前面，危险命令会不会被静默放行？"
+    job = ProbeJob(
+        session_id="s", handbook_id="probe-fx", original_path=tmp_path / "b.md",
+        anchor={"level": "Level 0", "start_line": 5, "end_line": 6}, atom="a", chip="socratic",
+        user_text="", reply="x", born_round=1, lang="zh",
+        cfg=LLMConfig("http://x", "sk", "m", "t", "off"), asked=[asked],
+    )
+    item = {"text": asked, "axis": "failure", "grounding": "book", "trigger": "t",
+            "timing": "now", "depth": 5,
+            "anchors": [{"level": "Level 0", "start_line": 5, "end_line": 8}]}
+    assert probe._harvest([item], job, idx) == []

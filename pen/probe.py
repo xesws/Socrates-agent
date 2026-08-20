@@ -27,7 +27,7 @@ from pen import config
 from pen.config import LLMConfig
 from pen.index import HandbookIndex
 from pen.probe_store import DeepQuestion
-from pen.questions import clean_candidates, normalize_qkey
+from pen.questions import clean_candidates, normalize_qkey, similarity
 
 _SEM = threading.BoundedSemaphore(config.PROBE_CONCURRENCY)
 
@@ -494,6 +494,12 @@ def _harvest(
         final = cleaned[0]["text"]
         key = normalize_qkey(final)
         if key in seen:
+            continue
+        # 逐条过 clean_candidates 时相互去重是失效的（每次只喂一条），
+        # 这里补上近似检查——「每轮都探」会把近似重复放大。
+        if any(similarity(final, k.text) >= 0.72 for k in kept):
+            continue
+        if any(similarity(final, a) >= 0.72 for a in job.asked):
             continue
         seen.add(key)
         timing = "now" if str(raw.get("timing") or "") == "now" else "later"

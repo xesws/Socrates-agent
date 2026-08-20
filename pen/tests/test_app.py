@@ -823,3 +823,89 @@ def test_deep_inbox_surfaces_a_ripe_question(tmp_path, monkeypatch) -> None:
         assert got["items"][0]["kind"] == "deep"
         assert got["items"][0]["why"]
         assert got["cursor"] > 0
+
+
+def test_get_session_restores_deep_questions(tmp_path, monkeypatch) -> None:
+    """关掉侧栏再打开，已经花钱挖出来、也给读者看过的深题必须还在。
+
+    深题不进 PenSession（后台线程碰它会和请求线程抢 to_dict() 快照），
+    所以恢复只能在 app 层现拼。这条断言就是为了守住那次拼接——
+    最初的实现漏了它，深题关一次侧栏就永久丢失。
+    """
+    _isolate_pen(tmp_path, monkeypatch)
+    from pen import diagnose, probe_store
+    from pen.probe_store import DeepQuestion
+
+    monkeypatch.setattr(probe_store, "probes_dir", lambda: tmp_path / "probes")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        sess = STORE.get(sid)
+        sess.last_anchor = {"level": "Level 0", "kind": "q", "q_title": "**Q1. 甲？**"}
+        sess.turns = 1
+        sess.last_chips = [{"id": "q0", "kind": "quick", "text": "实时层那条？"}]
+        STORE.save(sess)
+        pid = probe_store.try_claim(sid, "swe-agent-v2", 1)
+        probe_store.add_questions(
+            sid,
+            pid,
+            [
+                DeepQuestion(
+                    id="d1", text="白名单排在危险检测前面，危险命令会不会被静默放行？",
+                    why="跨关", timing="now",
+                    atom=diagnose.atom_key(sess.last_anchor), born_round=1,
+                )
+            ],
+        )
+        # 先抛给读者看过
+        assert client.get(f"/v1/sessions/{sid}/deep?since=0").json()["items"]
+
+        restored = client.get(f"/v1/sessions/{sid}").json()["dyn_chips"]
+        kinds = [c["kind"] for c in restored]
+        assert "deep" in kinds, f"深题没恢复：{restored}"
+        assert kinds[0] == "deep", "深题应排在实时层前面"
+        assert any(c["kind"] == "quick" for c in restored), "实时层那条不该被挤掉"
+
+
+def test_pending_deep_questions_are_not_restored_early(tmp_path, monkeypatch) -> None:
+    """还没成熟、没抛给读者看过的，不能因为重开侧栏就提前冒出来。"""
+    _isolate_pen(tmp_path, monkeypatch)
+    from pen import probe_store
+    from pen.probe_store import DeepQuestion
+
+    monkeypatch.setattr(probe_store, "probes_dir", lambda: tmp_path / "probes")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        pid = probe_store.try_claim(sid, "swe-agent-v2", 1)
+        probe_store.add_questions(
+            sid, pid,
+            [DeepQuestion(id="d9", text="挂在很后面那一关的问题？", timing="later",
+                          target="Level 6", born_round=1)],
+        )
+        assert client.get(f"/v1/sessions/{sid}").json()["dyn_chips"] == []
+
+
+def test_failed_spawn_gives_the_claim_back(tmp_path, monkeypatch) -> None:
+    """占了坑却没起成线程，坑必须立刻还回去。
+
+    不还的话要等五分钟孤儿回收，期间这个会话一次都探不了，而正在轮询的
+    前端会对着一个永远不会完成的幽灵白等满 90 秒。
+    """
+    _isolate_pen(tmp_path, monkeypatch)
+    from pen import probe as probemod, probe_store
+    from pen.app import _maybe_probe
+    from pen.config import LLMConfig
+    from pen.session import PenSession
+
+    monkeypatch.setattr(probe_store, "probes_dir", lambda: tmp_path / "probes")
+    monkeypatch.setattr(probemod, "spawn", lambda job, pid: (_ for _ in ()).throw(RuntimeError("no thread")))
+
+    sess = PenSession(session_id="spawnfail", handbook_id="swe-agent-v2")
+    sess.last_assistant = "回答够长以判为实质。" * 12
+    sess.turns = 1
+    body = SimpleNamespace(
+        chip="socratic", user_text="", base_url="",
+        merged=lambda: LLMConfig("http://x", "sk", "m", "t", "off"),
+    )
+    got = _maybe_probe(sess, body, {"level": "Level 0"}, DEFAULT_HANDBOOK, "zh")
+    assert got is False
+    assert probe_store.load("spawnfail").running == [], "坑没还回去"

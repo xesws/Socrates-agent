@@ -180,3 +180,26 @@ def test_unparsable_running_since_is_reaped_too() -> None:
     led.running_since = "不是时间"
     probe_store.save(led)
     assert probe_store.load("s17").running == []
+
+
+def test_daily_quota_survives_new_sessions(monkeypatch) -> None:
+    """每会话 8 次挡不住「开一堆新会话」。日配额才是真正的成本上限——
+    这个常量以前定义了却没人读，等于没有上限。"""
+    monkeypatch.setattr(config, "PROBE_MAX_PER_DAY", 3)
+    got = []
+    for i in range(6):
+        pid = probe_store.try_claim(f"day-{i}", "bk", 0)
+        got.append(bool(pid))
+        if pid:
+            probe_store.release(f"day-{i}", pid)
+    assert got == [True, True, True, False, False, False]
+    assert probe_store.daily_count("bk") == 3
+
+
+def test_daily_count_resets_on_a_new_day(monkeypatch) -> None:
+    import json
+
+    probe_store.try_claim("day-x", "bk2", 0)
+    stale = probe_store._daily_path("bk2")
+    stale.write_text(json.dumps({"date": "1999-01-01", "count": 99}), encoding="utf-8")
+    assert probe_store.daily_count("bk2") == 0

@@ -39,7 +39,9 @@ ENV_PROBE = "PEN_PROBE"
 PROBE_MIN_REPLY_CHARS = 80
 # 每次探索的硬上限。不给模型 tools，读取由 Python 执行——
 # 广度必须由代码封死，后台任务自主循环烧钱是看不见的。
-PROBE_MAX_CALLS = 2
+# 调用次数不设常量：explore() 的结构就是「一次，需要正文时再一次」，
+# 摆一个 PROBE_MAX_CALLS 在这里而代码不读它，改的人会以为改了有用。
+# 上限由 test_probe.py 的两条断言锁住。
 PROBE_MAX_READS = 2
 PROBE_READ_LINES = 80
 PROBE_TIMEOUT = 30.0

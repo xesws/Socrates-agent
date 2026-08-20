@@ -33,8 +33,20 @@ _CHORE = re.compile(r"(写回|校对|替换成|占位|要不要一起补|行号)
 _INTERROGATIVE = re.compile(r"[？?]|吗|什么|啥|为什么|怎么|如何|哪|是不是|能不能|会不会|多少|几")
 _STRIP = re.compile(r"[`*_~\s，。？！、；：,.?!;:\"'()（）「」【】\[\]]+")
 
+# 长度带按语言分。中文一个字就是一个信息单位，英文去掉空格后字符数是它的
+# 两三倍——拿中文的带去卡英文，会把「Why is mini-swe-agent the first reference
+# implementation and not LangChain?」这种好问题直接挡掉（实测 65 字符）。
 MIN_CHARS = 8
 MAX_CHARS = 60
+MIN_CHARS_LATIN = 20
+MAX_CHARS_LATIN = 170
+_CJK = re.compile(r"[\u3400-\u9fff\u3040-\u30ff]")
+
+
+def _length_band(text: str) -> tuple[int, int]:
+    cjk = len(_CJK.findall(text))
+    # 半数以上是汉字/假名就按中文算；混排的短句也归中文，那一带更严
+    return (MIN_CHARS, MAX_CHARS) if cjk * 2 >= len(text.replace(" ", "")) else (MIN_CHARS_LATIN, MAX_CHARS_LATIN)
 
 
 def strip_bullet(raw: str) -> str:
@@ -114,7 +126,8 @@ def clean_candidates(
         if not text or looks_like_placeholder(text):
             continue
         key = normalize_qkey(text)
-        if len(key) < MIN_CHARS or len(key) > MAX_CHARS:
+        lo, hi = _length_band(text)
+        if len(key) < lo or len(key) > hi:
             continue
         if key in examples:  # 抄了 prompt 里的示范句
             continue

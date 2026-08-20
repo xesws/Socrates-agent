@@ -24,6 +24,8 @@ SKIP_DIRS = {".obsidian", ".git", ".trash", "node_modules", ".pen"}
 _H = re.compile(r"^(#{1,3})\s+(.+?)\s*$")
 _CACHE: dict[str, tuple[float, str]] = {}
 _TTL = 60.0
+# sidecar 长期开着，读者会打开很多篇笔记，每篇一条缓存。数目不大但也不该无界。
+_CACHE_MAX = 64
 
 
 def _digest(path: Path) -> dict[str, Any] | None:
@@ -111,12 +113,19 @@ def shelf_digest(current_path: Path, registered: list[str] | None = None) -> str
             picked.append(d)
 
     if not picked:
-        _CACHE[key] = (now, "")
+        _remember(key, now, "")
         return ""
     rows = []
     for d in picked:
         heads = " / ".join(d["headings"][:5])
         rows.append(f"- 《{d['title']}》：{heads or '（没有标题）'}")
     text = "\n".join(rows)
-    _CACHE[key] = (now, text)
+    _remember(key, now, text)
     return text
+
+
+def _remember(key: str, now: float, text: str) -> None:
+    if len(_CACHE) >= _CACHE_MAX:
+        oldest = min(_CACHE, key=lambda k: _CACHE[k][0])
+        _CACHE.pop(oldest, None)
+    _CACHE[key] = (now, text)
