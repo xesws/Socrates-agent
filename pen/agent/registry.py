@@ -13,10 +13,10 @@ READ_FILE_SCHEMA = {
     "function": {
         "name": "read_file",
         "description": (
-            "按行读取当前手册原文或同仓库对照文件。"
+            "按行读取当前手册原文、对照文件，或 [工作目录里的其他教材] 里列出的别本。"
             "返回带行号文本，每行格式「N\\t原文」，offset 从 1 起。行号只是坐标，不是文件内容。"
-            "path 优先复制 [来源] handbook_path；相对路径相对手册目录。"
-            "不要读 ~/.zshrc、/etc、.env。"
+            "读当前手册就复制 [来源] handbook_path；读别的教材就复制那一段给出的 path。"
+            "相对路径相对手册目录。不要读 ~/.zshrc、/etc、.env。"
         ),
         "parameters": {
             "type": "object",

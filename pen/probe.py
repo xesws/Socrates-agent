@@ -508,6 +508,10 @@ def _shelf_paths(current_path: Path | None = None, roots: list[Path] | None = No
 
     if roots is None:
         roots = handbook_allow_roots()
+    try:
+        me = current_path.expanduser().resolve() if current_path else None
+    except Exception:
+        me = None
     metas = {m.original_path: m for m in libraries.list_handbooks()}
     order = _prefer_nearby(list(metas), current_path, roots)
     out: dict[str, Path] = {}
@@ -515,6 +519,14 @@ def _shelf_paths(current_path: Path | None = None, roots: list[Path] | None = No
         p = Path(raw)
         if not p.is_file() or not _within_allowed(p, roots):
             continue
+        # 排除当前这本——shelf_digest 早就排了（library_scan 里的 seen），这边没排，
+        # 于是子串匹配会命中自己：book='手册' 拿到 writeback-fixture.md 本身，
+        # 模型照着**自己那本书**的正文写「跨教材」题，出处是伪造的。
+        try:
+            if me is not None and p.resolve() == me:
+                continue
+        except Exception:
+            pass
         d = _digest(p)
         if d:
             out.setdefault(str(d["title"]), p)
@@ -548,13 +560,19 @@ def _read_excerpts(job: ProbeJob, reads: Sequence[dict[str, Any]]) -> str:
                     shelf = _shelf_paths(job.original_path, _reading_roots(job))
                 except Exception:
                     shelf = {}
-            hit = shelf.get(want) or next(
-                (v for k, v in shelf.items() if want in k or k in want), None
-            )
+            hit_name = want if want in shelf else None
+            if hit_name is None:
+                # 模糊匹配只认**唯一**命中。多于一条就放弃——「手册」「教材」这种词
+                # 谁都沾边，猜中哪本纯看 dict 顺序，猜错就是拿别的书冒充。
+                cands = [k for k in shelf if want in k or k in want]
+                hit_name = cands[0] if len(cands) == 1 else None
+            hit = shelf.get(hit_name) if hit_name else None
             if hit is None:
                 continue  # 点了一本书架上没有的，忽略而不是回退到当前这本
             target = hit
-            label = f"〔出自《{want}》〕\n"
+            # 标签用命中那本的**真实书名**，不用模型写的 want：它写「教材」，
+            # 题面就会引用一本叫《教材》的书，书架上根本没有这本。
+            label = f"〔出自《{hit_name}》〕\n"
         # end_line 以前被忽略，一律读 80 行——模型要的「一段」和拿到的
         # 不一定是一回事。给了就按它要的算，仍受 PROBE_READ_LINES 封顶。
         try:
@@ -616,7 +634,15 @@ def _harvest(
             depth = 0
         if depth and depth < 4:
             continue
-        src = excerpt or anchor_source(raw, job.original_path, job.extra_roots)
+        # 不能短路。excerpt 非空（跨书真读到了）时 `or` 会让当前手册锚点行的正文
+        # 根本不取，而 validate_slots 要求题面每个反引号词都在 source 里——
+        # 跨教材题天然两边各引一个词，于是**读了反而归零，不读倒能过**。
+        # probe.py 上面那段注释记着这个 bug 修过一次（「拿不到正文时跳过，
+        # 宁可漏也别误杀」），`excerpt or` 在跨书这条新路上原样复活了它。
+        # 两段都是合法出处，拼起来。
+        src = "\n".join(
+            x for x in (excerpt, anchor_source(raw, job.original_path, job.extra_roots)) if x
+        )
         ok, _why = validate_slots(raw, idx, source=src)
         if not ok:
             continue

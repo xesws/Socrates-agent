@@ -598,3 +598,68 @@ def test_probe_shelf_matches_what_read_excerpts_can_actually_read(tmp_path, monk
     digest = library_scan.shelf_digest(cur, [str(far)], allow_roots=roots)
     assert digest == "", f"书架列了读不到的书：{digest}"
     assert "够不着的那本" not in probe._shelf_paths(cur, roots)
+
+
+def test_cross_book_excerpt_does_not_shadow_the_anchor_source(idx, tmp_path) -> None:
+    """`src = excerpt or anchor_source(...)` 会短路：跨书真读到正文时，当前手册
+    锚点行的正文根本不取，而题面每个反引号词都要在 source 里出现——
+    跨教材题天然两边各引一个词，于是**读了反而归零，不读倒能过**。
+    probe.py 里那条「拿不到正文时跳过检查，宁可漏也别误杀」的注释记着它修过一次。"""
+    from pen import config, probe
+
+    third0 = _third(idx, "Level 0")
+    item = {
+        "text": "另一本手册把 messages 画成一格数据流，本册这一拍说 `is_allowed` 是闸——两处对同一层抽象的命名对得上号吗？",
+        "axis": "bridge",
+        "depth": 4,
+        "grounding": "book",
+        "why": "把两本书对同一件事的命名摆到一起",
+        "timing": "now",
+        "anchors": [
+            {"level": "Level 0", "start_line": third0.start_line, "end_line": third0.start_line + 6},
+            {"level": "Level 6", "start_line": _third(idx, "Level 6").start_line, "end_line": _third(idx, "Level 6").start_line + 3},
+        ],
+    }
+    job = probe.ProbeJob(
+        session_id="s", handbook_id="probe-fx", original_path=Path(idx.original_path),
+        anchor={"level": "Level 0", "start_line": third0.start_line}, atom="a",
+        chip="free", user_text="", reply="", born_round=1, lang="zh",
+        cfg=config.LLMConfig(base_url="", api_key="", model="m", key_source="t"),
+        extra_roots=[],
+    )
+    cross = "〔出自《另一本》〕\n60\tmessages 是一格数据流。\n"
+    got_cross = probe._harvest([item], job, idx, excerpt=cross)
+    got_plain = probe._harvest([item], job, idx, excerpt="")
+    assert len(got_plain) == 1, "前提变了：不跨书本来就该过"
+    assert len(got_cross) == 1, "读了跨书正文反而一条都不留——短路又复活了"
+
+
+def test_ambiguous_book_name_never_falls_back_to_the_current_handbook(tmp_path, monkeypatch) -> None:
+    """`want in k or k in want` 会命中自己：book='手册' 拿到当前这本，
+    模型照着**自己那本书**的正文写「跨教材」题，出处是伪造的。
+    多义词命中多本时也不能靠 dict 顺序猜。"""
+    from pen import config, libraries, library_scan, probe
+
+    lib = tmp_path / ".pen" / "libraries"
+    lib.mkdir(parents=True)
+    monkeypatch.setattr(libraries, "LIBRARIES_DIR", lib)
+    library_scan._CACHE.clear()
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    cur = vault / "cur.md"
+    cur.write_text("# 手搓测试手册\n\n## 一\n", encoding="utf-8")
+    a = vault / "a.md"
+    a.write_text("# 通关手册甲\n\n## 一\n", encoding="utf-8")
+    b = vault / "b.md"
+    b.write_text("# 通关手册乙\n\n## 一\n", encoding="utf-8")
+    for f, hid in ((cur, "cur"), (a, "bk-a"), (b, "bk-b")):
+        libraries.register(str(f), hid, extra_roots=[vault])
+    monkeypatch.setattr(config, "handbook_allow_roots", lambda *x, **k: [vault])
+
+    shelf = probe._shelf_paths(cur, [vault])
+    assert "手搓测试手册" not in shelf, "当前这本还在书架反查表里"
+    # 「通关手册」同时沾两本 → 放弃，不靠 dict 顺序猜
+    cands = [k for k in shelf if "通关手册" in k or k in "通关手册"]
+    assert len(cands) == 2
+    assert shelf.get("通关手册") is None

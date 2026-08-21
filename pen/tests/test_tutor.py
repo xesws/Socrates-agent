@@ -310,3 +310,44 @@ def test_packet_drops_the_shelf_block_when_the_budget_eats_every_row() -> None:
     )
     assert len(huge) > tutor.SHELF_CHARS
     assert "[工作目录里的其他教材]" not in packet
+
+
+def test_cross_book_budget_never_touches_reading_the_current_handbook(tmp_path) -> None:
+    """预算只管别的书。写回要先 read_file 看原文、翻本册别的 Level 都是本职，
+    一次都不该受影响——回归断言：连读 30 次当前手册照常返回正文。"""
+    from pen.agent.tools_impl import handle_read_file
+
+    cur = tmp_path / "cur.md"
+    cur.write_text("\n".join(f"当前手册第 {i} 行" for i in range(1, 400)), encoding="utf-8")
+    ctx = {"original_path": cur, "extra_roots": [tmp_path]}
+    for i in range(30):
+        got = handle_read_file({"path": str(cur), "offset": 1, "limit": 200}, ctx)
+        assert got["ok"] and "当前手册第 1 行" in got["text"], f"第 {i} 次就被预算挡了"
+    assert ctx.get("cross_book_chars") is None, "读当前手册不该计入跨书预算"
+
+
+def test_cross_book_budget_stops_the_翻书_loop_without_erroring(tmp_path) -> None:
+    """v0.8.7 把书架接上之后，实测一句「另一本讲什么」触发 21 次 read_file、
+    46912 字符，全部进 session.messages 并落盘，之后每一轮都重发。
+    超预算要让它收敛，不能报错——报错模型会换个 offset 再试，那正是要止住的循环。"""
+    from pen.agent.tools_impl import handle_read_file
+    from pen.config import CROSS_BOOK_CHARS
+
+    cur = tmp_path / "cur.md"
+    cur.write_text("# 当前这本\n", encoding="utf-8")
+    other = tmp_path / "other.md"
+    other.write_text("\n".join(f"别的书第 {i} 行，这一行写得挺长的好把预算吃掉" for i in range(1, 4000)), encoding="utf-8")
+    ctx = {"original_path": cur, "extra_roots": [tmp_path]}
+
+    stopped_at = None
+    for i in range(1, 40):
+        got = handle_read_file({"path": str(other), "offset": 1, "limit": 400}, ctx)
+        assert got["ok"] is True, "超预算不能报错——报错它会换个 offset 再试"
+        if "额度用完" in got["text"]:
+            stopped_at = i
+            break
+    assert stopped_at is not None, "翻了 39 次还没停"
+    assert ctx["cross_book_chars"] >= CROSS_BOOK_CHARS
+    # 单次 read_file 已被 MAX_OUTPUT 截到 5000，所以约等于 5 次满窗
+    assert 2 <= stopped_at <= 12, f"预算档位不对：第 {stopped_at} 次才停"
+    assert "没读到" in got["text"] or "只读了哪几段" in got["text"], "得告诉它怎么诚实收场"

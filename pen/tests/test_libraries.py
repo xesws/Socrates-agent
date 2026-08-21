@@ -326,11 +326,16 @@ def test_plugin_deployment_without_env_still_gets_a_shelf(tmp_path, monkeypatch)
 
 
 def test_shelf_visibility_equals_read_file_reachability_both_ways(tmp_path, monkeypatch) -> None:
-    """「列得出」必须严格等于「读得到」，两个方向都要成立。
+    """「列出的必可读」+「可读且未被去重规则排除的必列出」。
 
     v0.8.7 修的是一边（书架印出读不到的路径），修完漂到另一边：
     app.py 传 extra_roots_for(hid)，而 stream_chat 会往里加 REPO_ROOT，
-    于是仓库根里的教材师傅读得到、书架却不列。等式必须由同一个函数保证。"""
+    于是仓库根里的教材师傅读得到、书架却不列。等式必须由同一个函数保证。
+
+    注意等式**不是**无条件的严格相等：同一本书在仓库根和 vault 各有一份时，
+    `shelf_digest` 按标题去重只留一份，另一份 `read_file` 读得到但不列——
+    那是有意的（列两遍会让模型以为书架上真有两本）。本用例的三本 fixture
+    标题互不相同，绕开去重，测的是根的一致性；去重那条另有用例。"""
     import re
 
     from pen import config, library_scan, readtool
@@ -368,6 +373,9 @@ def test_shelf_visibility_equals_read_file_reachability_both_ways(tmp_path, monk
         ok = readtool.read_file_report(cur, str(b), 1, 1, extra_roots=read_roots(extra))["ok"]
         shown = str(b) in listed
         assert ok == shown, f"{name}: read_file ok={ok} 但书架列出={shown}"
+    # 反方向：书架印出来的每一条都必须读得到（这一条是无条件的）
+    for pth in listed:
+        assert readtool.read_file_report(cur, pth, 1, 1, extra_roots=read_roots(extra))["ok"]
     # 具体到这组：仓库根和 vault 的都该在，第三个目录的不该在
     assert str(books["repo"]) in listed and str(books["vault"]) in listed
     assert str(books["far"]) not in listed

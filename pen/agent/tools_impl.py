@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from pen.readtool import read_file_report
+from pen.config import CROSS_BOOK_CHARS
 from pen.sandbox import SandboxError, assert_write_target, resolve_read_target
 from pen import libraries, snapshots
 
@@ -24,6 +25,13 @@ def _occurrences(text: str, needle: str) -> int:
         start = i + 1
 
 
+def _is_cross_book(original: Path, resolved: str) -> bool:
+    try:
+        return Path(resolved).expanduser().resolve() != original.expanduser().resolve()
+    except Exception:
+        return False
+
+
 def handle_read_file(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     original = Path(ctx["original_path"])
     raw_path = str(args.get("path") or "").strip() or str(original)
@@ -34,9 +42,27 @@ def handle_read_file(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
         limit=int(args.get("limit", 80) or 80),
         extra_roots=ctx.get("extra_roots") or [],
     )
+    text = str(report["text"])
+    # 读当前手册以外的东西才计预算（别的教材、lab/ 对照文件）。
+    # 读当前手册不计，本职阅读一次都不受影响。
+    # 超了不报错、不中断：返回一句让它收敛的话。报错会让模型换个 offset 再试，
+    # 那正是我们要止住的循环。
+    if report["ok"] and _is_cross_book(original, str(report["resolved"])):
+        spent = int(ctx.get("cross_book_chars") or 0)
+        if spent >= CROSS_BOOK_CHARS:
+            return {
+                "ok": True,
+                "text": (
+                    "本轮翻别的教材的额度用完了。用已经读到的内容作答，"
+                    "并且告诉读者你只读了哪几段、还有哪些没看——不要接着翻，也不要凭书名猜。"
+                ),
+                "resolved": str(report["resolved"]),
+                "detail": raw_path,
+            }
+        ctx["cross_book_chars"] = spent + len(text)
     return {
         "ok": bool(report["ok"]),
-        "text": str(report["text"]),
+        "text": text,
         "resolved": str(report["resolved"]),
         "detail": raw_path,
     }

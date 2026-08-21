@@ -14,6 +14,15 @@ DEFAULT_HANDBOOK_ID = "swe-agent-v2"
 DEFAULT_HANDBOOK: Path = REPO_ROOT / "SWE-Agent通关手册v2.md"
 
 MAX_OUTPUT = 5000
+# 一轮对话里读**当前手册以外**的文件的总字符预算（别的教材、lab/ 对照文件）。
+# 读当前手册不计：写回要先 read_file 看原文、翻本册别的 Level 都是本职，
+# 一次都不该受影响——这是这道闸零回归的关键，别改成按次数或按总量。
+# v0.8.7 把书架接上之后，实测一句「另一本讲什么」触发 21 次 read_file、
+# 46912 字符，全部进 session.messages 并落盘，本会话之后每一轮都重发
+# （末轮 prompt 27k token）。读者只看到「在翻手册…」，和 probe.py 开头写死的
+# 那条「后台任务一旦能自主循环调工具，读者看不见它在烧钱」是同一件事。
+# 单次 read_file 已被 MAX_OUTPUT 截到 5000，所以这里约等于 5 次满窗跨书阅读。
+CROSS_BOOK_CHARS = 24000
 NEIGHBORHOOD_CHARS = 4000
 SNAPSHOT_KEEP = 20
 

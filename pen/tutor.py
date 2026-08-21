@@ -100,7 +100,8 @@ def build_user_packet(
     shelf_block = (
         "[工作目录里的其他教材]\n"
         "（下面只是每本前 400 行扒出来的标题，不是正文。要说它讲了什么，\n"
-        "  先用 read_file 按 path 读，读了再说。）\n"
+        "  先用 read_file 按 path 读，读了再说。读不到、或者本轮额度用完了，\n"
+        "  就照实说「那本我没读到」——按标题猜内容，和假装搜过是一回事。）\n"
         f"{shelf_rows}\n\n"
         if shelf_rows
         else ""
@@ -516,7 +517,9 @@ def resume_chat(
             session.pending = None
             yield {"type": "error", "message": result}
             return
-    extra_roots = [REPO_ROOT, *(extra_roots or [])]
+    # 走 read_roots()，别在这里再拼一遍：v0.8.8 修的就是「两处各算一遍必然漂移」，
+    # 自己留第二处说不过去。今天两者等价，改的是「下一次漂移的入口」。
+    extra_roots = read_roots(extra_roots)
     ctx = _tool_ctx(session, original_path, extra_roots)
     name = str(pending.get("name") or "")
     args = dict(pending.get("args") or {})
