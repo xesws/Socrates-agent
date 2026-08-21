@@ -28,19 +28,37 @@ async function j<T>(base: string, path: string, init?: RequestInit): Promise<T> 
       ...(init?.headers || {}),
     },
   });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const body = await res.json();
-      detail = (body as { detail?: string }).detail || JSON.stringify(body);
-    } catch {
-      /* keep */
-    }
-    // 带上状态码。detail 是**本地化**的服务端文案，调用方靠它区分不了
-    // 「会话没了」和「别的 4xx」——那正是 deeppoll 那条死掉的 404 判据的病根。
-    throw new ApiError(res.status, detail);
-  }
+  if (!res.ok) throw await errorFrom(res);
   return res.json() as Promise<T>;
+}
+
+/**
+ * 把 sidecar 的错误 body 解析成 `ApiError`。**两处出错的地方（`j` 和
+ * `readSse`）必须同源**，否则又是一次「两个闸不同源」。
+ *
+ * `detail` 有两种形状：普通错误是一句本地化文案（字符串），而「这场会话没了」
+ * 是 `{code, message}`。带上 code 是因为**光看 404 分不清**是会话被清理了
+ * 还是读者把笔记改名／移走了——细节见 `apierror.ts` 里 `isGone` 的注释。
+ * 走 body 而不是自定义响应头：响应头要 CORS `expose_headers` 才读得到，
+ * 而 detail 这条路本来就在解析。
+ */
+async function errorFrom(res: Response): Promise<ApiError> {
+  let message = res.statusText;
+  let code = "";
+  try {
+    const body = (await res.json()) as { detail?: unknown };
+    const d = body?.detail;
+    if (d && typeof d === "object") {
+      const o = d as { code?: unknown; message?: unknown };
+      if (typeof o.code === "string") code = o.code;
+      message = typeof o.message === "string" && o.message ? o.message : JSON.stringify(body);
+    } else {
+      message = typeof d === "string" && d ? d : JSON.stringify(body);
+    }
+  } catch {
+    /* 没 body 或不是 JSON：留着 statusText */
+  }
+  return new ApiError(res.status, message, code);
 }
 
 /** 跨会话累计。设置页那块统计用它——不走 makeApi 是因为设置页拿不到 view。 */
@@ -148,15 +166,7 @@ async function readSse(
   res: Response,
   onEvent: (ev: Record<string, unknown>) => void,
 ): Promise<void> {
-  if (!res.ok || !res.body) {
-    let detail = res.statusText;
-    try {
-      detail = ((await res.json()) as { detail?: string }).detail || detail;
-    } catch {
-      /* ignore */
-    }
-    throw new ApiError(res.status, detail);
-  }
+  if (!res.ok || !res.body) throw await errorFrom(res);
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = "";

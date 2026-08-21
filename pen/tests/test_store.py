@@ -73,8 +73,9 @@ def test_a_running_session_is_never_evicted(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(config, "MAX_LIVE_SESSIONS", 3)
     store = SessionStore()
     busy = store.create("demo")
-    lock = store.try_lock(busy)
-    assert lock is not None
+    got = store.try_lock(busy)
+    assert got is not None
+    lock, busy = got
     try:
         _fill(store, 40)
         assert busy.session_id in store._items, "正在跑的被挤出去了"
@@ -95,13 +96,13 @@ def test_over_the_cap_is_allowed_when_too_many_are_running(
     for _ in range(5):
         got = store.try_lock(store.create("demo"))
         assert got is not None
-        locks.append(got)
+        locks.append(got[0])
     try:
         _fill(store, 20)
         assert len(store._items) >= 5, "在跑的被挤掉了"
     finally:
-        for got in locks:
-            got.release()
+        for lock in locks:
+            lock.release()
 
 
 def test_the_running_session_is_evictable_again_once_it_finishes(
@@ -112,8 +113,9 @@ def test_the_running_session_is_evictable_again_once_it_finishes(
     monkeypatch.setattr(config, "MAX_LIVE_SESSIONS", 3)
     store = SessionStore()
     busy = store.create("demo")
-    lock = store.try_lock(busy)
-    assert lock is not None
+    got = store.try_lock(busy)
+    assert got is not None
+    lock, busy = got
     _fill(store, 40)
     assert busy.session_id in store._items
     lock.release()
@@ -192,10 +194,10 @@ def test_try_lock_refuses_a_busy_session() -> None:
     first = store.try_lock(sess)
     assert first is not None
     assert store.try_lock(sess) is None, "同一场不许被两条请求同时改"
-    first.release()
+    first[0].release()
     second = store.try_lock(sess)
     assert second is not None
-    second.release()
+    second[0].release()
 
 
 def test_try_lock_and_eviction_cannot_interleave(
@@ -210,9 +212,10 @@ def test_try_lock_and_eviction_cannot_interleave(
     errors: list[str] = []
 
     def grab() -> None:
-        lock = store.try_lock(sess)
-        if lock is None:
+        got = store.try_lock(sess)
+        if got is None:
             return
+        lock, _live = got
         if held:
             errors.append("两个线程同时拿到了同一场的锁")
         held.append(lock)
@@ -277,16 +280,114 @@ def test_try_lock_pins_the_instance_back_into_the_table(
         store.get(sess.session_id)
         store.create("demo")
         assert sess.session_id not in store._items, "前提不成立，这条测不到东西"
-        lock = store.try_lock(sess)
-        assert lock is not None
+        got = store.try_lock(sess)
+        assert got is not None
+        lock, live = got
         try:
-            assert store.get(sess.session_id) is sess, "冒出了第二个实例"
+            assert store.get(sess.session_id) is live, "冒出了第二个实例"
         finally:
             lock.release()
     finally:
         for b in busy:
             if b is not None:
-                b.release()
+                b[0].release()
+
+
+def test_try_lock_hands_back_the_live_instance_not_the_stale_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """光「钉回去」只关掉了一半（v0.12.6 补上另一半）。
+
+    生产次序是 `get()` → `_meta_or_404` / `load_index`（真磁盘 I/O，毫秒级）
+    → `try_lock()`。中间那几毫秒里手上这个实例可能已经过时了：
+
+        T1 get(S) 拿到 X → 淘汰把 X 扫出表 → T2 get(S) 从盘上重建 Y，
+        锁上、跑完**一整轮**、save(Y)、放锁 → T1 这才 try_lock(X)，
+        锁是空的，抢到 → 收尾 save(X) 把 T2 那一轮整个盖掉。
+
+    「一整轮对话凭空消失」——v0.12.5 的 commit message 说修了它，实际只修了
+    「同时进临界区」那一半。
+    """
+    monkeypatch.setattr(config, "MAX_LIVE_SESSIONS", 2)
+    store = SessionStore()
+    sid = store.create("demo").session_id
+    busy = [store.try_lock(store.create("demo")) for _ in range(4)]
+    try:
+        stale = store.get(sid)  # T1 手里这个
+        store.create("demo")  # 在跑的多于上限 → 淘汰连它一起扫
+        assert sid not in store._items, "前提不成立，这条测不到东西"
+        fresh = store.get(sid)  # T2 从盘上重建
+        assert fresh is not stale, "前提不成立：这俩该是两个实例"
+        fresh.messages.append({"role": "assistant", "content": "T2 这一整轮"})
+        store.save(fresh)
+        got = store.try_lock(stale)  # T1 这才抢到锁
+        assert got is not None
+        lock, live = got
+        try:
+            assert any(
+                m.get("content") == "T2 这一整轮" for m in live.messages
+            ), "拿到的是陈旧实例，收尾 save 会把 T2 那一轮整个盖掉"
+        finally:
+            lock.release()
+    finally:
+        for b in busy:
+            if b is not None:
+                b[0].release()
+
+
+def test_try_lock_falls_back_to_disk_when_the_table_has_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """更窄的一档：别人跑完那一轮之后，那个实例**也**被淘汰扫走了。
+
+    表里没得认，就得回盘上现读。此刻锁在我们手上，谁也不能再改这一场，
+    所以磁盘那份就是权威——不读盘的话又退回去用陈旧实例了。
+    """
+    monkeypatch.setattr(config, "MAX_LIVE_SESSIONS", 2)
+    store = SessionStore()
+    sid = store.create("demo").session_id
+    busy = [store.try_lock(store.create("demo")) for _ in range(4)]
+    try:
+        stale = store.get(sid)
+        fresh = store.get(sid)
+        fresh.messages.append({"role": "assistant", "content": "别人那一轮"})
+        store.save(fresh)
+        store._items.pop(sid, None)  # 收工之后它也被扫走了
+        got = store.try_lock(stale)
+        assert got is not None
+        lock, live = got
+        try:
+            assert any(m.get("content") == "别人那一轮" for m in live.messages)
+        finally:
+            lock.release()
+    finally:
+        for b in busy:
+            if b is not None:
+                b[0].release()
+
+
+def test_try_lock_still_works_when_the_file_is_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """保留期清理正好插在 `get()` 和 `try_lock()` 之间。
+
+    盘上没了就用手上这个，让读者这一枪照样能跑完——强过甩他一个 404。
+    """
+    from pen.session import sessions_dir
+
+    monkeypatch.setattr(config, "MAX_LIVE_SESSIONS", 2)
+    store = SessionStore()
+    sess = store.create("demo")
+    sid = sess.session_id
+    store._items.pop(sid, None)
+    (sessions_dir() / f"{sid}.json").unlink()
+    got = store.try_lock(sess)
+    assert got is not None
+    lock, live = got
+    try:
+        assert live is sess
+    finally:
+        lock.release()
 
 
 def test_the_endpoint_helper_goes_through_try_lock(
@@ -309,12 +410,12 @@ def test_the_endpoint_helper_goes_through_try_lock(
     try:
         STORE.create("demo")  # 触发淘汰，把没锁的 sess 扫掉
         assert sess.session_id not in STORE._items
-        lock = _try_lock_session(sess)
+        lock, live = _try_lock_session(sess)
         try:
-            assert STORE.get(sess.session_id) is sess, "端点这一层冒出了第二个实例"
+            assert STORE.get(sess.session_id) is live, "端点这一层冒出了第二个实例"
         finally:
             lock.release()
     finally:
         for b in busy:
             if b is not None:
-                b.release()
+                b[0].release()

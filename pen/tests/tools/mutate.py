@@ -370,10 +370,11 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
         "refund_rolls_back_the_cooldown",
     ),
     (
+        # v0.12.6 propose 收进 try/finally 之后，落盘那一步搬到了 finally 里。
         "v0.10.9 写回那一格的账要落盘",
         "pen/app.py",
-        "    _save_and_unlock(sess, lock)\n    return out",
-        "    lock.release()\n    return out",
+        "    finally:\n        _save_and_unlock(sess, lock)",
+        "    finally:\n        lock.release()",
         "propose_persists_and_returns",
     ),
     (
@@ -465,32 +466,104 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
     (
         """v0.12.4 空会话与聊过的会话必须分两档""",
         """pen/retention.py""",
-        """    days = (
-        config.SESSION_KEEP_DAYS_EMPTY
-        if _is_empty(data)
-        else config.SESSION_KEEP_DAYS_CHATTED
-    )""",
-        """    days = config.SESSION_KEEP_DAYS_CHATTED""",
+        """    if _is_empty(data):
+        return float(config.SESSION_KEEP_DAYS_EMPTY) * _DAY
+    if _has_pending(data):""",
+        """    if False:
+        return float(config.SESSION_KEEP_DAYS_EMPTY) * _DAY
+    if _has_pending(data):""",
         """empty_session_older_than_a_day_is_swept""",
     ),
     (
         """v0.12.4 聊过的会话不许按空的那档删""",
         """pen/retention.py""",
-        """    days = (
-        config.SESSION_KEEP_DAYS_EMPTY
-        if _is_empty(data)
-        else config.SESSION_KEEP_DAYS_CHATTED
-    )""",
-        """    days = config.SESSION_KEEP_DAYS_EMPTY""",
+        """    return float(config.SESSION_KEEP_DAYS_CHATTED) * _DAY""",
+        """    return float(config.SESSION_KEEP_DAYS_EMPTY) * _DAY""",
         """chatted_session""",
     ),
     (
-        """v0.12.4 挂着审批的会话永不删""",
+        """v0.12.4 挂着审批的会话要比聊过的多留很久""",
         """pen/retention.py""",
         """    if _has_pending(data):
-        return float("inf")""",
+        return float(config.SESSION_KEEP_DAYS_PENDING) * _DAY""",
         """    pass""",
-        """pending""",
+        """pending_approval_gets_a_much_longer or outlives_the_seven_day_rule""",
+    ),
+    (
+        """v0.12.6 pending 豁免必须夹在「聊过」里面，不许无界""",
+        """pen/retention.py""",
+        """    if _is_empty(data):
+        return float(config.SESSION_KEEP_DAYS_EMPTY) * _DAY
+    if _has_pending(data):
+        return float(config.SESSION_KEEP_DAYS_PENDING) * _DAY""",
+        """    if _has_pending(data):
+        return float(config.SESSION_KEEP_DAYS_PENDING) * _DAY
+    if _is_empty(data):
+        return float(config.SESSION_KEEP_DAYS_EMPTY) * _DAY""",
+        """immortality""",
+    ),
+    (
+        """v0.12.6 pending 的豁免必须有天花板""",
+        """pen/retention.py""",
+        """    if _has_pending(data):
+        return float(config.SESSION_KEEP_DAYS_PENDING) * _DAY""",
+        """    if _has_pending(data):
+        return float("inf")""",
+        """not_a_forever_pass""",
+    ),
+    (
+        """v0.12.6 touch 不许把不存在的会话凭空创出来""",
+        """pen/retention.py""",
+        """        if path.is_file():
+            path.touch()""",
+        """        path.touch()""",
+        """leaves_no_trace""",
+    ),
+    (
+        """v0.12.6 会话目录建不出来时清理也不许抛""",
+        """pen/retention.py""",
+        """    try:
+        files = sorted(sessionmod.sessions_dir().glob("*.json"))
+    except OSError:
+        return {"scanned": 0, "removed": 0}""",
+        """    files = sorted(sessionmod.sessions_dir().glob("*.json"))""",
+        """cannot_even_be_made""",
+    ),
+    (
+        """v0.12.6 抢到锁之后要认当家实例，不是手里那个""",
+        """pen/session.py""",
+        """            incumbent = self._items.get(sid)
+            if incumbent is not None:
+                self._items.move_to_end(sid)
+                return lock, incumbent""",
+        """            self._items[sid] = sess
+            self._items.move_to_end(sid)
+            return lock, sess""",
+        """hands_back_the_live_instance or falls_back_to_disk""",
+    ),
+    (
+        """v0.12.6 propose 尾段炸了也必须放锁""",
+        """pen/app.py""",
+        """    finally:
+        _save_and_unlock(sess, lock)""",
+        """    except HTTPException:
+        _save_and_unlock(sess, lock)
+        raise""",
+        """releases_the_lock""",
+    ),
+    (
+        """v0.12.6 「会话没了」那种 404 必须带机器可读的 code""",
+        """pen/app.py""",
+        """    return HTTPException(404, {"code": "session_gone", "message": msg("session.unknown", lang)})""",
+        """    return HTTPException(404, msg("session.unknown", lang))""",
+        """test_http_error_follows_accept_language or falls_back_to_chinese""",
+    ),
+    (
+        """v0.12.6 笔记被改名的 404 不许冒充「会话没了」""",
+        """pen/app.py""",
+        """        raise HTTPException(404, localized(exc, lang)) from exc""",
+        """        raise _no_session(lang) from exc""",
+        """renamed_note_is_not_reported_as_a_gone_session""",
     ),
     (
         """v0.12.4 glob 不许命中别人正在写的临时文件""",
@@ -588,10 +661,11 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
     (
         """v0.12.5 抢到锁的那一刻要把实例钉回表里""",
         """pen/session.py""",
-        """            self._items[sid] = sess
+        """        with self._lock_meta:
+            self._items[sid] = live
             self._items.move_to_end(sid)
-            return lock""",
-        """            return lock""",
+        return lock, live""",
+        """        return lock, live""",
         """pins_the_instance_back""",
     ),
     (
@@ -638,12 +712,11 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
     (
         """v0.12.5 抢锁必须和淘汰互斥""",
         """pen/app.py""",
-        """    lock = STORE.try_lock(sess)
-    if lock is None:""",
+        """    got = STORE.try_lock(sess)
+    if got is None:""",
         """    lock = STORE.lock_for(sess.session_id)
-    if not lock.acquire(blocking=False):
-        lock = None
-    if lock is None:""",
+    got = (lock, sess) if lock.acquire(blocking=False) else None
+    if got is None:""",
         """endpoint_helper_goes_through_try_lock""",
     ),
     (

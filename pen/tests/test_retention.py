@@ -69,17 +69,47 @@ def test_chatted_session_is_not_judged_by_the_empty_rule() -> None:
     assert kept.exists()
 
 
-def test_pending_approval_is_never_swept_no_matter_how_old() -> None:
-    """挂着审批的那场删掉，读者点「同意」就撞 404，手里的提案当场作废。"""
-    frozen = _write("f" * 32, age_days=400, messages=9, pending=True)
+def test_pending_approval_gets_a_much_longer_grace_period() -> None:
+    """挂着审批的那场删掉，读者点「同意」就撞 404，手里的提案当场作废。
+    所以给它 30 天，而不是聊过的那 7 天。"""
+    kept = _write("f" * 32, age_days=20, messages=9, pending=True)
     assert retention.purge_expired_sessions()["removed"] == 0
-    assert frozen.exists()
+    assert kept.exists()
 
 
-def test_pending_wins_over_the_empty_rule_too() -> None:
-    frozen = _write("0" * 32, age_days=400, pending=True)
-    retention.purge_expired_sessions()
-    assert frozen.exists()
+def test_but_pending_is_not_a_forever_pass() -> None:
+    """**不能是无限。** 读者在审批面板开着时关掉 Obsidian、之后点
+    「新开会话」，那一场就再也没人碰它了——一条没有天花板的豁免
+    就是一条谁都清不掉的泄漏，正是这次要治的病本身。"""
+    doomed = _write("2" * 32, age_days=400, messages=9, pending=True)
+    assert retention.purge_expired_sessions()["removed"] == 1
+    assert not doomed.exists()
+
+
+def test_pending_on_an_empty_session_does_not_buy_immortality() -> None:
+    """「有 pending 就永不删」曾是一条**无界**豁免。
+
+    实测真实 `.pen` 里 3370 个文件有 551 个是「pending + messages == 1」，
+    全是测试污染留下的假数据，而按第一版规则它们永远删不掉——清理跑一万遍
+    也清不掉的东西，就等于没有上限。
+
+    而真 pending 不可能长在空会话上：`tutor.py` 设 pending 之前，这一轮的
+    user 和带 tool_calls 的 assistant 早就进了 messages（最少 3 条）。
+
+    年龄取 5 天是**故意**的：它同时越过了空会话那 1 天档、没越过 pending
+    那 30 天档。取 400 天的话，判断顺序写反了这条也照样绿——那就成了空转。
+    """
+    fake = _write("0" * 32, age_days=5, pending=True)
+    assert retention.purge_expired_sessions()["removed"] == 1
+    assert not fake.exists()
+
+
+def test_but_a_real_pending_still_outlives_the_seven_day_rule() -> None:
+    """收紧的是「空 + pending」，不是 pending 本身。这条守住另一边：
+    真 pending 撑过了聊过的那 7 天档。"""
+    real = _write("1" * 32, age_days=20, messages=3, pending=True)
+    assert retention.purge_expired_sessions()["removed"] == 0
+    assert real.exists()
 
 
 def test_unparseable_file_gets_the_longer_grace_period() -> None:
@@ -131,9 +161,23 @@ def test_another_process_mid_write_temp_file_is_not_globbed() -> None:
 
 
 def test_purge_is_silent_when_there_is_nothing_there() -> None:
-    """它挂在 lifespan 上：目录不存在不该让 sidecar 起不来。"""
+    """它挂在 lifespan 上：没有会话目录不该让 sidecar 起不来。"""
     assert not config.PEN_DIR.exists()
     assert retention.purge_expired_sessions() == {"scanned": 0, "removed": 0}
+
+
+def test_purge_is_silent_when_the_directory_cannot_even_be_made() -> None:
+    """上面那条其实**摸不到** `except OSError`：`sessions_dir()` 自己会
+    `mkdir(exist_ok=True)`，所以 glob 永远有个目录可扫，那个分支一次都没跑过
+    ——docstring 声称的「目录不存在不该让 sidecar 起不来」并没有被守住。
+
+    真要让 `sessions_dir()` 抛，得让 `.pen` 那个位置**是个文件**
+    （读者手贱、同步工具塞了个占位文件），`mkdir` 就会 `NotADirectoryError`。
+    """
+    config.PEN_DIR.parent.mkdir(parents=True, exist_ok=True)
+    config.PEN_DIR.write_text("我不是目录", encoding="utf-8")
+    assert retention.purge_expired_sessions() == {"scanned": 0, "removed": 0}
+    retention.touch("z" * 32)  # 同一个坑，touch 也不许抛
 
 
 def test_touch_makes_mtime_mean_last_seen_not_last_written() -> None:
@@ -146,8 +190,14 @@ def test_touch_makes_mtime_mean_last_seen_not_last_written() -> None:
     assert retention.purge_expired_sessions()["removed"] == 0
 
 
-def test_touch_on_a_missing_session_is_silent() -> None:
-    retention.touch("l" * 32)  # 不抛就算过
+def test_touch_on_a_missing_session_leaves_no_trace() -> None:
+    """「不抛就算过」不算断言。真正要守的是：touch 一个不存在的 sid
+    **不许把文件创出来**——`Path.touch()` 默认就是 create，少了那道
+    `is_file()` 就会在会话目录里凭空长出空文件，下一次清理再把它删掉。"""
+    sid = "l" * 32
+    retention.touch(sid)
+    assert not (sessions_dir() / f"{sid}.json").exists()
+    assert retention.purge_expired_sessions()["scanned"] == 0
 
 
 def test_get_session_pushes_mtime_forward() -> None:

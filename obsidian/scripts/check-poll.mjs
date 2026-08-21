@@ -81,14 +81,14 @@ check("服务端一直 running 时到点自停", h.st.calls === 12);
 // （「会话不存在」），一个 "404" 字样都没有——看门狗和实现各自绿着，
 // 中间那条终止条件其实是死的。
 h = harness(async () => {
-  throw new ApiError(404, "会话不存在");
+  throw new ApiError(404, "会话不存在", "session_gone");
 });
 await h.run();
 check("404 立刻停（会话没了）", h.st.calls === 1);
 
 // 反向：本地化文案里没有 "404"，靠字符串匹配的写法在这条上会红。
 h = harness(async () => {
-  throw new ApiError(404, "unknown session");
+  throw new ApiError(404, "unknown session", "session_gone");
 });
 await h.run();
 check("404 判的是状态码不是文案", h.st.calls === 1);

@@ -11,10 +11,24 @@
 | --------------- | -------------------- | ------ |
 | 空会话          | `len(messages) <= 1` | 1 天   |
 | 聊过的          | 其余                 | 7 天   |
-| 挂着 pending 的 | `pending.id` 非空    | 永不删 |
+| 挂着 pending 的 | `pending.id` 非空 **且不是空会话** | 30 天 |
 
 `pending` 是「读者点了写回、审批弹窗还没结果」的状态。那一场删掉，读者点
-「同意」就会撞 404，手里已生成的提案当场作废——不管它多老都不碰。
+「同意」就会撞 404，手里已生成的提案当场作废——所以给它长得多的一档。
+
+**但不是「永不删」**（v0.12.6 收紧的第二处）。读者在审批面板开着的时候
+关掉 Obsidian、之后点「新开会话」，那一场就再也没人碰它了。一条没有天花板
+的豁免，就是一条谁都清不掉的泄漏——正是这次要治的病本身。
+
+**但这条豁免必须夹在「聊过」里面**（v0.12.6 收紧）。第一版写成「有 pending
+就永不删」，那是一条**无界**豁免：任何带 `pending` 键的文件从此占着盘，
+清理再怎么跑都动不了它。实测真实 `.pen` 里 3370 个文件有 **600 个**是
+「pending + messages == 1」——全是测试污染留下的假数据，而它们永远删不掉。
+
+而真实的 pending **不可能**长在空会话上：`tutor.py:701` 设 pending 之前，
+这一轮的 user 和带 tool_calls 的 assistant 早就 append 进 `session.messages`
+了（`:544`），最少 3 条。所以「空 + pending」只可能是假数据或坏文件，
+按空会话那一档处理不会伤到任何真东西。
 """
 
 from __future__ import annotations
@@ -44,7 +58,7 @@ def _has_pending(data: dict) -> bool:
 
 
 def _keep_seconds(path: Path) -> float:
-    """这个文件该留多久（秒）。返回 `inf` 表示永不删。
+    """这个文件该留多久（秒）。
 
     读不出来的（截断、手改坏了、正在写）按**长**的那档算：宁可多留 7 天，
     也不要因为一次解析失败就把读者聊过的东西删了。
@@ -55,14 +69,13 @@ def _keep_seconds(path: Path) -> float:
         return config.SESSION_KEEP_DAYS_CHATTED * _DAY
     if not isinstance(data, dict):
         return config.SESSION_KEEP_DAYS_CHATTED * _DAY
+    # 顺序要紧：先判空。空会话上的 pending 是假的（见模块头），让它走短的那档，
+    # 否则「有 pending 就免死」会盖住空会话那一档，而空会话正是 3371 个文件的来源。
+    if _is_empty(data):
+        return float(config.SESSION_KEEP_DAYS_EMPTY) * _DAY
     if _has_pending(data):
-        return float("inf")
-    days = (
-        config.SESSION_KEEP_DAYS_EMPTY
-        if _is_empty(data)
-        else config.SESSION_KEEP_DAYS_CHATTED
-    )
-    return float(days) * _DAY
+        return float(config.SESSION_KEEP_DAYS_PENDING) * _DAY
+    return float(config.SESSION_KEEP_DAYS_CHATTED) * _DAY
 
 
 def purge_expired_sessions(*, now: float | None = None) -> dict[str, int]:
@@ -107,10 +120,14 @@ def purge_expired_sessions(*, now: float | None = None) -> dict[str, int]:
 def touch(session_id: str) -> None:
     """把 mtime 推到现在，语义从「最后写过」改成「最后碰过」。
 
-    为什么需要：`GET /v1/sessions/{sid}`、`POST /v1/sessions` 的恢复分支、
-    `GET /deep`、`retarget`、`apply` **全都不 save**。读者天天开面板、每次划词
-    都命中并复用同一个会话，只要不真发一轮对话，mtime 就冻在最后一次 chat 上——
-    7 天不聊天就被清掉，下次划词静默换成新会话，历史全丢。
+    为什么需要：`GET /v1/sessions/{sid}` 和 `POST /v1/sessions` 的恢复分支
+    **都不 save**——而这两条正是读者每次开面板、每次划词必走的路。只要不真发
+    一轮对话，mtime 就冻在最后一次 chat 上，7 天不聊天就被清掉，下次划词静默
+    换成新会话，历史全丢。所以 `pen/app.py` 只在这两处调 `touch()`。
+
+    （`GET /deep`、`retarget`、`apply` 同样不 save，但都被上游的 save/touch
+    兜住了：读者要走到它们，必然先经过上面那两条中的一条。v0.12.5 这段注释
+    把它们也列进来了，像是在说那三条端点也调了 touch——并没有。）
 
     静默失败：它只是让清理更保守，不该成为读会话的失败原因。
     """

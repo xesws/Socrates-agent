@@ -494,6 +494,72 @@ def test_propose_provider_error_becomes_400(tmp_path: Path, monkeypatch) -> None
         assert "sk-from-page" not in proposed.json()["detail"]
 
 
+def test_propose_releases_the_lock_even_when_the_tail_blows_up(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """propose 的尾段炸了，锁必须还是要放。
+
+    v0.12.6 之前，从 `path.read_text()` 到最后那次 `_save_and_unlock` 之间
+    没有任何异常保护。笔记在这中间被移走、被同步工具换成非 UTF-8，
+    `lock.release()` 就不执行——这一场对读者是**永久 409「这场对话还在跑」**，
+    重启 sidecar 之前解不开；v0.12.5 的「永不淘汰持锁会话」还让它永久
+    占住一个内存槽，对 MAX_LIVE_SESSIONS 完全豁免。
+
+    断言写成「再打一次不是 409」而不是去摸 `STORE._locks`：卡死的读者
+    看到的就是那个 409，测的应该是他看到的东西。
+    """
+    from pen import app as appmod, insert as insertmod
+
+    _isolate_pen(tmp_path, monkeypatch)
+    monkeypatch.delenv("PEN_ALLOW_ROOTS", raising=False)
+    book = tmp_path / "mini.md"
+    book.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+    q1 = next(
+        i
+        for i, ln in enumerate(book.read_text(encoding="utf-8").splitlines(), 1)
+        if ln.startswith("**Q1. shell")
+    )
+    # 绕开 LLM：这条测的是锁的收尾，不是模型
+    monkeypatch.setattr(appmod, "propose_fold_md", lambda *a, **k: "> 折叠正文\n")
+
+    def _boom(*_a: Any, **_k: Any) -> str:
+        raise UnicodeDecodeError("utf-8", b"", 0, 1, "笔记被换成了非 UTF-8")
+
+    monkeypatch.setattr(insertmod, "render_new_text", _boom)
+
+    # 不让 TestClient 把服务端异常原样抛回来——读者那边看到的是 500，
+    # 而这条测的正是「500 之后锁还在不在」。
+    with TestClient(app, raise_server_exceptions=False) as client:
+        client.post(
+            "/v1/handbooks/import",
+            json={
+                "original_path": str(book),
+                "handbook_id": "mini-lock",
+                "vault_root": str(tmp_path),
+            },
+        )
+        sid = client.post("/v1/sessions", json={"handbook_id": "mini-lock"}).json()[
+            "session_id"
+        ]
+        sess = STORE.get(sid)
+        sess.last_assistant = "x" * 90
+        sess.last_anchor = {
+            "start_line": q1,
+            "end_line": q1,
+            "selected_text": "shell",
+            "kind": "q",
+            "level": "Level 0",
+            "q_title": "**Q1. shell 和 Bash 是什么关系？**",
+        }
+        STORE.save(sess)
+        body = {"session_id": sid}
+        first = client.post("/v1/writeback/propose", json=body)
+        assert first.status_code == 500, "尾段真炸了才算测到东西"
+        again = client.post("/v1/writeback/propose", json=body)
+        assert again.status_code != 409, "锁漏了：这一场对读者永久卡在「还在跑」"
+        assert again.status_code == 500, "该是同一个炸法，不是别的"
+
+
 def test_import_rejects_arbitrary_and_unsafe_ids(tmp_path: Path, monkeypatch) -> None:
     _isolate_pen(tmp_path, monkeypatch)
     outsider = tmp_path / "secret.md"

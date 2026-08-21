@@ -85,12 +85,18 @@ export const en: Dict = {
     `Can't reach the sidecar (CORS / not running / wrong port): ${detail}`,
   errNoSelection:
     "Didn't catch a selection. Highlight a passage in the note, then hit “Use selection”.",
-  errSessionArchived:
-    "This conversation passed its retention window and was archived. A fresh one is open and your last question was re-sent.",
+  // None of these name a cause. Ageing out is only the most common one — a
+  // hand-deleted `.pen/`, a different sidecar, a full disk all land on the
+  // same 404, and sending the reader chasing a cause we don't know is worse
+  // than saying plainly what happened.
+  noticeSessionArchived:
+    "This conversation is gone from the sidecar (most likely cleaned up past its retention window). A fresh one is open and your last question was re-sent.",
+  noticeSessionRenewed:
+    "This note's previous conversation is gone from the sidecar (most likely cleaned up past its retention window). A fresh one is open.",
   errSessionArchivedHard:
-    "This conversation passed its retention window and was archived, and a fresh one couldn't be opened (sidecar down?).",
+    "This conversation is gone from the sidecar, and a fresh one couldn't be opened either (sidecar down?).",
   errApprovalArchived:
-    "That edit sat too long — its conversation passed the retention window and was archived. The note was not modified. A fresh conversation is open; just ask again.",
+    "The conversation this edit belongs to is gone from the sidecar. The note was not modified. A fresh conversation is open; just ask again.",
 
   usage: (ctx, out) => `context ${k(ctx)} · reply ${k(out)}`,
   spendTurn: (tok) => `turn ${k(tok)}`,

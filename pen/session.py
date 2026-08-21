@@ -291,8 +291,10 @@ class SessionStore:
                 self._items.move_to_end(session_id)
             return lock
 
-    def try_lock(self, sess: PenSession) -> threading.Lock | None:
-        """抢这一场的锁（非阻塞），顺便把它钉回表里。抢不到返回 None。
+    def try_lock(
+        self, sess: PenSession
+    ) -> tuple[threading.Lock, PenSession] | None:
+        """抢这一场的锁（非阻塞）。返回 `(锁, 当家实例)`，抢不到返回 None。
 
         为什么必须是**一个**方法而不是 `lock_for()` 再 `acquire(False)`：
         那两步之间有一条缝，淘汰正好挤进来就会把 `_locks[sid]` 换掉，于是两个
@@ -304,7 +306,18 @@ class SessionStore:
         扫，在跑的那些会被跳过——**在跑的多于上限时，连刚 `get()` 出来的那条
         都会被扫到**。所以抢到锁的这一刻必须把手里这个实例按回 `_items`，
         否则别的请求 `get()` 会从磁盘重建出第二个实例。
-        钉回去之后它就是「locked」，`_evict()` 再也不会碰它。
+
+        **为什么还要把当家实例还给调用方**（v0.12.6）：光「钉回去」只关掉了
+        一半。生产次序是 `get()` → 一堆磁盘 I/O（`_meta_or_404` / `load_index`）
+        → `try_lock()`，中间那几毫秒里手上这个实例可能已经过时了：
+
+            T1 get(S) 拿到 X → 淘汰把 X 扫出表 → T2 get(S) 从盘上重建 Y，
+            锁上、跑完**一整轮**、save(Y)、放锁 → T1 这才 try_lock(X)，
+            锁是空的，抢到，还把陈旧的 X 钉回表里 → 收尾 save(X)
+            把 T2 那一轮整个盖掉。
+
+        所以抢到锁之后要认表里那个（或者回盘上现读）。**此刻锁在我们手上，
+        谁也不能再改这一场，磁盘那份就是权威**——现读是安全的。
         """
         sid = sess.session_id
         with self._lock_meta:
@@ -314,9 +327,23 @@ class SessionStore:
                 self._locks[sid] = lock
             if not lock.acquire(blocking=False):
                 return None
-            self._items[sid] = sess
+            incumbent = self._items.get(sid)
+            if incumbent is not None:
+                self._items.move_to_end(sid)
+                return lock, incumbent
+        # 表里没有 = 手上这个在 get() 之后被淘汰扫走了，而它离表期间别人可能
+        # 跑完了一整轮。读盘不持 `_meta`（那是每个请求都要过的窄门）。
+        try:
+            fresh = load_session(sid)
+        except Exception:
+            fresh = None
+        # 盘上也没了（保留期清理正好插在中间）就用手上这个，让读者这一枪照样能跑，
+        # 强过甩他一个 404。
+        live = fresh if fresh is not None else sess
+        with self._lock_meta:
+            self._items[sid] = live
             self._items.move_to_end(sid)
-            return lock
+        return lock, live
 
     def _evict(self) -> None:
         """把最久没碰过的放掉。**调用方必须已持有 `_meta`。**

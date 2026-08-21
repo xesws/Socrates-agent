@@ -794,11 +794,19 @@ export class PenView extends ItemView {
       this.err = "";
       const bind = this.plugin.noteBind(got.file.path);
       let sess: SessionView;
+      let renewed = false;
       if (bind?.session_id && bind.handbook_id === hid) {
         try {
           sess = await this.api().getSession(bind.session_id);
-        } catch {
+        } catch (e) {
+          // **只有「这场会话真没了」才换新的。** 这里此前是个裸 catch：一次
+          // 网络抖动、一个 500、甚至笔记改名那种 404，都会静默开一场新会话
+          // 并把笔记重新绑上去——旧那场其实还在盘上，但再也没人指得到它了。
+          // 会话按时间清理上线之后，这里是读者最容易撞到「会话没了」的地方，
+          // 一声不吭地换掉最要命。
+          if (!isGone(e)) throw e;
           sess = await this.api().createSession(hid);
+          renewed = true;
         }
       } else {
         sess = await this.api().createSession(hid);
@@ -808,6 +816,9 @@ export class PenView extends ItemView {
         handbook_id: hid,
         session_id: sess.session_id,
       });
+      // 换会话是不可逆的（旧 sid 已经从笔记上解绑），必须告诉读者。
+      // 走 Notice 不走 this.err：这不是错误，是「换好了，接着问就行」。
+      if (renewed) new Notice(t().noticeSessionRenewed);
       await this.refreshSnapshots();
     } catch (e) {
       this.err = e instanceof Error ? e.message : String(e);
@@ -1000,7 +1011,12 @@ export class PenView extends ItemView {
       if (isGone(e) && !revived) gone = true;
       else this.err = e instanceof Error ? e.message : String(e);
     } finally {
-      if (!this.pending) {
+      // `gone` 为真时**不**放下 busy：下面还有 reviveSession 的一次往返 +
+      // 一次重发。放下的话读者在这个窗口里再按一次回车，第二个 send() 用的
+      // 还是**旧的死 sid**（adopt 还没跑）→ 又一个 404 → 又一次 revive：
+      // 建出两场会话、bindNote 打两次、同一句话被计费发两遍，
+      // this.msgs 被两次 adopt 互相清空。
+      if (!this.pending && !gone) {
         this.busy = false;
         this.status = "";
       }
@@ -1009,6 +1025,9 @@ export class PenView extends ItemView {
     }
     if (!gone) return;
     if (!(await this.reviveSession())) {
+      // 这条路上没人会再接手放下 busy，自己收干净。
+      this.busy = false;
+      this.status = "";
       this.err = t().errSessionArchivedHard;
       this.paintBar();
       await this.paintLog();
@@ -1017,8 +1036,9 @@ export class PenView extends ItemView {
     // 原样重发。读者不用重新打字——他刚才那句在 adopt() 里被新会话的空历史
     // 覆盖掉了，这里补发回去，界面上看起来就是「问了一次」。
     await this.send(chip, userText, true);
-    // 重发本身出错的话（换了新会话还是失败），保留那条真错，别用归档提示盖掉。
-    if (!this.err) this.err = t().errSessionArchived;
+    // 重发本身出错的话（换了新会话还是失败），那条真错留在错误条上，这条
+    // 不去盖它。走 Notice 不走 this.err：一切都办妥了，画成红条像是出了事。
+    if (!this.err) new Notice(t().noticeSessionArchived);
     this.paintBar();
   }
 

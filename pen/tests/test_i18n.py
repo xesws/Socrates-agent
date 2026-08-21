@@ -57,13 +57,58 @@ def test_http_error_follows_accept_language():
     zh = c.get("/v1/sessions/nope", headers={"Accept-Language": "zh-CN"})
     en = c.get("/v1/sessions/nope", headers={"Accept-Language": "en-US"})
     assert zh.status_code == en.status_code == 404
-    assert zh.json()["detail"] == "未知会话"
-    assert en.json()["detail"] == "Unknown session"
+    # v0.12.4 起「会话没了」这一种 404 的 detail 是 {code, message}——
+    # 前端要靠 code 把它和「笔记被改名或移走」那种 404 分开。文案照旧本地化。
+    assert zh.json()["detail"]["message"] == "未知会话"
+    assert en.json()["detail"]["message"] == "Unknown session"
+    assert zh.json()["detail"]["code"] == en.json()["detail"]["code"] == "session_gone"
 
 
 def test_no_header_falls_back_to_chinese():
     c = TestClient(app)
-    assert c.get("/v1/sessions/nope").json()["detail"] == "未知会话"
+    assert c.get("/v1/sessions/nope").json()["detail"]["message"] == "未知会话"
+
+
+def test_a_renamed_note_is_not_reported_as_a_gone_session():
+    """两种 404 必须分得开。
+
+    读者在 Obsidian 里把笔记改名或移走（日常操作）之后接着提问，`_meta_or_404`
+    也抛 404，而那条 detail 里有唯一能救他的一句「请重新框选一次」。前端只看
+    状态码的话，正确指引会被换成「这场对话已归档 / sidecar 连不上」——
+    三句话三个错。
+    """
+    import json as _json
+
+    from pen import libraries
+    from pen.session import STORE
+
+    libraries.ensure_default()
+    c = TestClient(app)
+    hid = c.get("/v1/handbooks").json()["handbooks"][0]["handbook_id"]
+    sid = c.post("/v1/sessions", json={"handbook_id": hid}).json()["session_id"]
+    # 把登记表里的原文路径指到一个不存在的文件 = 读者改名或移走了笔记
+    meta = libraries.get(hid)
+    meta_path = libraries._meta_path(hid)
+    raw = _json.loads(meta_path.read_text(encoding="utf-8"))
+    raw["original_path"] = str(meta_path.parent / "moved-away.md")
+    meta_path.write_text(_json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    STORE._items.clear()
+
+    got = c.post(
+        "/v1/chat",
+        json={
+            "session_id": sid,
+            "selected_text": "x",
+            "start_line": 1,
+            "end_line": 1,
+            "chip": "socratic",
+            "user_text": "问一句",
+        },
+    )
+    assert got.status_code == 404
+    detail = got.json()["detail"]
+    assert isinstance(detail, str), "改名那种 404 不该带 session_gone 的 code"
+    assert "重新框选" in detail, detail
 
 
 def test_system_prompt_appends_english_instruction():

@@ -54,7 +54,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.12.5", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.12.6", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -168,19 +168,40 @@ def _meta_or_404(handbook_id: str, lang: str = "zh"):
         raise HTTPException(404, localized(exc, lang)) from exc
 
 
+def _no_session(lang: str) -> HTTPException:
+    """「这场会话没了」。**detail 带机器可读的 code。**
+
+    为什么不能让前端只看 404：`_meta_or_404` 对「笔记被改名或移走」也抛 404，
+    而那条 detail 里有唯一能救读者的一句「请重新框选一次」。前端把任意 404
+    都当成「会话已归档」的话，正确指引就被吞掉，换成一句假因由
+    （「已归档，而且新会话没开起来」——两句都不是真的）。
+
+    走 body 里的 code 而不是响应头：自定义响应头要 CORS `expose_headers` 才读得到，
+    而 detail 这条路 `j()` 本来就在解析，一个地方改完所有调用方都认。
+    """
+    return HTTPException(404, {"code": "session_gone", "message": msg("session.unknown", lang)})
+
+
 def _sse(ev: dict[str, Any]) -> str:
     return f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
 
 
 def _try_lock_session(sess, lang: str = "zh"):
-    # 走 STORE.try_lock 而不是 lock_for + acquire：那两步之间有一条缝，
-    # 内存淘汰正好挤进来就会把 _locks[sid] 换掉，两个线程各拿一把不同的锁
-    # 同时进临界区。抢锁必须和淘汰互斥，所以它整个发生在 store 的 _meta 里。
-    # 传的是整个 sess 不是 sid：抢到锁的同时要把这个实例钉回 _items，见 try_lock。
-    lock = STORE.try_lock(sess)
-    if lock is None:
+    """抢会话锁。**返回 `(锁, 当家实例)`——调用方必须改用还回来的那个 sess。**
+
+    走 STORE.try_lock 而不是 lock_for + acquire：那两步之间有一条缝，
+    内存淘汰正好挤进来就会把 _locks[sid] 换掉，两个线程各拿一把不同的锁
+    同时进临界区。抢锁必须和淘汰互斥，所以它整个发生在 store 的 _meta 里。
+
+    还回来的 sess 可能**不是**传进去的那个：`get()` 到这里之间隔着
+    `_meta_or_404` / `load_index` 几毫秒的磁盘 I/O，手上那个可能已经被淘汰
+    扫走、别人跑完一整轮又写回盘上了。拿旧的接着跑 = 收尾 save 把别人
+    那一轮整个盖掉。详见 `SessionStore.try_lock` 的注释。
+    """
+    got = STORE.try_lock(sess)
+    if got is None:
         raise HTTPException(409, msg("session.busy", lang))
-    return lock
+    return got
 
 
 def _content_fp(path: Path) -> str:
@@ -465,7 +486,7 @@ def get_session(session_id: str, lang: str = Depends(req_lang)) -> dict[str, Any
     try:
         sess = STORE.get(session_id)
     except KeyError as exc:
-        raise HTTPException(404, msg("session.unknown", lang)) from exc
+        raise _no_session(lang) from exc
     retention.touch(session_id)
     return _public_session(sess)
 
@@ -638,7 +659,7 @@ def deep_inbox(
     try:
         sess = STORE.get(session_id)
     except KeyError as exc:
-        raise HTTPException(404, msg("session.unknown", lang)) from exc
+        raise _no_session(lang) from exc
     anchor = sess.last_anchor or {}
     return probe_store.inbox(
         session_id,
@@ -654,7 +675,7 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
     try:
         sess = STORE.get(body.session_id)
     except KeyError as exc:
-        raise HTTPException(404, msg("session.unknown", lang)) from exc
+        raise _no_session(lang) from exc
     if body.chip == "search":
         if sess.pending:
             raise HTTPException(400, msg("approval.pending", lang))
@@ -678,7 +699,7 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
             )
 
         return StreamingResponse(search_gen(), media_type="text/event-stream")
-    lock = _try_lock_session(sess, lang)
+    lock, sess = _try_lock_session(sess, lang)
     try:
         if sess.pending:
             raise HTTPException(400, msg("approval.pending", lang))
@@ -830,8 +851,8 @@ def chat_approve(body: ApproveBody, lang: str = Depends(req_lang)) -> StreamingR
     try:
         sess = STORE.get(body.session_id)
     except KeyError as exc:
-        raise HTTPException(404, msg("session.unknown", lang)) from exc
-    lock = _try_lock_session(sess, lang)
+        raise _no_session(lang) from exc
+    lock, sess = _try_lock_session(sess, lang)
     try:
         if not sess.pending or sess.pending.get("id") != body.pending_id:
             raise HTTPException(400, msg("approval.none", lang))
@@ -890,7 +911,7 @@ def propose(body: ProposeBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
     try:
         sess = STORE.get(body.session_id)
     except KeyError as exc:
-        raise HTTPException(404, msg("session.unknown", lang)) from exc
+        raise _no_session(lang) from exc
     if not sess.last_assistant:
         raise HTTPException(400, msg("writeback.no_answer", lang))
     if not sess.last_anchor:
@@ -901,55 +922,56 @@ def propose(body: ProposeBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
     # 这个端点会写 session.spend（写回那一格的账），所以必须持会话锁——
     # propose_fold_md 的注释写着「请求线程独占」，不持锁那个前提就不成立，
     # 而这里曾经是全仓唯一不持锁却写 session 的路径。
-    lock = _try_lock_session(sess, lang)
+    lock, sess = _try_lock_session(sess, lang)
+    # **一个 try/finally 罩住全部**，不是三段各自 `_save_and_unlock`。
+    # v0.12.6 之前是后者，而从 `path.read_text` 到最后那次 `_save_and_unlock`
+    # 之间**完全裸奔**：`render_new_text` / `unified_diff` / `_content_fp`
+    # 任何一处抛出（笔记在这中间被移走、被换成非 UTF-8），`lock.release()`
+    # 就不执行。锁一漏，这一场对读者是**永久 409「这场对话还在跑」**，
+    # 重启 sidecar 之前解不开——而 v0.12.5 的「永不淘汰持锁会话」还让它
+    # 永久占住一个内存槽，对上限完全豁免。
     try:
-        fold = propose_fold_md(
-            sess,
-            llm=body.merged(),
-            allow_env_fallback=not bool((body.base_url or "").strip()),
-            lang=lang,
+        try:
+            fold = propose_fold_md(
+                sess,
+                llm=body.merged(),
+                allow_env_fallback=not bool((body.base_url or "").strip()),
+                lang=lang,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(400, localized(exc, lang)) from exc
+        try:
+            plan = insertmod.plan_insert(
+                idx,
+                path,
+                line=int(sess.last_anchor["start_line"]),
+                fold_md=fold,
+                summary_hint=body.summary_hint,
+            )
+        except insertmod.InsertError as exc:
+            raise HTTPException(400, localized(exc, lang)) from exc
+        old = path.read_text(encoding="utf-8")
+        new = insertmod.render_new_text(old, plan)
+        diff = insertmod.unified_diff(old, new, path.name)
+        pid = uuid.uuid4().hex
+        _proposal_put(
+            pid,
+            {
+                "handbook_id": sess.handbook_id,
+                "session_id": sess.session_id,
+                "plan": plan,
+                "diff": diff,
+                "original_path": str(path),
+                "content_fp": _content_fp(path),
+            },
         )
-    except RuntimeError as exc:
+        out = _public_proposal(pid, path, plan, diff)
+        # 带上花销：不带的话前端第三格在写回之后纹丝不动，要等下一轮对话的 done
+        # 才补——而这个端点恰恰是读者主动花钱的那一刻。
+        out["spend"] = _merged_spend(sess)
+        return out
+    finally:
         _save_and_unlock(sess, lock)
-        raise HTTPException(400, localized(exc, lang)) from exc
-    except BaseException:
-        _save_and_unlock(sess, lock)
-        raise
-    try:
-        plan = insertmod.plan_insert(
-            idx,
-            path,
-            line=int(sess.last_anchor["start_line"]),
-            fold_md=fold,
-            summary_hint=body.summary_hint,
-        )
-    except insertmod.InsertError as exc:
-        _save_and_unlock(sess, lock)
-        raise HTTPException(400, localized(exc, lang)) from exc
-    except BaseException:
-        _save_and_unlock(sess, lock)
-        raise
-    old = path.read_text(encoding="utf-8")
-    new = insertmod.render_new_text(old, plan)
-    diff = insertmod.unified_diff(old, new, path.name)
-    pid = uuid.uuid4().hex
-    _proposal_put(
-        pid,
-        {
-            "handbook_id": sess.handbook_id,
-            "session_id": sess.session_id,
-            "plan": plan,
-            "diff": diff,
-            "original_path": str(path),
-            "content_fp": _content_fp(path),
-        },
-    )
-    out = _public_proposal(pid, path, plan, diff)
-    # 带上花销：不带的话前端第三格在写回之后纹丝不动，要等下一轮对话的 done
-    # 才补——而这个端点恰恰是读者主动花钱的那一刻。
-    out["spend"] = _merged_spend(sess)
-    _save_and_unlock(sess, lock)
-    return out
 
 
 @app.get("/v1/handbooks/{handbook_id}/outline")
@@ -971,7 +993,7 @@ def retarget(body: RetargetBody, lang: str = Depends(req_lang)) -> dict[str, Any
     try:
         sess = STORE.get(prop["session_id"])
     except KeyError as exc:
-        raise HTTPException(404, msg("session.unknown", lang)) from exc
+        raise _no_session(lang) from exc
     path = Path(prop["original_path"])
     try:
         assert_handbook_path(path, extra_roots=libraries.extra_roots_for(sess.handbook_id))
@@ -1000,7 +1022,7 @@ def apply(body: ApplyBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
     try:
         sess = STORE.get(body.session_id)
     except KeyError as exc:
-        raise HTTPException(404, msg("session.unknown", lang)) from exc
+        raise _no_session(lang) from exc
     if prop["session_id"] != sess.session_id:
         raise HTTPException(403, msg("proposal.wrong_session", lang))
     path = Path(prop["original_path"])
