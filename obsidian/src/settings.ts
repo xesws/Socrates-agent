@@ -13,6 +13,94 @@ export interface PenSettings {
   thinking: ThinkingLevel;
   /** 后台深挖。关掉时前端不轮询，且请求带 deep:false 让后端也不起线程。 */
   deepQuestions: boolean;
+  /** 花销与频率的旋钮。键名用 snake_case，见 LIMIT_SPEC 的注释。 */
+  limits: PenLimits;
+}
+
+/**
+ * 每个旋钮的默认值和夹紧范围。
+ *
+ * **键名故意用 snake_case，和后端线上格式一模一样。** 破一次驼峰规约，
+ * 换掉一张「camelCase ↔ snake_case」映射表——那张表就是下一次
+ * 「两个闸不同源」的入口。
+ *
+ * 这张表和 pen/config.py 的 LIMIT_RANGE + 默认常量是**同一道闸的两个副本**，
+ * 由 scripts/check-limits.mjs 机械地守着不许漂。后端仍然是权威（它无论如何
+ * 都会再夹一遍）；前端这张表只管 UX，但漂了就意味着「界面让你填 900，
+ * 实际生效 300」，读者查不出来。
+ */
+export type LimitSpec = { def: number; min: number; max: number; step?: number };
+
+export const LIMIT_SPEC = {
+  // ── 常用 ──
+  probe_max_per_window: { def: 40, min: 0, max: 1000 },
+  probe_every_n_rounds: { def: 0, min: 0, max: 20 },
+  probe_keep_per_run: { def: 2, min: 1, max: 5 },
+  max_tokens_chat: { def: 0, min: 0, max: 4000000, step: 1000 },
+  max_tokens_probe: { def: 0, min: 0, max: 1000000, step: 1000 },
+  max_tokens_cross_book: { def: 0, min: 0, max: 4000000, step: 1000 },
+  // ── 高级 ──
+  max_tool_rounds: { def: 100, min: 1, max: 200 },
+  cross_book_chars: { def: 24000, min: 0, max: 400000, step: 1000 },
+  cross_book_reads: { def: 8, min: 0, max: 100 },
+  probe_max_per_session: { def: 8, min: 0, max: 200 },
+  probe_pending_cap: { def: 3, min: 1, max: 50 },
+  probe_max_reads: { def: 2, min: 0, max: 8 },
+  probe_read_lines: { def: 80, min: 10, max: 400 },
+  probe_timeout_s: { def: 150, min: 30, max: 300 },
+  probe_min_reply_chars: { def: 80, min: 0, max: 2000 },
+  probe_concurrency: { def: 2, min: 1, max: 8 },
+} satisfies Record<string, LimitSpec>;
+
+export type LimitKey = keyof typeof LIMIT_SPEC;
+export type PenLimits = Record<LimitKey, number>;
+
+/** 常用区那几项，按界面顺序。其余全进高级区。 */
+export const COMMON_LIMITS: LimitKey[] = [
+  "probe_max_per_window",
+  "probe_every_n_rounds",
+  "probe_keep_per_run",
+  "max_tokens_chat",
+  "max_tokens_probe",
+  "max_tokens_cross_book",
+];
+
+export const ADVANCED_LIMITS: LimitKey[] = (
+  Object.keys(LIMIT_SPEC) as LimitKey[]
+).filter((k) => !COMMON_LIMITS.includes(k));
+
+export function clampLimit(k: LimitKey, v: unknown): number {
+  const spec = LIMIT_SPEC[k];
+  // 空串必须走默认。`Number("")` 是 0 且 isFinite，直接判会把「清空输入框」
+  // 变成「把上限设成 0」——而跨书那两项设成 0 就是彻底不翻别的书了。
+  const raw = typeof v === "number" ? String(v) : String(v ?? "").trim();
+  if (raw === "") return spec.def;
+  const num = Number(raw);
+  if (!Number.isFinite(num)) return spec.def;
+  return Math.min(Math.max(Math.round(num), spec.min), spec.max);
+}
+
+export function coerceLimits(raw: unknown): PenLimits {
+  const src = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const out = {} as PenLimits;
+  for (const k of Object.keys(LIMIT_SPEC) as LimitKey[]) out[k] = clampLimit(k, src[k]);
+  return out;
+}
+
+/**
+ * 只发**改过**的那几个；一个都没动就返回 undefined，请求体里连 limits
+ * 这个键都不出现。
+ *
+ * 这是让「上线当天逐字节一致」从口号变成可断言事实的唯一办法，
+ * 也顺带让服务端将来能改默认值而不被老客户端的全量 payload 钉死。
+ */
+export function limitsPayload(s: PenSettings): Record<string, number> | undefined {
+  const lim = coerceLimits(s.limits);
+  const out: Record<string, number> = {};
+  for (const k of Object.keys(LIMIT_SPEC) as LimitKey[]) {
+    if (lim[k] !== LIMIT_SPEC[k].def) out[k] = lim[k];
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 export const DEFAULT_SETTINGS: PenSettings = {
@@ -23,6 +111,7 @@ export const DEFAULT_SETTINGS: PenSettings = {
   model: "deepseek-v4-flash",
   thinking: "off",
   deepQuestions: true,
+  limits: coerceLimits({}),
 };
 
 const THINKING: ThinkingLevel[] = ["off", "low", "medium", "high"];
@@ -61,6 +150,40 @@ export class PenSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
+  /**
+   * 一个数字旋钮。
+   *
+   * 控件用 addText + inputEl.type="number"，**不用 addSlider**：
+   * cross_book_chars 是 0–400000，滑块上根本点不准 24000；而且精确值必须能敲。
+   * 本仓从没用过 addSlider（新 API 面），但已经在摸 inputEl（API Key 那项的
+   * type="password"），所以这条是家法。
+   */
+  private num(root: HTMLElement, key: LimitKey, name: string, desc: string): void {
+    // 显式标注：satisfies 保留了字面量类型，不标的话没写 step 的那几项上
+    // 读不到这个字段。
+    const spec: LimitSpec = LIMIT_SPEC[key];
+    new Setting(root)
+      .setName(name)
+      .setDesc(`${desc}${t().setDefaultHint(spec.def)}`)
+      .addText((c) => {
+        c.inputEl.type = "number";
+        c.inputEl.min = String(spec.min);
+        c.inputEl.max = String(spec.max);
+        c.inputEl.step = String(spec.step ?? 1);
+        c.inputEl.inputMode = "numeric";
+        c.setValue(String(this.plugin.settings.limits[key])).onChange((v) => {
+          // 规矩①：当场夹紧再存。但**不回写输入框**——边打边夹会让「1」在你
+          // 打到「150」之前就跳成 min，输入框会跟人打架。
+          this.plugin.settings.limits[key] = clampLimit(key, v);
+          this.plugin.saveSettingsSoon();
+        });
+        // 失焦时才把真正存下的值显回去，读者才知道系统认了几。
+        c.inputEl.addEventListener("blur", () => {
+          c.setValue(String(this.plugin.settings.limits[key]));
+        });
+      });
+  }
+
   display(): void {
     const { containerEl } = this;
     const s = t();
@@ -69,6 +192,8 @@ export class PenSettingTab extends PluginSettingTab {
     // 也不重复插件名——设置侧栏已经写着 Socrates Pen 了。
     containerEl.createEl("p", { cls: "setting-item-description", text: s.setIntro1 });
     containerEl.createEl("p", { cls: "setting-item-description", text: s.setIntro2 });
+
+    new Setting(containerEl).setName(s.setSecCommon).setHeading();
 
     new Setting(containerEl)
       .setName(s.setLangName) // 两张表都写成双语，切错了还找得回来
@@ -151,6 +276,10 @@ export class PenSettingTab extends PluginSettingTab {
         }),
       );
 
+    for (const k of COMMON_LIMITS) {
+      this.num(containerEl, k, s.limitName(k), s.limitDesc(k));
+    }
+
     new Setting(containerEl)
       .setName("Sidecar URL")
       .setDesc(s.setSidecarDesc)
@@ -163,5 +292,15 @@ export class PenSettingTab extends PluginSettingTab {
             this.plugin.saveSettingsSoon();
           }),
       );
+
+    // 高级区。用 <details> 而不是 toggle + this.display()：重画会违背
+    // 「只有语言那一项才重画」的规矩，而且会把正在编辑的数字输入框的
+    // 焦点和光标位置一起吃掉。展开状态不落盘 = 每次进来默认折叠。
+    const adv = containerEl.createEl("details", { cls: "sp-set-advanced" });
+    adv.createEl("summary", { text: s.setSecAdvanced });
+    adv.createEl("p", { cls: "setting-item-description", text: s.setAdvancedNote });
+    for (const k of ADVANCED_LIMITS) {
+      this.num(adv, k, s.limitName(k), s.limitDesc(k));
+    }
   }
 }

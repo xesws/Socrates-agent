@@ -29,6 +29,48 @@ const k = (v: number | undefined): string => {
   return `${(v / 1000).toFixed(a >= 100000 ? 0 : 1)}k`;
 };
 
+
+/**
+ * 每个旋钮的「名字 / 一句人话说明」。和 settings.ts 的 LIMIT_SPEC 键一一对应，
+ * 由 scripts/check-limits.mjs 守着不许缺。
+ *
+ * 三句必须诚实的话都在这儿：主对话那个不是硬上限、深挖存多了也只放 1 条、
+ * 超时调大会让当轮看不见结果。
+ */
+const LIMIT_TEXT_ZH: Record<string, [string, string]> = {
+  probe_max_per_window: ["每小时最多深挖几次", "跨会话累计。开一堆新会话也绕不过它。"],
+  probe_every_n_rounds: [
+    "两次深挖至少隔几轮",
+    "填 0 就是每一轮实质回复都探（也是现在的行为）。",
+  ],
+  probe_keep_per_run: [
+    "每次深挖最多存几条",
+    "注意：**每轮仍然只放出 1 条**，多存的排队等下一轮，攒过 6 轮就丢。所以调大主要是在增大丢弃堆。",
+  ],
+  max_tokens_chat: [
+    "每轮对话的 token 上限",
+    "0 = 不限。这是**工具循环**的预算：到线之后师傅还会用手上的材料出一次答案，那一枪不受限，所以实际花销会略超这个数。",
+  ],
+  max_tokens_probe: ["单次后台深挖的 token 上限", "0 = 不限。填得比一次深挖的开销还小，就一次都不探。"],
+  max_tokens_cross_book: [
+    "翻别的教材的 token 上限",
+    "0 = 不限。它管的是「这一轮已经烧到多少就别再开新书」——别的书读进来之后每轮都要重发，代价是复利。",
+  ],
+  max_tool_rounds: ["师傅一轮最多翻几次书", "翻本册不额外收费，跨教材另有下面两道闸。"],
+  cross_book_chars: ["一轮里翻别的教材的字符预算", "读**当前这本**不计，本职阅读一次都不受影响。"],
+  cross_book_reads: ["一轮里翻别的教材的次数上限", "光封字节封不住：模型每次只读一行时，字节预算永远用不完。"],
+  probe_max_per_session: ["每场对话最多深挖几次", "挡不住「开一堆新会话」，那靠上面的每小时配额。"],
+  probe_pending_cap: ["手里攒够几条没抛就先停探", "省的不是频率，是浪费。"],
+  probe_max_reads: ["一次深挖最多定向读几段正文", "读取由代码执行，不给模型自主循环的机会。"],
+  probe_read_lines: ["每段最多读多少行", ""],
+  probe_timeout_s: [
+    "深挖单次调用超时（秒）",
+    "调大之后深挖可能跑到你当轮看不见结果；题不会丢，会在下一轮搭便车抛出来。",
+  ],
+  probe_min_reply_chars: ["回复至少多少字才值得深挖", "太短的多半是一句反问，从那儿挖不出好问题。"],
+  probe_concurrency: ["同时最多几个深挖在跑", "这是整台 sidecar 的数，不是每本书的。"],
+};
+
 export const zh = {
   // ── 品牌 / 视图元数据 ──
   appName: "点读笔",
@@ -172,6 +214,16 @@ export const zh = {
   setDeepName: "后台深挖",
   setDeepDesc: "师傅答完之后，后台再花一次调用去想一个跨关的问题，想到了才冒出来。关掉就只留即时的那两条。",
   tipDeepPrefix: "◆ ",
+  // ── 设置页分区与旋钮（v0.10.7）──
+  setSecCommon: "常用",
+  setSecAdvanced: "高级（花钱和速度的闸，不确定就别动）",
+  setAdvancedNote:
+    "下面这些默认值是实测调出来的。改之前先想清楚要省的是什么——" +
+    "多数时候该动的是上面那三个 token 上限，不是这里。",
+  setDefaultHint: (v: number): string => `默认 ${v}。`,
+  limitName: (k: string): string => LIMIT_TEXT_ZH[k]?.[0] ?? k,
+  limitDesc: (k: string): string => LIMIT_TEXT_ZH[k]?.[1] ?? "",
+
   setSidecarDesc:
     "本机点读笔地址。一般不用改。先在本机终端运行：python -m pen --host 127.0.0.1 --port 8765",
 };

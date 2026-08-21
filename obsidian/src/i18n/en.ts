@@ -21,6 +21,38 @@ const k = (v: number | undefined): string => {
  *
  * 语气对齐中文表：师傅带实习生，口语，短句，不要客服腔。
  */
+
+const LIMIT_TEXT_EN: Record<string, [string, string]> = {
+  probe_max_per_window: ["Deep digs per hour", "Counted across sessions — opening new ones won't get around it."],
+  probe_every_n_rounds: ["Rounds between deep digs", "0 means dig on every substantive reply (today's behaviour)."],
+  probe_keep_per_run: [
+    "Questions kept per dig",
+    "Note: **only one is released per round** — the rest queue up and are dropped after 6 rounds. Raising this mostly grows the discard pile.",
+  ],
+  max_tokens_chat: [
+    "Token cap per turn",
+    "0 = no cap. This budgets the **tool loop**: once it's hit, the tutor still writes one answer from what it already has, and that shot is not capped — so actual spend runs a little over.",
+  ],
+  max_tokens_probe: ["Token cap per background dig", "0 = no cap. Set it below the cost of one dig and no dig runs at all."],
+  max_tokens_cross_book: [
+    "Token cap for reading other textbooks",
+    "0 = no cap. It answers «this turn has burned X already, don't open another book» — other books get resent every round, so the cost compounds.",
+  ],
+  max_tool_rounds: ["Tool calls per answer", "Reading this handbook is free; other textbooks have the two gates below."],
+  cross_book_chars: ["Character budget for other textbooks", "Reading **this** handbook doesn't count — normal reading is never affected."],
+  cross_book_reads: ["Read count for other textbooks", "A byte budget alone can't cap this: reading one line at a time never exhausts it."],
+  probe_max_per_session: ["Deep digs per conversation", "Doesn't stop «open lots of new sessions» — the hourly quota does."],
+  probe_pending_cap: ["Stop digging once this many are queued", "This saves waste, not frequency."],
+  probe_max_reads: ["Passages a dig may read", "Reads are executed by code — the model never gets a loop of its own."],
+  probe_read_lines: ["Lines per passage", ""],
+  probe_timeout_s: [
+    "Timeout per dig call (seconds)",
+    "Raise it and a dig may outlast the turn you're on; questions aren't lost, they ride along on the next round.",
+  ],
+  probe_min_reply_chars: ["Minimum reply length to dig", "Short replies are usually a single counter-question — nothing to dig into."],
+  probe_concurrency: ["Concurrent digs", "This is per sidecar, not per book."],
+};
+
 export const en: Dict = {
   appName: "Socrates Pen",
   viewTitle: "Socrates Pen",
@@ -154,6 +186,15 @@ export const en: Dict = {
   setDeepName: "Dig deeper in the background",
   setDeepDesc: "After each answer, spend one more call looking for a question that reaches across chapters. It only appears if one turns up. Turn this off to keep just the two instant ones.",
   tipDeepPrefix: "\u25c6 ",
+  setSecCommon: "Basics",
+  setSecAdvanced: "Advanced (cost and speed gates — leave them alone if unsure)",
+  setAdvancedNote:
+    "These defaults were tuned against real runs. Before changing one, be clear about what you're saving — " +
+    "most of the time the knob you want is one of the three token caps above, not these.",
+  setDefaultHint: (v) => `Default ${v}.`,
+  limitName: (k) => LIMIT_TEXT_EN[k]?.[0] ?? k,
+  limitDesc: (k) => LIMIT_TEXT_EN[k]?.[1] ?? "",
+
   setSidecarDesc:
     "Where the local pen listens. You rarely need to touch this. Start it with: python -m pen --host 127.0.0.1 --port 8765",
 };

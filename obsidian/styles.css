@@ -719,3 +719,20 @@
 .socrates-pen .is-off.is-off {
   display: none;
 }
+
+/* 设置页的「高级」折叠区。展开状态不落盘——每次进设置页默认折叠，
+   这是读者要的。样式只借主题变量，不硬编码任何色值。 */
+.sp-set-advanced > summary {
+  cursor: pointer;
+  padding: var(--size-4-2) 0;
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+}
+
+.sp-set-advanced > summary:hover {
+  color: var(--text-normal);
+}
+
+.sp-set-advanced[open] > summary {
+  color: var(--text-normal);
+}

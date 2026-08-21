@@ -104,6 +104,18 @@ for (const [name, fn] of [["spendSession", enS.spendSession], ["spendTurn", enS.
   check(`${name} 不出现货币符号`, !/[¥$€£]/.test(fn(12400)));
 }
 
+// v0.10.7 设置页两区
+i18n.setLang("zh");
+const zhSec = i18n.t();
+i18n.setLang("en");
+const enSec = i18n.t();
+for (const k of ["setSecCommon", "setSecAdvanced", "setAdvancedNote"]) {
+  check(`${k} 两边都在且确实翻过`, Boolean(zhSec[k]) && Boolean(enSec[k]) && zhSec[k] !== enSec[k]);
+}
+check("默认值提示带得上数字", zhSec.setDefaultHint(40).includes("40") && enSec.setDefaultHint(40).includes("40"));
+check("不认识的旋钮名回落成键本身而不是崩", zhSec.limitName("没这个键") === "没这个键");
+check("不认识的旋钮说明回落成空串", zhSec.limitDesc("没这个键") === "");
+
 // 模块加载时的 arity 自检不该报警（报了说明英文表漏用了占位符）
 check("中英表函数形参个数一致（无 arity 警告）", warnings.length === 0);
 if (warnings.length) warnings.forEach((w) => console.error("   " + w));

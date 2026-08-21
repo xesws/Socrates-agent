@@ -1,6 +1,7 @@
 import { Notice, Plugin, setTooltip, type Command, type WorkspaceLeaf } from "obsidian";
 import { makeApi } from "./api";
 import {
+  coerceLimits,
   coerceThinking,
   DEFAULT_SETTINGS,
   PenSettingTab,
@@ -137,9 +138,19 @@ export default class SocratesPenPlugin extends Plugin {
     if (raw.baseUrl !== undefined) legacy.baseUrl = raw.baseUrl;
     if (raw.model !== undefined) legacy.model = raw.model;
     if (raw.thinking !== undefined) legacy.thinking = raw.thinking;
-    this.settings = { ...DEFAULT_SETTINGS, ...legacy, ...(raw.settings || {}) };
+    this.settings = {
+      ...DEFAULT_SETTINGS,
+      ...legacy,
+      ...(raw.settings || {}),
+      // 展开是**浅**的：data.json 里只存了一半的 limits 会把另一半整个吃掉。
+      // coerceLimits 自己也会补全，这里再显式深一层是双保险——少写这一层，
+      // 「只改过一个数」的库会静默丢掉其余十几个自定义值。
+      limits: { ...DEFAULT_SETTINGS.limits, ...((raw.settings || {}).limits || {}) },
+    };
     this.settings.thinking = coerceThinking(this.settings.thinking);
     this.settings.lang = coerceLangPref(this.settings.lang);
+    // 手改过、或者被 Sync 弄坏的 data.json 会带来字符串、null、NaN。
+    this.settings.limits = coerceLimits(this.settings.limits);
     this.notes = raw.notes || {};
   }
 

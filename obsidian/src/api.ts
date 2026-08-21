@@ -1,6 +1,6 @@
 import { currentLang } from "./i18n";
 import type { PenSettings } from "./settings";
-import { llmPayload } from "./settings";
+import { limitsPayload, llmPayload } from "./settings";
 import type {
   DeepInbox,
   HandbookMeta,
@@ -83,6 +83,8 @@ export async function streamChat(
   onEvent: (ev: Record<string, unknown>) => void,
   settings?: PenSettings,
 ): Promise<void> {
+  // 算一次存下来，别在下面调两遍。
+  const lim = settings ? limitsPayload(settings) : undefined;
   const res = await fetch(joinUrl(baseUrl, "/v1/chat"), {
     method: "POST",
     headers: {
@@ -92,6 +94,9 @@ export async function streamChat(
     body: JSON.stringify({
       ...body,
       ...(settings ? llmPayload(settings) : {}),
+      // 只发改过的那几个；一个都没动时 limitsPayload 返回 undefined，
+      // 请求体里连 limits 这个键都不出现——「上线当天逐字节一致」就是这么来的。
+      ...(lim ? { limits: lim } : {}),
     }),
   });
   await readSse(res, onEvent);
@@ -103,6 +108,7 @@ export async function streamApprove(
   onEvent: (ev: Record<string, unknown>) => void,
   settings?: PenSettings,
 ): Promise<void> {
+  const lim = settings ? limitsPayload(settings) : undefined;
   const res = await fetch(joinUrl(baseUrl, "/v1/chat/approve"), {
     method: "POST",
     headers: {
@@ -112,6 +118,9 @@ export async function streamApprove(
     body: JSON.stringify({
       ...body,
       ...(settings ? llmPayload(settings) : {}),
+      // 只发改过的那几个；一个都没动时 limitsPayload 返回 undefined，
+      // 请求体里连 limits 这个键都不出现——「上线当天逐字节一致」就是这么来的。
+      ...(lim ? { limits: lim } : {}),
     }),
   });
   await readSse(res, onEvent);
