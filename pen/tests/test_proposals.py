@@ -14,7 +14,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "mini_handbook.md"
 
 FOLD = """<details>
 
-<summary>🔍 实例 1：点读笔补的例子</summary>
+<summary>🔍 实例 1：苏格拉底补的例子</summary>
 
 ```text
 伪代码：shell 是一类，Bash 是一个

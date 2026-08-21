@@ -1,4 +1,4 @@
-"""Live 点读笔 scenarios. Not part of default pytest (needs API + key)."""
+"""Live 苏格拉底 scenarios. Not part of default pytest (needs API + key)."""
 
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ CASES = [
     Case(
         1,
         6086,
-        "# 灰色地带（Q8）：催模型，不是 input() 等师傅",
+        "# 灰色地带（Q8）：催模型，不是 input() 等苏格拉底",
         "这段 else 和路线 b 的 if not tool_calls 差在分类还是差在停法？"
         "如果把 Codex 的 tool_calls 空列表写成 is not None，会不会造出第二种灰？",
         ["灰", "tool_calls"],
@@ -126,7 +126,7 @@ CASES = [
         7,
         8191,
         'old_string 在文件中出现多次，请补充更多上下文使其唯一',
-        "点读笔要往 1.3 万行手册里插 details。old_string 必须唯一，和 Codex apply_patch 比谁更适合写教材？"
+        "苏格拉底要往 1.3 万行手册里插 details。old_string 必须唯一，和 Codex apply_patch 比谁更适合写教材？"
         "回读那一行当锚会撞车吗？",
         ["唯一", "回读"],
     ),
@@ -149,7 +149,7 @@ CASES = [
     Case(
         10,
         6086,
-        "# 灰色地带（Q8）：催模型，不是 input() 等师傅",
+        "# 灰色地带（Q8）：催模型，不是 input() 等苏格拉底",
         "如果你连着 read_file 翻完全书再报步数用尽，和路线 a 空转到 range(20) 同构吗？"
         "差在分类失败还是不肯收工？",
         ["步数", "灰"],

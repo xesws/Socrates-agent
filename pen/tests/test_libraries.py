@@ -109,7 +109,7 @@ def test_shelf_digest_is_empty_when_only_one_book(tmp_path, monkeypatch) -> None
 
 def test_shelf_digest_with_paths_does_not_share_cache_with_plain(tmp_path, monkeypatch) -> None:
     """两种格式共用一个缓存键的话，先跑的那次会在 TTL 内把自己的格式喂给后来者。
-    症状是「有时能读有时读不了」——实时层拿到没 path 的那份，师傅就只能猜文件名。"""
+    症状是「有时能读有时读不了」——实时层拿到没 path 的那份，苏格拉底就只能猜文件名。"""
     from pen import config, library_scan
 
     monkeypatch.setattr(config, "PEN_DIR", tmp_path / ".pen")
@@ -170,7 +170,7 @@ def test_shelf_digest_prefers_the_copy_in_the_readers_own_vault(tmp_path, monkey
 def test_shelf_only_lists_books_read_file_can_actually_reach(tmp_path, monkeypatch) -> None:
     """书架的闸曾经是全局 handbook_allow_roots()，比 read_file 的闸宽得多。
     当前手册在仓库根（allow_root 为 None，沙箱根只有仓库根）而 PEN_ALLOW_ROOTS
-    指着 vault 时，书架会印出 vault 里那本，师傅照着读 → 「不在本手册允许的根内」。
+    指着 vault 时，书架会印出 vault 里那本，苏格拉底照着读 → 「不在本手册允许的根内」。
     印一条读不到的路径比不印更糟：白跑一次工具，还得道歉。"""
     from pen import config, library_scan, readtool
     from pen.sandbox import reading_roots
@@ -203,7 +203,7 @@ def test_shelf_only_lists_books_read_file_can_actually_reach(tmp_path, monkeypat
 def test_prefer_nearby_uses_the_reading_root_not_the_parent_dir(tmp_path, monkeypatch) -> None:
     """手册放在 vault/level0/ 这种子目录里时，按父目录算「同一棵树」，
     vault 根下的兄弟书就不算近了，退到 mtime 比大小——仓库那份被 git pull
-    刷新过就会赢，又绕回「师傅照着旧版讲」。"""
+    刷新过就会赢，又绕回「苏格拉底照着旧版讲」。"""
     from pen import config, library_scan
 
     monkeypatch.setattr(config, "PEN_DIR", tmp_path / ".pen")
@@ -235,7 +235,7 @@ def test_prefer_nearby_uses_the_reading_root_not_the_parent_dir(tmp_path, monkey
 
 def test_shelf_cache_key_covers_registered_and_roots(tmp_path, monkeypatch) -> None:
     """缓存键只有 current_path 时：读者刚在 Obsidian 里打开另一本书（登记），
-    60 秒内书架里看不见它，师傅照旧答「我没读到」——要修的症状原样复发。
+    60 秒内书架里看不见它，苏格拉底照旧答「我没读到」——要修的症状原样复发。
     roots 同理：实时层传 vault 根、probe 传 REPO_ROOT，共用一个键就是互相投毒。"""
     from pen import config, library_scan
 
@@ -330,7 +330,7 @@ def test_shelf_visibility_equals_read_file_reachability_both_ways(tmp_path, monk
 
     v0.8.7 修的是一边（书架印出读不到的路径），修完漂到另一边：
     app.py 传 extra_roots_for(hid)，而 stream_chat 会往里加 REPO_ROOT，
-    于是仓库根里的教材师傅读得到、书架却不列。等式必须由同一个函数保证。
+    于是仓库根里的教材苏格拉底读得到、书架却不列。等式必须由同一个函数保证。
 
     注意等式**不是**无条件的严格相等：同一本书在仓库根和 vault 各有一份时，
     `shelf_digest` 按标题去重只留一份，另一份 `read_file` 读得到但不列——
@@ -413,7 +413,7 @@ def test_probe_reading_roots_keep_their_own_semantics(tmp_path, monkeypatch) -> 
 def test_the_readers_own_tree_beats_mtime_when_both_copies_are_in_range(tmp_path, monkeypatch) -> None:
     """实时层的读取根是 [REPO_ROOT, vault]——同名的两份拷贝**都**算「近」，
     分不出胜负就退到纯 mtime。读者 git pull 刷新了仓库那份、vault 那份没动，
-    师傅就照着仓库那份讲，而读者在编辑的是 vault 那份。
+    苏格拉底就照着仓库那份讲，而读者在编辑的是 vault 那份。
     今天真实登记表上 vault 那份更新所以碰巧对，那是运气。"""
     import os
 

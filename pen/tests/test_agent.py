@@ -715,7 +715,7 @@ def test_tool_rounds_are_deliberately_not_carried_across_approval() -> None:
     跨书预算是「这一轮总共能花多少钱」，审批不该让它翻倍；
     轮数是「别让一次不受打断的循环跑飞」，而读者点那一下就是真实的断路器。
     跟着清零的话，暂停前用满轮数的会话在批准之后第 0 轮就被收口枪顶住，
-    读者看到的是「批准完师傅答得莫名其妙地敷衍」。
+    读者看到的是「批准完苏格拉底答得莫名其妙地敷衍」。
     """
     import inspect
 
@@ -930,7 +930,7 @@ def test_turn_cap_resets_every_turn(monkeypatch, tmp_path: Path) -> None:
     """**这是 v0.10.6 漏掉的那条。**
 
     turn_spend 只累加不清零的话，名为「每轮上限」的旋钮实际是「整场一次性
-    预算」：用完之后每一轮都直接进收口枪，师傅**永远不再翻手册**，而且
+    预算」：用完之后每一轮都直接进收口枪，苏格拉底**永远不再翻手册**，而且
     turn_spend 落盘，重启 sidecar 也救不回来。
 
     v0.10.6 的五条上限测试**全部只跑一轮**——凡是「每轮重置」型的状态，
@@ -956,7 +956,7 @@ def test_turn_cap_resets_every_turn(monkeypatch, tmp_path: Path) -> None:
     assert rounds[0] > 0, "第一轮就该能翻书"
     assert all(r == rounds[0] for r in rounds), (
         f"每一轮的翻书枪数该一样（预算每轮重置），实际 {rounds}"
-        "——全 0 就说明 turn_spend 没清零，师傅从第二轮起再也不翻书了"
+        "——全 0 就说明 turn_spend 没清零，苏格拉底从第二轮起再也不翻书了"
     )
 
 

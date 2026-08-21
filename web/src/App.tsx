@@ -111,7 +111,7 @@ export function App() {
   const startNewSession = useCallback(async () => {
     if (!current) return;
     const ok = window.confirm(
-      "新开会话会丢掉当前这场的模型记忆。框选还在，只是师傅不记得上一场了。确定？",
+      "新开会话会丢掉当前这场的模型记忆。框选还在，只是苏格拉底不记得上一场了。确定？",
     );
     if (!ok) return;
     setErr("");
@@ -211,11 +211,11 @@ export function App() {
         .join(" ")}
     >
       <aside className="rail">
-        <p className="eyebrow">师傅的工作台</p>
-        <h1>{diagnosing ? "诊断舱" : "点读笔"}</h1>
+        <p className="eyebrow">苏格拉底的工作台</p>
+        <h1>{diagnosing ? "诊断舱" : "苏格拉底"}</h1>
         <p className="lede">
           {diagnosing
-            ? "看轨迹、看短板、看关键词。这里不是点读笔。"
+            ? "看轨迹、看短板、看关键词。这里不是苏格拉底。"
             : "框选原文，就地追问。写回改的是磁盘上那一份。"}
         </p>
         <label className="book-pick">

@@ -49,14 +49,14 @@ const LIMIT_TEXT_ZH: Record<string, [string, string]> = {
   ],
   max_tokens_chat: [
     "每轮对话的 token 上限",
-    "0 = 不限。这是**工具循环**的预算：到线之后师傅还会用手上的材料出一次答案，那一枪不受限。所以实际花销会超出你填的数——超多少取决于这一轮已经翻了多少东西，不是一个固定比例。",
+    "0 = 不限。这是**工具循环**的预算：到线之后苏格拉底还会用手上的材料出一次答案，那一枪不受限。所以实际花销会超出你填的数——超多少取决于这一轮已经翻了多少东西，不是一个固定比例。",
   ],
   max_tokens_probe: ["单次后台深挖的 token 上限", "0 = 不限。填得比一次深挖的开销还小，就一次都不探。"],
   max_tokens_cross_book: [
     "翻别的教材的 token 上限",
     "0 = 不限。它管的是「这一轮已经烧到多少就别再开新书」——别的书读进来之后每轮都要重发，代价是复利。",
   ],
-  max_tool_rounds: ["师傅一轮最多翻几次书", "翻本册不额外收费，跨教材另有下面两道闸。"],
+  max_tool_rounds: ["苏格拉底一轮最多翻几次书", "翻本册不额外收费，跨教材另有下面两道闸。"],
   cross_book_chars: ["一轮里翻别的教材的字符预算", "读**当前这本**不计，本职阅读一次都不受影响。"],
   cross_book_reads: ["一轮里翻别的教材的次数上限", "光封字节封不住：模型每次只读一行时，字节预算永远用不完。"],
   probe_max_per_session: ["每场对话最多深挖几次", "挡不住「开一堆新会话」，那靠上面的每小时配额。"],
@@ -76,11 +76,11 @@ const LIMIT_TEXT_ZH: Record<string, [string, string]> = {
 
 export const zh = {
   // ── 品牌 / 视图元数据 ──
-  appName: "点读笔",
-  viewTitle: "点读笔",
+  appName: "苏格拉底",
+  viewTitle: "苏格拉底",
 
-  // ── 命令 / ribbon（Obsidian 会自动加「Socrates Pen: 」前缀，这里别再写一遍）──
-  ribbonTooltip: "打开点读笔",
+  // ── 命令 / ribbon（Obsidian 会自动加「Socrates: 」前缀，这里别再写一遍）──
+  ribbonTooltip: "打开苏格拉底",
   cmdAskSelection: "用当前选区提问",
   cmdOpenPanel: "打开面板",
 
@@ -88,7 +88,7 @@ export const zh = {
   btnUseSelection: "用当前选区",
   btnAsk: "问",
   askPlaceholder: "自己问一句…",
-  tipUseSelection: "在笔记里划一段，再点这里登记给师傅",
+  tipUseSelection: "在笔记里划一段，再点这里交给苏格拉底",
 
   // ── 品牌条工具按钮 ──
   tipNewSession: "另起一场，丢掉这场的模型记忆和选区",
@@ -102,7 +102,7 @@ export const zh = {
   healthOkSettings: (model: string): string => `sidecar 正常 · 设置页 · ${model}`,
   healthOkFallback: (source: string, model: string): string =>
     `sidecar 正常 · 开发回退 ${source} · ${model}`,
-  healthNoKey: "sidecar 在，请到设置 → Socrates Pen 填写 API Key",
+  healthNoKey: "sidecar 在，请到设置 → Socrates 填写 API Key",
   healthDown: "连不上 sidecar",
 
   // ── 错误 ──
@@ -130,7 +130,7 @@ export const zh = {
 
   // ── 对话气泡 ──
   kickerYou: "你",
-  kickerPen: "点读笔",
+  kickerPen: "苏格拉底",
   kickerReadTool: "翻手册",
   kickerEditTool: "改原文",
   toolOk: "成功",
@@ -145,13 +145,13 @@ export const zh = {
 
   // ── 状态行。键对齐 pen/tutor.py 的 ev.phase ──
   phases: {
-    thinking: "师傅在想…",
+    thinking: "苏格拉底在想…",
     writing: "在写…",
     reading: "在翻手册…",
     tool: "在动手…",
   } as Record<string, string>,
   statusEditing: "在改原文…",
-  statusDeclined: "已拒绝，让师傅收尾…",
+  statusDeclined: "已拒绝，让苏格拉底收尾…",
   statusAwaitApproval: "等你批准这次编辑",
   statusRollingBack: "在回到上一版…",
   statusRedoing: "在重做…",
@@ -185,10 +185,10 @@ export const zh = {
 
   // ── main.ts ──
   errNoRightLeaf: "没有可用的右侧叶子",
-  errViewNotMounted: "点读笔视图未挂上",
+  errViewNotMounted: "苏格拉底视图未挂上",
   errNeedDesktopVault: "需要桌面库（FileSystemAdapter）",
   noticeSidecarDown:
-    "sidecar 未启动。先在本机终端运行：python -m pen；模型在设置 → Socrates Pen 里填",
+    "sidecar 未启动。先在本机终端运行：python -m pen；模型在设置 → Socrates 里填",
 
   // ── 芯片。键对齐后端 pen/session.py 的 FIXED_CHIPS[].id ──
   chips: {
@@ -215,7 +215,7 @@ export const zh = {
   setThinkingOff: "off（默认）",
   deepQuotaSpent: "深挖已用满",
   setDeepName: "后台深挖",
-  setDeepDesc: "师傅答完之后，后台再花一次调用去想一个跨关的问题，想到了才冒出来。关掉就只留即时的那两条。",
+  setDeepDesc: "苏格拉底答完之后，后台再花一次调用去想一个跨关的问题，想到了才冒出来。关掉就只留即时的那两条。",
   tipDeepPrefix: "◆ ",
   // ── 设置页分区与旋钮（v0.10.7）──
   setSecUsage: "花销",
@@ -238,7 +238,7 @@ export const zh = {
   limitDesc: (k: string): string => LIMIT_TEXT_ZH[k]?.[1] ?? "",
 
   setSidecarDesc:
-    "本机点读笔地址。一般不用改。先在本机终端运行：python -m pen --host 127.0.0.1 --port 8765",
+    "本机苏格拉底服务的地址。一般不用改。先在本机终端运行：python -m pen --host 127.0.0.1 --port 8765",
 };
 
 export type Dict = typeof zh;

@@ -6,7 +6,7 @@ import argparse
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="苏格拉底点读笔")
+    parser = argparse.ArgumentParser(description="苏格拉底")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()

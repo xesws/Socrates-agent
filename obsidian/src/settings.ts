@@ -198,7 +198,7 @@ export class PenSettingTab extends PluginSettingTab {
     const s = t();
     containerEl.empty();
     // 标题用 setHeading 而不是裸 h2：Obsidian 现行插件规范。
-    // 也不重复插件名——设置侧栏已经写着 Socrates Pen 了。
+    // 也不重复插件名——设置侧栏已经写着 Socrates 了。
     containerEl.createEl("p", { cls: "setting-item-description", text: s.setIntro1 });
     containerEl.createEl("p", { cls: "setting-item-description", text: s.setIntro2 });
 

@@ -252,7 +252,7 @@ export function PenPanel({
     setBusy(true);
     setErr("");
     setUsage("");
-    setStatus("师傅在想…");
+    setStatus("苏格拉底在想…");
     const shown =
       userText.trim() || liveChips.find((c) => c.id === chip)?.label || chip;
     onMsgs((m) => [...m, { role: "user", text: shown }]);
@@ -457,7 +457,7 @@ export function PenPanel({
     .join(" ");
 
   return (
-    <aside ref={panelRef} className={cls} style={style} role="dialog" aria-label="点读笔">
+    <aside ref={panelRef} className={cls} style={style} role="dialog" aria-label="苏格拉底">
       <header
         className="pen-bar"
         onPointerDown={onBarPointerDown}
@@ -467,7 +467,7 @@ export function PenPanel({
       >
         <span className={`pen-mark${busy ? " is-busy" : ""}`} />
         <div className="pen-meta">
-          <strong>点读笔</strong>
+          <strong>苏格拉底</strong>
           <em title={sourceLine}>{sourceLine}</em>
         </div>
         <button className="ghost pen-close" onClick={onClose} aria-label="关闭">

@@ -417,13 +417,13 @@ def test_history_lands_in_the_prompt(tmp_path) -> None:
     job = ProbeJob(
         session_id="s", handbook_id="probe-fx", original_path=tmp_path / "b.md",
         anchor={"level": "Level 0", "start_line": 5, "end_line": 6}, atom="a", chip="socratic",
-        user_text="现在这句", reply="师傅刚讲的", born_round=1, lang="zh",
+        user_text="现在这句", reply="刚讲的那一段", born_round=1, lang="zh",
         cfg=LLMConfig("http://x", "sk", "m", "t", "off"),
-        history=[{"role": "user", "text": "上一轮我问的"}, {"role": "assistant", "text": "上一轮师傅答的"}],
+        history=[{"role": "user", "text": "上一轮我问的"}, {"role": "assistant", "text": "上一轮答的"}],
     )
     msg = probe.build_user_message(job)
     assert "[前面几轮聊了什么]" in msg
-    assert "读者：上一轮我问的" in msg and "师傅：上一轮师傅答的" in msg
+    assert "读者：上一轮我问的" in msg and "苏格拉底：上一轮答的" in msg
 
 
 def test_read_excerpts_can_reach_another_registered_book(idx, tmp_path, monkeypatch) -> None:

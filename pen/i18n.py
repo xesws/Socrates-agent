@@ -23,8 +23,8 @@ def norm_lang(raw: str | None) -> str:
 MESSAGES: dict[str, dict[str, str]] = {
     # ── 供应商调用失败。用户最常撞到的四条 ──
     "provider.bad_key": {
-        "zh": "节点不收这把钥匙。请到设置 → Socrates Pen 检查 API Key。",
-        "en": "The endpoint rejected this key. Check your API key under Settings → Socrates Pen.",
+        "zh": "节点不收这把钥匙。请到设置 → Socrates 检查 API Key。",
+        "en": "The endpoint rejected this key. Check your API key under Settings → Socrates.",
     },
     "provider.bad_thinking": {
         "zh": "这个节点不接受当前 Thinking 档，先改回 off 再试。",
@@ -41,21 +41,21 @@ MESSAGES: dict[str, dict[str, str]] = {
     # ── 缺配置 ──
     "llm.missing_config": {
         "zh": (
-            "找不到模型配置。请到 Obsidian 设置 → Socrates Pen 填写 API Key，"
+            "找不到模型配置。请到 Obsidian 设置 → Socrates 填写 API Key，"
             "或给本机 sidecar 留一份开发用 .env（DEEPSEEK_API_KEY / OPENAI_API_KEY）。"
         ),
         "en": (
-            "No model configured. Add an API key under Settings → Socrates Pen, "
+            "No model configured. Add an API key under Settings → Socrates, "
             "or leave a dev .env next to the sidecar (DEEPSEEK_API_KEY / OPENAI_API_KEY)."
         ),
     },
     "llm.missing_config_short": {
-        "zh": "找不到模型配置。请到设置 → Socrates Pen 填写 API Key。",
-        "en": "No model configured. Add an API key under Settings → Socrates Pen.",
+        "zh": "找不到模型配置。请到设置 → Socrates 填写 API Key。",
+        "en": "No model configured. Add an API key under Settings → Socrates.",
     },
     "llm.missing_config_fold": {
-        "zh": "找不到模型配置，无法生成折叠块。请到设置 → Socrates Pen 填写 API Key。",
-        "en": "No model configured, so the fold block can't be generated. Add an API key under Settings → Socrates Pen.",
+        "zh": "找不到模型配置，无法生成折叠块。请到设置 → Socrates 填写 API Key。",
+        "en": "No model configured, so the fold block can't be generated. Add an API key under Settings → Socrates.",
     },
     "llm.empty_reply": {
         "zh": "模型 {model} 返回了空正文（已接上 {base_url}）。",

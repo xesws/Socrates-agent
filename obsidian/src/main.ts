@@ -38,7 +38,7 @@ export default class SocratesPenPlugin extends Plugin {
     // 注册标题必须**语言无关**：ribbon 项的内部 id 是 manifest.id + ":" + title，
     // 用户在「外观 → 功能区」里的排序和隐藏状态按这个 id 存。换语言就换标题
     // 会让那份配置变成孤儿。所以写死品牌名，真正的文案用 setTooltip 覆盖。
-    this.ribbonEl = this.addRibbonIcon("highlighter", "Socrates Pen", () => {
+    this.ribbonEl = this.addRibbonIcon("highlighter", "Socrates", () => {
       void this.activateView();
     });
     setTooltip(this.ribbonEl, t().ribbonTooltip, { placement: "right" });

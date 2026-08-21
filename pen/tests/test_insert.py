@@ -20,7 +20,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "mini_handbook.md"
 
 FOLD = """<details>
 
-<summary>🔍 实例 1：点读笔补的例子</summary>
+<summary>🔍 实例 1：苏格拉底补的例子</summary>
 
 ```text
 伪代码：shell 是一类，Bash 是一个
@@ -107,7 +107,7 @@ def test_level1_q1_not_polluted(tmp_path: Path) -> None:
     plan = plan_insert(idx, dest, line=_q1_line(dest.read_text(encoding="utf-8")), fold_md=FOLD)
     new = render_new_text(dest.read_text(encoding="utf-8"), plan)
     l1 = new.split("**Q1. venv", 1)[1]
-    assert "点读笔补的例子" not in l1
+    assert "苏格拉底补的例子" not in l1
 
 
 def test_after_line_on_plain_note(tmp_path: Path) -> None:
@@ -118,8 +118,8 @@ def test_after_line_on_plain_note(tmp_path: Path) -> None:
     assert plan.insert_after_line == 3
     apply_insert(dest, plan)
     text = dest.read_text(encoding="utf-8")
-    assert text.index("hello") < text.index("点读笔补的例子")
-    assert text.index("点读笔补的例子") < text.index("world")
+    assert text.index("hello") < text.index("苏格拉底补的例子")
+    assert text.index("苏格拉底补的例子") < text.index("world")
 
 
 def test_after_line_oob(tmp_path: Path) -> None:
@@ -151,4 +151,4 @@ def test_replace_range_drops_only_that_span(tmp_path: Path) -> None:
     assert "\nb\n" not in text and not text.startswith("b")
     assert "\nc\n" not in text
     assert text.rstrip().endswith("d")
-    assert "点读笔补的例子" in text
+    assert "苏格拉底补的例子" in text

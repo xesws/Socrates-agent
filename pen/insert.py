@@ -64,7 +64,7 @@ def next_instance_n(section_text: str) -> int:
 def normalize_fold(fold_md: str, instance_n: int, summary_hint: str | None) -> str:
     body = fold_md.replace("\r\n", "\n").strip()
     if "<details>" not in body:
-        title = summary_hint or "点读笔补充"
+        title = summary_hint or "苏格拉底补充"
         body = (
             f"<details>\n\n"
             f"<summary>🔍 实例 {instance_n}：{title}</summary>\n\n"

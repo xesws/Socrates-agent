@@ -97,7 +97,7 @@ def test_stream_chat_error_points_to_settings(monkeypatch, tmp_path: Path) -> No
     book.write_text("# x\n", encoding="utf-8")
     events = list(stream_chat(sess, book, "packet"))
     assert events[0]["type"] == "error"
-    assert "设置 → Socrates Pen" in events[0]["message"]
+    assert "设置 → Socrates" in events[0]["message"]
     assert "环境变量" not in events[0]["message"]
 
 
@@ -274,7 +274,7 @@ def test_packet_omits_the_shelf_block_when_there_is_only_one_book() -> None:
 
 def test_packet_carries_the_shelf_with_paths_so_the_tutor_can_read_file() -> None:
     """v0.8.1 把跨教材整个挂在 probe 上，实时这条线一个字都没有。
-    师傅手里有 read_file、沙箱也放行，却不知道有那本书、更不知道路径。"""
+    苏格拉底手里有 read_file、沙箱也放行，却不知道有那本书、更不知道路径。"""
     from pathlib import Path
 
     from pen import libraries
@@ -288,7 +288,7 @@ def test_packet_carries_the_shelf_with_paths_so_the_tutor_can_read_file() -> Non
         user_text="另一本讲什么", shelf=shelf,
     )
     assert "[工作目录里的其他教材]" in packet
-    assert "/tmp/vault/other.md" in packet, "光给书名，师傅只会去猜文件名"
+    assert "/tmp/vault/other.md" in packet, "光给书名，苏格拉底只会去猜文件名"
     assert "read_file" in packet, "得明说怎么读，否则它照着大纲吹"
     # 书架排在目录之前：先说手上这本、库里还有哪些，再展开当前这本的目录。
     # 插在目录和框选之间会污染 test_build_user_packet_keeps_whole_toc 的切片。

@@ -48,7 +48,7 @@ CHIP_INTENT = {
     "examples": "只举两个例子，紧贴本 Level 第七拍的名字。",
     "search": "（未开放）不要假装检索。告诉读者 P2 才有联网。",
     "writeback": "必须先 read_file 看准带行号的原文，下一轮再单独 edit_file。old_string 去掉 N\\t。不要声称已经写盘。",
-    "free": "按用户原话回答，仍守师傅人设。",
+    "free": "按用户原话回答，仍守苏格拉底的人设。",
 }
 
 
@@ -56,9 +56,9 @@ def read_roots(extra_roots: Sequence[Path] | None) -> list[Path]:
     """stream_chat 交给 read_file 的根：仓库根**加上**本手册自己的 allow_root。
 
     算书架可见性时必须调这个函数，不能在 app.py 里再拼一遍——v0.8.7 那个
-    「书架印出师傅读不到的路径」就是两处各算一遍漂移出来的，修完又漂到反面：
+    「书架印出苏格拉底读不到的路径」就是两处各算一遍漂移出来的，修完又漂到反面：
     书架传的是 extra_roots_for(hid)（不含 REPO_ROOT），于是仓库根里的教材
-    师傅读得到、书架却不列。「列得出」和「读得到」必须由同一个函数保证。
+    苏格拉底读得到、书架却不列。「列得出」和「读得到」必须由同一个函数保证。
 
     注意 probe 那条线的语义**不一样**（`job.extra_roots or [REPO_ROOT]`——
     extra 非空时不含 REPO_ROOT），它有自己的 probe._reading_roots()。
@@ -317,7 +317,7 @@ def stream_chat(
     # 而 v0.10.3 刚修过反向的同一件事。
     #
     # 不清的后果实测过：max_tokens_chat 会从「每轮上限」退化成「整场一次性
-    # 预算」，用完之后每一轮都直接进收口枪，师傅**永远不再翻手册**；
+    # 预算」，用完之后每一轮都直接进收口枪，苏格拉底**永远不再翻手册**；
     # turn_spend 还落盘，重启 sidecar 也救不回来，只能新开会话。
     session.turn_spend = metermod.blank()
 
@@ -394,7 +394,7 @@ def _agent_loop(
         if metermod.over(metermod.total(session.turn_spend), limits_of(ctx).max_tokens_chat):
             capped = True
             break
-        yield {"type": "status", "phase": "thinking", "text": "师傅在想…"}
+        yield {"type": "status", "phase": "thinking", "text": "苏格拉底在想…"}
         try:
             # 不要叫 msg：会遮蔽模块级的 i18n msg()，下面那条空正文文案就调不到了
             reply = _create(with_tools=True)
@@ -446,7 +446,7 @@ def _agent_loop(
     session.messages.append(
         {"role": "user", "content": FORCE_ANSWER_BUDGET if capped else FORCE_ANSWER}
     )
-    yield {"type": "status", "phase": "thinking", "text": "师傅在想…"}
+    yield {"type": "status", "phase": "thinking", "text": "苏格拉底在想…"}
     try:
         reply = _create(with_tools=False)
     except ProviderError as exc:
@@ -631,7 +631,7 @@ def resume_chat(
     # 跨书预算是「这一轮总共能花多少钱」，审批不该让它翻倍；轮数是「别让一次
     # 不受打断的循环跑飞」，而读者点那一下就是真实的断路器。跟着清零的话，
     # 暂停前用满轮数的会话在批准之后第 0 轮就被收口枪顶住，读者看到的是
-    # 「批准完师傅答得莫名其妙地敷衍」。
+    # 「批准完苏格拉底答得莫名其妙地敷衍」。
     name = str(pending.get("name") or "")
     args = dict(pending.get("args") or {})
     tcid = str(pending.get("tool_call_id") or "")
@@ -656,7 +656,9 @@ def resume_chat(
         if allow:
             result = f"错误：不能执行未审批的工具 {name}"
         else:
-            result = "师傅不允许这次编辑，原文没动。"
+            # 说「读者」不说角色名：拒绝这次编辑的是人，不是模型自己。
+            # 原文写的是「苏格拉底不允许」——那等于让模型以为是它自己否掉的。
+            result = "读者不允许这次编辑，原文没动。"
         yield {
             "type": "tool",
             "name": name,
@@ -698,7 +700,7 @@ def propose_fold_md(
     from openai import OpenAI, OpenAIError
 
     client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key, timeout=120.0)
-    prompt = f"""把下面师傅刚讲的内容收成一个可插入手册的 Meta Instance。
+    prompt = f"""把下面苏格拉底刚讲的内容收成一个可插入手册的 Meta Instance。
 只输出一个 <details> 块，不要 TL;DR/(a)(b)(c)，不要 〔回读〕。
 <summary> 用「🔍 实例 N：一句话看点」（N 可先写 1，后端会改号）。
 <details> 后空行，</summary> 后空行，</details> 前空行。

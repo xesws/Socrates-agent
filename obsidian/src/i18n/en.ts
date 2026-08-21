@@ -19,7 +19,7 @@ const k = (v: number | undefined): string => {
  *   参数错 -> TS2322 签名不匹配
  * 函数参数由 Dict 上下文推断，不用手写注解（noImplicitAny 也不会报）。
  *
- * 语气对齐中文表：师傅带实习生，口语，短句，不要客服腔。
+ * 语气对齐中文表：像坐在旁边的人在说话，口语，短句，不要客服腔。
  */
 
 const LIMIT_TEXT_EN: Record<string, [string, string]> = {
@@ -57,10 +57,10 @@ const LIMIT_TEXT_EN: Record<string, [string, string]> = {
 };
 
 export const en: Dict = {
-  appName: "Socrates Pen",
-  viewTitle: "Socrates Pen",
+  appName: "Socrates",
+  viewTitle: "Socrates",
 
-  ribbonTooltip: "Open Socrates Pen",
+  ribbonTooltip: "Open Socrates",
   cmdAskSelection: "Ask about the current selection",
   cmdOpenPanel: "Open the panel",
 
@@ -78,7 +78,7 @@ export const en: Dict = {
   healthUnprobed: "sidecar not checked yet",
   healthOkSettings: (model) => `sidecar ok · from settings · ${model}`,
   healthOkFallback: (source, model) => `sidecar ok · dev fallback ${source} · ${model}`,
-  healthNoKey: "sidecar is up — add your API key under Settings → Socrates Pen",
+  healthNoKey: "sidecar is up — add your API key under Settings → Socrates",
   healthDown: "can't reach sidecar",
 
   errUnreachable: (detail) =>
@@ -98,7 +98,7 @@ export const en: Dict = {
   spendTipNote: "Tokens only — not converted to money",
 
   kickerYou: "You",
-  kickerPen: "Pen",
+  kickerPen: "Socrates",
   kickerReadTool: "reading",
   kickerEditTool: "editing",
   toolOk: "ok",
@@ -150,10 +150,10 @@ export const en: Dict = {
   msgRedone: "Put back the edit you undid.",
 
   errNoRightLeaf: "No pane available in the right sidebar",
-  errViewNotMounted: "The Socrates Pen view didn't mount",
+  errViewNotMounted: "The Socrates view didn't mount",
   errNeedDesktopVault: "Needs a desktop vault (FileSystemAdapter)",
   noticeSidecarDown:
-    "The sidecar isn't running. Start it in a terminal: python -m pen — the model goes under Settings → Socrates Pen",
+    "The sidecar isn't running. Start it in a terminal: python -m pen — the model goes under Settings → Socrates",
 
   chips: {
     socratic: { label: "Don't tell me yet — ask me something", hint: "" },

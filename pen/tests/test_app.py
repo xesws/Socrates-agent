@@ -16,7 +16,7 @@ from pen.session import STORE
 FIXTURE = Path(__file__).parent / "fixtures" / "mini_handbook.md"
 FOLD = """<details>
 
-<summary>🔍 实例 1：点读笔补的例子</summary>
+<summary>🔍 实例 1：苏格拉底补的例子</summary>
 
 ```text
 伪代码：shell 是一类，Bash 是一个
@@ -196,7 +196,7 @@ def test_apply_uses_stored_allow_root(tmp_path: Path, monkeypatch) -> None:
             },
         )
         assert applied.status_code == 200
-        assert "点读笔补的例子" in book.read_text(encoding="utf-8")
+        assert "苏格拉底补的例子" in book.read_text(encoding="utf-8")
 
 
 def test_retarget_after_line_and_outline(tmp_path: Path, monkeypatch) -> None:
@@ -256,7 +256,7 @@ def test_retarget_after_line_and_outline(tmp_path: Path, monkeypatch) -> None:
         )
         assert applied.status_code == 200
         text = book.read_text(encoding="utf-8")
-        assert text.index("keep-me") < text.index("点读笔补的例子")
+        assert text.index("keep-me") < text.index("苏格拉底补的例子")
 
 
 def test_chat_forwards_settings_overrides(monkeypatch) -> None:
@@ -323,7 +323,7 @@ def test_chat_request_base_url_disables_env_fallback(monkeypatch) -> None:
         seen["allow_env_fallback"] = allow_env_fallback
         yield {
             "type": "error",
-            "message": "找不到模型配置。请到设置 → Socrates Pen 填写 API Key。",
+            "message": "找不到模型配置。请到设置 → Socrates 填写 API Key。",
         }
 
     monkeypatch.setattr("pen.app.stream_chat", fake_stream)
@@ -404,7 +404,7 @@ def test_chat_stream_raise_yields_error_and_records_not_ok(tmp_path: Path, monke
     _isolate_pen(tmp_path, monkeypatch)
 
     def boom_stream(sess, path, packet, llm=None, extra_roots=None, allow_env_fallback=True, lang="zh", **_kw):
-        raise ProviderError("节点不收这把钥匙。请到设置 → Socrates Pen 检查 API Key。")
+        raise ProviderError("节点不收这把钥匙。请到设置 → Socrates 检查 API Key。")
         yield  # 只是为了让本函数成为生成器：第一次 next 才抛
 
     monkeypatch.setattr("pen.app.stream_chat", boom_stream)
@@ -592,7 +592,7 @@ def test_apply_commit_failure_consumes_proposal(tmp_path: Path, monkeypatch) -> 
         assert "gpg" in (body.get("commit_error") or "")
         mid = book.read_text(encoding="utf-8")
         assert len(mid) > len(before)
-        assert "点读笔补的例子" in mid
+        assert "苏格拉底补的例子" in mid
         again = client.post(
             "/v1/writeback/apply",
             json={"session_id": sid, "proposal_id": pid, "commit": True},

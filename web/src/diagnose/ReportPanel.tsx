@@ -116,7 +116,7 @@ export function ReportPanel({ handbookId, onBack, onJump }: Props) {
     <section className="dash" aria-label="诊断仪表盘">
       <header className="dash-top">
         <div>
-          <p className="dash-kicker">独立舱 · 不经过点读笔</p>
+          <p className="dash-kicker">独立舱 · 不经过苏格拉底</p>
           <h2>短板诊断</h2>
           <p className="dash-lede">
             按手册门禁题统计你问过的轨迹。只存在这台机器的 .pen
@@ -130,7 +130,7 @@ export function ReportPanel({ handbookId, onBack, onJump }: Props) {
             disabled={narrating || !report || report.n_curriculum === 0}
             onClick={() => void tell()}
           >
-            {narrating ? "师傅在看…" : "写成师傅评语"}
+            {narrating ? "苏格拉底在看…" : "写成苏格拉底的评语"}
           </button>
           <button type="button" className="dash-back" onClick={onBack}>
             回手册

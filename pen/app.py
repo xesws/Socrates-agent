@@ -490,7 +490,7 @@ def _history(sess, keep: int = 6) -> list[dict[str, str]]:
     取 ui_messages 而不是 messages：后者含 tool_call 配对和供应商回传的
     reasoning_content，塞进探索 prompt 会让 token 翻三倍，还会把注意力
     拉回代码细节——而这一层要的恰恰是跳出细节。
-    末轮不带，它已经单独在「师傅刚讲了什么」里了。
+    末轮不带，它已经单独在「苏格拉底刚讲了什么」里了。
     """
     rows: list[dict[str, str]] = []
     for m in list(sess.ui_messages or [])[-(keep + 1) : -1]:
@@ -652,7 +652,7 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
         except Exception:
             pass
         # 书架。v0.8.1 把「跨教材」整个挂在 probe 上，实时这条线一个字都没有——
-        # 读者直接开口问「另一本讲什么」，师傅手里明明有 read_file、沙箱也放行，
+        # 读者直接开口问「另一本讲什么」，苏格拉底手里明明有 read_file、沙箱也放行，
         # 却不知道有那本书、更不知道路径，只能答「你把路径给我」。
         # 冷启实测 1.2ms（只读每本前 400 行，最多 8 本），命中 60s 缓存 0.002ms。
         try:
@@ -661,9 +661,9 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
                 [m.original_path for m in libraries.list_handbooks()],
                 # 必须是 read_file 那把闸，不是全局 handbook_allow_roots()。
                 # 后者宽：当前手册是仓库根那本时它会印出 vault 里的书，
-                # 师傅照着读就撞在「不在本手册允许的根内」上，白跑一次工具。
+                # 苏格拉底照着读就撞在「不在本手册允许的根内」上，白跑一次工具。
                 # 走 tutor.read_roots 而不是自己拼：stream_chat 会往里加 REPO_ROOT，
-                # 这里少加就漂到反面——仓库根里的教材师傅读得到、书架却不列。
+                # 这里少加就漂到反面——仓库根里的教材苏格拉底读得到、书架却不列。
                 allow_roots=reading_roots(
                     path, read_roots(libraries.extra_roots_for(sess.handbook_id))
                 ),
