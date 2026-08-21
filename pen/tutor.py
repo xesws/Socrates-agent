@@ -17,7 +17,11 @@ from pen.sandbox import resolve_read_target
 from pen.questions import clean_candidates
 from pen.session import PROMPT_EXAMPLE_LINES, FIXED_CHIPS, PenSession
 
-MAX_TOOL_ROUNDS = 50
+# 师傅回答一轮里最多翻多少次工具。读者要的就是宽：接上书架之后，一个跨教材
+# 的问题本来就要多翻几次才答得像样，卡在 50 会让它半途收手。
+# 成本那头由 CROSS_BOOK_CHARS / CROSS_BOOK_READS 两道闸兜着（读别的书累计
+# 24000 字符或 8 次就叫停），所以放宽的是「翻本册」的余量。
+MAX_TOOL_ROUNDS = 100
 # 全书目录注进 packet 的字符预算。实测那本 13083 行的手册全量 87 条只要 3647 字符。
 TOC_CHARS = 4500
 ASKED_CHARS = 700

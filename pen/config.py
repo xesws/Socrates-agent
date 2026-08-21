@@ -24,7 +24,7 @@ MAX_OUTPUT = 5000
 # 单次 read_file 已被 MAX_OUTPUT 截到 5000，所以这里约等于 5 次满窗跨书阅读。
 CROSS_BOOK_CHARS = 24000
 # 光封字节封不住轮数：模型每次只读一行，字节预算永远用不完，
-# 而 MAX_TOOL_ROUNDS=50 一次不少，每轮 prompt 还要把整段 messages 重发一遍。
+# 而 MAX_TOOL_ROUNDS=100 一次不少，每轮 prompt 还要把整段 messages 重发一遍。
 # 实测跑满 50 轮时总 prompt 仍有 240 万字符。次数是第二道闸，两道任一触顶就收敛。
 CROSS_BOOK_READS = 8
 NEIGHBORHOOD_CHARS = 4000
