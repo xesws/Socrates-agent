@@ -502,6 +502,13 @@ def _run_tool_batch(
                 "tool_call_id": tc.id,
                 "rest": rest,
                 "original_path": str(Path(ctx["original_path"]).expanduser().resolve()),
+                # 跨书预算必须跨过这次暂停活下来（v0.10.3）。审批把一轮劈成两个
+                # HTTP 请求，两边各建一个 ctx，而计数器就活在 ctx 里、不落盘——
+                # 于是「翻 8 本书 → 提一次编辑 → 被拒 → 再翻 8 本」可以循环，
+                # 而且模型自己就能触发暂停，不需要读者配合。
+                # session.pending 本来就落盘，sidecar 重启也不丢。
+                "cross_book_chars": int(ctx.get("cross_book_chars") or 0),
+                "cross_book_reads": int(ctx.get("cross_book_reads") or 0),
             }
             yield {
                 "type": "approval",
@@ -555,6 +562,15 @@ def resume_chat(
     # 自己留第二处说不过去。今天两者等价，改的是「下一次漂移的入口」。
     extra_roots = read_roots(extra_roots)
     ctx = _tool_ctx(session, original_path, extra_roots, limits)
+    # 一轮 = 一份跨书预算。老会话的 pending 里没有这两个键 → 0 → 与改造前
+    # 完全一致，不需要迁移。
+    ctx["cross_book_chars"] = int(pending.get("cross_book_chars") or 0)
+    ctx["cross_book_reads"] = int(pending.get("cross_book_reads") or 0)
+    # 翻书轮数**故意不跟着恢复**，别当漏网之鱼修掉：
+    # 跨书预算是「这一轮总共能花多少钱」，审批不该让它翻倍；轮数是「别让一次
+    # 不受打断的循环跑飞」，而读者点那一下就是真实的断路器。跟着清零的话，
+    # 暂停前用满轮数的会话在批准之后第 0 轮就被收口枪顶住，读者看到的是
+    # 「批准完师傅答得莫名其妙地敷衍」。
     name = str(pending.get("name") or "")
     args = dict(pending.get("args") or {})
     tcid = str(pending.get("tool_call_id") or "")

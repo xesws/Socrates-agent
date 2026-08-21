@@ -229,6 +229,13 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
         "snapshots_the_limits_it_actually_used",
     ),
     (
+        "v0.10.3 一轮 = 一份跨书预算，审批不让它翻倍",
+        "pen/tutor.py",
+        '    ctx["cross_book_chars"] = int(pending.get("cross_book_chars") or 0)',
+        '    ctx["cross_book_chars"] = 0',
+        "one_cross_book_budget",
+    ),
+    (
         "书架的闸与 read_file 的闸同源",
         "pen/tutor.py",
         "    return [REPO_ROOT, *(extra_roots or [])]",

@@ -653,3 +653,74 @@ def test_usage_and_spend_are_two_different_things(monkeypatch, tmp_path: Path) -
     done = next(e for e in events if e["type"] == "done")
     assert done["usage"]["prompt_tokens"] == 8, "最后一枪的窗口占用"
     assert sess.spend["chat"]["in_tokens"] == 16, "两枪累加"
+
+
+def test_one_turn_gets_one_cross_book_budget_even_across_an_approval(monkeypatch, tmp_path: Path) -> None:
+    """审批把一轮劈成两个 HTTP 请求，两边各建一个 ctx。计数器活在 ctx 里、
+    不落盘，于是「翻几本书 → 提一次编辑 → 被拒 → 再翻几本」可以循环。
+    模型自己就能触发暂停，不需要读者配合——所以这不是理论上的洞。
+
+    盯的是被改的那两行本身：暂停时冻进 pending、续跑时种回 ctx。
+    走完整脚本去测会对「模型还要几轮才收口」过敏，那是另一件事。
+    """
+    from pen import tutor
+
+    cur = tmp_path / "cur.md"
+    cur.write_text("# 当前这本\n\n第二段。\n", encoding="utf-8")
+    other = tmp_path / "other.md"
+    other.write_text("\n".join(f"别的书第 {i} 行" for i in range(1, 200)), encoding="utf-8")
+
+    _patch_script(
+        monkeypatch,
+        [
+            # 先翻一次别的书（吃掉跨书额度）
+            _Msg(tool_calls=[_Tc("r1", "read_file",
+                                 {"path": str(other), "offset": 1, "limit": 5})]),
+            # 再读一次当前这本——edit_file 有 read-first 硬闸，不先读就提编辑会被挡
+            _Msg(tool_calls=[_Tc("r2", "read_file",
+                                 {"path": str(cur), "offset": 1, "limit": 20})]),
+            _Msg(tool_calls=[_Tc("e1", "edit_file",
+                                 {"path": str(cur), "old_string": "第二段。",
+                                  "new_string": "改过。"})]),
+        ],
+    )
+    sess = PenSession(session_id="b" * 32, handbook_id="demo")
+    list(stream_chat(sess, cur, "packet", llm=_cfg(), extra_roots=[tmp_path],
+                     allow_env_fallback=False))
+    assert sess.pending is not None, "模型该提出编辑并暂停"
+    spent = int(sess.pending.get("cross_book_chars") or 0)
+    assert sess.pending.get("cross_book_reads") == 1, "暂停时要把用掉的次数冻进去"
+    assert spent > 0, "字符数也要冻进去"
+
+    # 续跑那半轮：ctx 必须**继承**这两个数，而不是从 0 重来
+    seen: dict = {}
+    real = tutor._tool_ctx
+
+    def spy(session, original_path, extra_roots, limits=None):
+        ctx = real(session, original_path, extra_roots, limits)
+        seen["ctx"] = ctx
+        return ctx
+
+    monkeypatch.setattr(tutor, "_tool_ctx", spy)
+    _patch_script(monkeypatch, [_Msg(content="只读到一段，剩下的没看。" * 8)])
+    list(resume_chat(sess, cur, allow=False, pending_id=sess.pending["id"],
+                     llm=_cfg(), extra_roots=[tmp_path], allow_env_fallback=False))
+    assert seen["ctx"]["cross_book_reads"] == 1, "一轮 = 一份预算，审批不该让它翻倍"
+    assert seen["ctx"]["cross_book_chars"] == spent
+
+
+def test_tool_rounds_are_deliberately_not_carried_across_approval() -> None:
+    """同类泄漏，但**故意不修**——别当漏网之鱼修掉。
+
+    跨书预算是「这一轮总共能花多少钱」，审批不该让它翻倍；
+    轮数是「别让一次不受打断的循环跑飞」，而读者点那一下就是真实的断路器。
+    跟着清零的话，暂停前用满轮数的会话在批准之后第 0 轮就被收口枪顶住，
+    读者看到的是「批准完师傅答得莫名其妙地敷衍」。
+    """
+    import inspect
+
+    from pen import tutor
+
+    src = inspect.getsource(tutor.resume_chat)
+    assert "cross_book_chars" in src, "跨书预算要继承"
+    assert "轮数" in src, "为什么不继承轮数，理由必须写在代码里"
