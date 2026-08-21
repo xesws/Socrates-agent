@@ -93,6 +93,16 @@ h = harness(async () => {
 await h.run();
 check("404 判的是状态码不是文案", h.st.calls === 1);
 
+// **反向**：不带 code 的 404 不许被当成「会话没了」。`/deep` 目前只有一处
+// 404 源，所以这条现在恒绿——它守的是将来：那条路一旦长出第二种 404
+// （比如某天也去查手册），只看状态码的写法会静默把轮询掐死。
+// check-api.mjs 里有对称的一条，两边形状要一样。
+h = harness(async () => {
+  throw new ApiError(404, "原文找不到了，请重新框选一次");
+});
+await h.run();
+check("不带 code 的 404 不当成会话没了", h.st.calls === 3);
+
 // 500 不是「没了」，该走重试那条路。
 h = harness(async () => {
   throw new ApiError(500, "internal");

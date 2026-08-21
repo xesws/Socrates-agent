@@ -89,7 +89,7 @@ def test_but_pending_is_not_a_forever_pass() -> None:
 def test_pending_on_an_empty_session_does_not_buy_immortality() -> None:
     """「有 pending 就永不删」曾是一条**无界**豁免。
 
-    实测真实 `.pen` 里 3370 个文件有 551 个是「pending + messages == 1」，
+    实测真实 `.pen`（2026-08-21）3219 个文件里有 551 个是「pending + messages == 1」，
     全是测试污染留下的假数据，而按第一版规则它们永远删不掉——清理跑一万遍
     也清不掉的东西，就等于没有上限。
 

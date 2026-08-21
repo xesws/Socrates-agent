@@ -91,12 +91,16 @@ export const en: Dict = {
   // than saying plainly what happened.
   noticeSessionArchived:
     "This conversation is gone from the sidecar (most likely cleaned up past its retention window). A fresh one is open and your last question was re-sent.",
+  noticeSessionArchivedResendFailed:
+    "This conversation is gone from the sidecar (most likely cleaned up past its retention window). A fresh one is open, but your last question could not be re-sent — the error below says why.",
   noticeSessionRenewed:
     "This note's previous conversation is gone from the sidecar (most likely cleaned up past its retention window). A fresh one is open.",
   errSessionArchivedHard:
-    "This conversation is gone from the sidecar, and a fresh one couldn't be opened either (sidecar down?).",
+    "This conversation is gone from the sidecar, and a fresh one couldn't be opened either.",
   errApprovalArchived:
     "The conversation this edit belongs to is gone from the sidecar. The note was not modified. A fresh conversation is open; just ask again.",
+  errApprovalArchivedHard:
+    "The conversation this edit belongs to is gone from the sidecar, and a fresh one couldn't be opened either. The note was not modified.",
 
   usage: (ctx, out) => `context ${k(ctx)} · reply ${k(out)}`,
   spendTurn: (tok) => `turn ${k(tok)}`,

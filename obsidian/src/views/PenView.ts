@@ -786,12 +786,6 @@ export class PenView extends ItemView {
     try {
       const hid = handbookIdFromPath(got.absPath);
       await this.api().importHandbook(got.absPath, hid, vaultRoot(this.app));
-      this.handbookId = hid;
-      this.capturedPath = got.file.path;
-      this.quote = got.text;
-      this.startLine = got.startLine;
-      this.endLine = got.endLine;
-      this.err = "";
       const bind = this.plugin.noteBind(got.file.path);
       let sess: SessionView;
       let renewed = false;
@@ -800,10 +794,9 @@ export class PenView extends ItemView {
           sess = await this.api().getSession(bind.session_id);
         } catch (e) {
           // **只有「这场会话真没了」才换新的。** 这里此前是个裸 catch：一次
-          // 网络抖动、一个 500、甚至笔记改名那种 404，都会静默开一场新会话
-          // 并把笔记重新绑上去——旧那场其实还在盘上，但再也没人指得到它了。
-          // 会话按时间清理上线之后，这里是读者最容易撞到「会话没了」的地方，
-          // 一声不吭地换掉最要命。
+          // 网络抖动、一个 500，都会静默开一场新会话并把笔记重新绑上去——
+          // 旧那场其实还在盘上，但再也没人指得到它了。会话按时间清理上线之后，
+          // 这里是读者最容易撞到「会话没了」的地方，一声不吭地换掉最要命。
           if (!isGone(e)) throw e;
           sess = await this.api().createSession(hid);
           renewed = true;
@@ -811,6 +804,19 @@ export class PenView extends ItemView {
       } else {
         sess = await this.api().createSession(hid);
       }
+      // **拿到会话之后才换这几个字段。** 上面那些 await 里任何一处抛出，
+      // 都会跳过下面的 `adopt()`——而选区字段要是已经换成新笔记的，
+      // `this.quote` 是笔记 B 的、`this.sessionId` 还是笔记 A 的，两边对不上。
+      // `send()` 的守卫只查「两个都非空」，照样放行：读者再点一下芯片，
+      // **B 的选段就被发进 A 的会话**，服务端拿 `sess.handbook_id`（= A）
+      // 去取原文，行号是 B 的、书是 A 的，后续写回也会落到 A 的原文上。
+      // 一起换，要么全新要么全旧，不留半拉状态。
+      this.handbookId = hid;
+      this.capturedPath = got.file.path;
+      this.quote = got.text;
+      this.startLine = got.startLine;
+      this.endLine = got.endLine;
+      this.err = "";
       this.adopt(sess);
       await this.plugin.bindNote(got.file.path, {
         handbook_id: hid,
@@ -903,7 +909,13 @@ export class PenView extends ItemView {
         });
       }
       return true;
-    } catch {
+    } catch (e) {
+      // **别把服务端那句真话吞掉。** `POST /v1/sessions` 第一件事就是
+      // `_meta_or_404`——笔记被改名或移走时它 404，detail 里那句
+      // 「请重新框选一次」是唯一能救读者的指引。裸 catch 之后调用方
+      // 一律报 `errSessionArchivedHard`（「……sidecar 连不上？」），
+      // 又一次把准确因由换成一句假的。调用方看 `this.err` 有没有被写过。
+      this.err = e instanceof Error ? e.message : String(e);
       return false;
     }
   }
@@ -1028,7 +1040,9 @@ export class PenView extends ItemView {
       // 这条路上没人会再接手放下 busy，自己收干净。
       this.busy = false;
       this.status = "";
-      this.err = t().errSessionArchivedHard;
+      // reviveSession 写过 this.err 就说明服务端给了准确因由（多半是
+      // 「笔记被改名或移走，请重新框选一次」），别用兜底那句盖掉。
+      if (!this.err) this.err = t().errSessionArchivedHard;
       this.paintBar();
       await this.paintLog();
       return;
@@ -1036,9 +1050,13 @@ export class PenView extends ItemView {
     // 原样重发。读者不用重新打字——他刚才那句在 adopt() 里被新会话的空历史
     // 覆盖掉了，这里补发回去，界面上看起来就是「问了一次」。
     await this.send(chip, userText, true);
-    // 重发本身出错的话（换了新会话还是失败），那条真错留在错误条上，这条
-    // 不去盖它。走 Notice 不走 this.err：一切都办妥了，画成红条像是出了事。
-    if (!this.err) new Notice(t().noticeSessionArchived);
+    // **无条件通报。** 换会话是不可逆的：`adopt()` 已经清空 this.msgs、
+    // bindNote 已经把笔记绑到新 sid 上。重发再失败的话，读者看到的是一条
+    // 原始报错，而整段历史从面板上消失了——一个字的解释都没有。
+    // （这里曾经是 `if (!this.err)`：那道闸在 v0.12.4 是必要的，那时两条
+    // 信息抢同一个 this.err 槽位；改走 Notice 之后两条各走各的通道，
+    // 闸的理由已经过期，只剩下把该说的话吞掉这一个效果。）
+    new Notice(this.err ? t().noticeSessionArchivedResendFailed : t().noticeSessionArchived);
     this.paintBar();
   }
 
@@ -1137,9 +1155,15 @@ export class PenView extends ItemView {
       await this.paintLog("force");
     }
     if (!gone) return;
-    this.err = (await this.reviveSession())
-      ? t().errApprovalArchived
-      : t().errSessionArchivedHard;
+    if (await this.reviveSession()) {
+      this.err = t().errApprovalArchived;
+    } else if (!this.err) {
+      // 同上：reviveSession 已经写下服务端那句真话就不要盖。
+      // 用 errApprovalArchived**Hard** 而不是 errSessionArchivedHard：
+      // 后者被提问那条路共用，里面没有「原文没有被改动」——而读者刚点完
+      // 「同意写回」，此刻他唯一想知道的就是笔记被改了没有。
+      this.err = t().errApprovalArchivedHard;
+    }
     this.paintBar();
     await this.paintLog("force");
   }

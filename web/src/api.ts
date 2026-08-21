@@ -1,5 +1,26 @@
 import type { DiagnosisReport, HandbookMeta, Proposal, Section, SessionView } from "./types";
 
+/**
+ * 把 sidecar 的错误 body 抽成一句人话。
+ *
+ * v0.12.6 起「这场会话没了」那一种 404 的 detail 是 `{code, message}`
+ * 而不是一句字符串（插件那边要靠 code 把它和「笔记被改名」那种 404 分开，
+ * 见 `obsidian/src/apierror.ts`）。这里照旧只要文案——但 `body.detail || …`
+ * 那种写法对着对象会短路取到对象本身，`new Error(对象).message` 是
+ * **`"[object Object]"`**，`PenPanel` 直接把它渲染进错误条。
+ * 一句本地化的「未知会话」就这么变成了一串乱码。
+ */
+function detailOf(body: unknown, fallback: string): string {
+  const d = (body as { detail?: unknown } | null)?.detail;
+  if (typeof d === "string" && d) return d;
+  if (d && typeof d === "object") {
+    const m = (d as { message?: unknown }).message;
+    if (typeof m === "string" && m) return m;
+  }
+  // FastAPI 的 422 校验错误 detail 是个**数组**，整个 body 倒出来比什么都没有强。
+  return body ? JSON.stringify(body) : fallback;
+}
+
 async function j<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -8,8 +29,7 @@ async function j<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     let detail = res.statusText;
     try {
-      const body = await res.json();
-      detail = body.detail || JSON.stringify(body);
+      detail = detailOf(await res.json(), detail);
     } catch {
       /* keep statusText */
     }
@@ -94,7 +114,7 @@ export async function streamChat(
   if (!res.ok || !res.body) {
     let detail = res.statusText;
     try {
-      detail = (await res.json()).detail || detail;
+      detail = detailOf(await res.json(), detail);
     } catch {
       /* ignore */
     }

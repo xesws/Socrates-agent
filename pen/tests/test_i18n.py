@@ -87,7 +87,6 @@ def test_a_renamed_note_is_not_reported_as_a_gone_session():
     hid = c.get("/v1/handbooks").json()["handbooks"][0]["handbook_id"]
     sid = c.post("/v1/sessions", json={"handbook_id": hid}).json()["session_id"]
     # 把登记表里的原文路径指到一个不存在的文件 = 读者改名或移走了笔记
-    meta = libraries.get(hid)
     meta_path = libraries._meta_path(hid)
     raw = _json.loads(meta_path.read_text(encoding="utf-8"))
     raw["original_path"] = str(meta_path.parent / "moved-away.md")

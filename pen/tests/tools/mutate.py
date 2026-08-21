@@ -783,11 +783,6 @@ def main() -> int:
                 # 表达式对不上，表却报绿）。
                 print(f"  ?? {name}: -k {expr!r} 没选中任何用例 → {line}")
                 bad += 1
-            elif False:
-                # 既没红也没绿：多半是 collect 出错或 -k 没选中任何用例，
-                # 那和「测试没抓住」一样危险，不能当通过。
-                print(f"  ?? {name}: 跑不起来 → {line}")
-                bad += 1
             else:
                 print(f"  ✗ 空转  {name}  →  {line}")
                 bad += 1
