@@ -321,7 +321,17 @@ def _ripe(q: DeepQuestion, *, atom: str, level: str, now_round: int) -> bool:
         return q.atom == atom or now_round <= q.born_round
     # later：等读者自己走到那一关，或者等够两轮
     if q.target and level and q.target == level:
-        return True
+        # target 只是模型填的一个字符串，别的书也有「Level 1」。跨书题里它可能
+        # 抄的是别本的关名，于是读者走到**当前书**的 Level 1 时，一条讲别人家
+        # Level 1 的题就弹出来了。有跨书锚时要求本册也有一条锚落在这一关，
+        # 才算实锤。没有跨书锚的题行为完全不变。
+        cross = any(str(a.get("book") or "").strip() for a in q.anchors)
+        if not cross:
+            return True
+        return any(
+            not str(a.get("book") or "").strip() and str(a.get("level") or "") == level
+            for a in q.anchors
+        )
     return now_round - q.born_round >= 2
 
 

@@ -46,10 +46,16 @@ def _digest(path: Path) -> dict[str, Any] | None:
     title = path.stem
     heads: list[str] = []
     in_fence = False
+    lines = 0
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
             for i, raw in enumerate(fh):
+                lines = i + 1
                 if i >= MAX_SCAN_LINES or len(heads) >= MAX_HEADINGS:
+                    # 标题够了就不再解析，但行数还要数完——模型要拿行号点读，
+                    # 不知道这本书有多少行就只能瞎猜 60/500/3000。
+                    for j, _ in enumerate(fh, start=i + 1):
+                        lines = j + 1
                     break
                 line = raw.rstrip("\n")
                 if line.startswith("```"):
@@ -64,7 +70,7 @@ def _digest(path: Path) -> dict[str, Any] | None:
         return None
     if heads:
         title = heads[0]
-    return {"title": title, "path": str(path), "headings": heads}
+    return {"title": title, "path": str(path), "headings": heads, "lines": lines}
 
 
 def _prefer_nearby(
@@ -235,11 +241,14 @@ def shelf_digest(
     rows = []
     for d in picked:
         heads = " / ".join(d["headings"][:5])
+        # 行数很关键：模型要拿行号点读别的书，不给行数它只能瞎猜
+        # 60/500/3000。一本 +10 token，书架又在 user message 里，对前缀缓存零影响。
+        n = f"共 {d['lines']} 行" if d.get("lines") else ""
         if with_paths:
-            rows.append(f"- 《{d['title']}》  path: {d['path']}")
+            rows.append(f"- 《{d['title']}》  {n}  path: {d['path']}")
             rows.append(f"  大纲：{heads or '（没有标题）'}")
         else:
-            rows.append(f"- 《{d['title']}》：{heads or '（没有标题）'}")
+            rows.append(f"- 《{d['title']}》（{n}）：{heads or '（没有标题）'}")
     text = "\n".join(rows)
     _remember(key, now, text)
     return text

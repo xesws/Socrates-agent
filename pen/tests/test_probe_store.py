@@ -320,3 +320,24 @@ def test_now_and_later_from_one_probe_both_reach_the_reader() -> None:
     poll("Level 6", 3)
     assert len(got) == 2, f"走到那一关了，later 必须浮出来：{got}"
     assert probe_store.load("dual").pending_count() == 0
+
+
+def test_later_delivery_does_not_confuse_the_other_books_level(tmp_path, monkeypatch) -> None:
+    """target 只是模型填的一个字符串，别的书也有「Level 1」。跨书题里它可能抄的是
+    别本的关名，于是读者走到**当前书**的 Level 1 时，一条讲别人家 Level 1 的题
+    就弹出来了。"""
+    from pen.probe_store import DeepQuestion, _ripe
+
+    def q(anchors):
+        return DeepQuestion(
+            id="i", text="t", axis="bridge", grounding="book", timing="later",
+            target="Level 1", atom="a", born_round=1, seq=1, anchors=anchors,
+        )
+
+    here = {"level": "Level 1", "start_line": 1}
+    cross = {"book": "别本", "start_line": 60}
+    at = dict(atom="x", level="Level 1", now_round=1)
+    assert _ripe(q([here]), **at) is True, "纯本册题行为不该变"
+    assert _ripe(q([here, cross]), **at) is True, "本册锚就在这一关，该弹"
+    assert _ripe(q([{"level": "Level 5", "start_line": 70}, cross]), **at) is False, \
+        "本册锚在 Level 5，却因为别本的 Level 1 弹了出来"

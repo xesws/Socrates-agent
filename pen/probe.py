@@ -54,6 +54,9 @@ PROBE_SYSTEM = """你是这本手册的助教，坐在师傅背后。师傅刚�
 
 1. bridge 搭桥——把隔着关的两个东西对上号。anchors 至少两条，且分属不同 Level。
    「七块积木里，messages 为什么不算文件？数据流上它又凭什么独立一格？」
+   **桥的另一头可以是【工作目录里还有这些教材】里的别本**——两本书对同一件事的
+   讲法不一样，那是最值钱的一种桥。但只有你真读过那几行才算数：先 need_read
+   点名去读，再照读回来的行号写 anchor。光看书名和大纲就下笔，等于替读者猜。
 
 2. tradeoff 权衡——为什么是这个做法不是另一个。被否掉那个的名字，写进 alt。
    「为什么第一个参考实现偏偏是 mini-swe-agent，而不是 LangChain？」
@@ -81,15 +84,24 @@ PROBE_SYSTEM = """你是这本手册的助教，坐在师傅背后。师傅刚�
 手册里查得到出处的题，把 level 和行区间写准写进 anchors，grounding 填 "book"。
 系统会拿确定性索引去核对，也会核对你用反引号引起来的词是不是真在那几行里。
 编的会被直接丢掉，你白干一趟。
+
+【工作目录里还有这些教材】里那几本**也算查得到出处**——前提是你真读过。
+流程是：先在 need_read 里点名要读它的哪几行，系统读回来的正文每行都带真行号；
+写题时把那本的书名填进 anchor 的 book 字段，行号照抄回来的那几行。
+没读过就写行号 = 编，一样丢掉。当前手册的 anchor 不要填 book。
+每条题至少要有一条锚落在当前这本手册上——读者手里拿的是这本。
+
 需要手册以外的知识才答得了的题，grounding 填 "open"，anchors 留空。
 我们没有联网，不许假装查过、不许编版本号和函数名。这种题每次最多一条，
-能改写成有出处的就改写成有出处的。
+能改写成有出处的就改写成有出处的——书架上那几本你是真读得到的，优先走那条路。
 
 材料不够时：
 如果你觉得非得看一眼某段正文才敢下笔，就在 need_read 里写行区间，最多两段。
-系统会把那几段读给你，再问你一次。不确定就别写，多数时候目录和 Q 清单已经够了。
-要看的是【工作目录里还有这些教材】里那本，就在同一条里加 book 字段写它的书名，
-系统会去那本里取；不写 book 就默认当前这本。
+系统会把那几段读给你，再问你一次。
+当前这本手册的正文，目录和 Q 清单多数时候已经够用，不确定就别读。
+但**别的教材不一样**：你手上只有它的标题和大纲，正文一个字都没有。
+想拿它出题就必须先读——在同一条里加 book 字段写它的书名，系统会去那本里取；
+不写 book 就默认当前这本。
 
 timing 怎么填：
 now = 接着读者刚才那口气就能问，不跳关。
@@ -105,7 +117,7 @@ later = 题是好的，但现在问会把人从当前这格拽走。这时在 ta
       "text": "问题本身，一句话，12 到 40 个汉字，带问号，用师傅对读者说话的口气",
       "axis": "bridge | tradeoff | vs_real | failure | altitude",
       "grounding": "book | open",
-      "anchors": [{"level": "……", "start_line": 0, "end_line": 0}],
+      "anchors": [{"book": "只在指别的教材时才写：书名，原样抄书架上那个", "level": "……", "start_line": 0, "end_line": 0}],
       "alt": "只有 axis=tradeoff 才填：被否掉的那个做法叫什么",
       "trigger": "只有 axis=failure 才填：什么条件下会炸",
       "timing": "now | later",
@@ -124,6 +136,8 @@ PROBE_ENGLISH = """
 "trigger" in English, same voice. Keep every key name, every enum value
 (axis / grounding / timing) and the JSON shape exactly as specified above.
 English length band: 8 to 28 words, must end with a question mark.
+Book titles in "book" fields are identifiers — copy them exactly as the shelf
+prints them, never translate them.
 Same rules apply: no syntax trivia, no navigation, no echoing the reader,
 no fabricated line numbers, and never pretend you searched the web."""
 
@@ -177,19 +191,94 @@ def parse_probe_json(raw: str) -> dict[str, Any]:
 
 
 def _anchor_ok(a: dict[str, Any], idx: HandbookIndex) -> bool:
+    """只管当前手册那半边，保留给既有调用方。新代码用 resolve_anchor。"""
+    return resolve_anchor(a, idx, shelf=None, current=None, read_spans=()) is not None
+
+
+def resolve_anchor(
+    a: dict[str, Any],
+    idx: HandbookIndex,
+    *,
+    shelf: dict[str, Path] | None,
+    current: Path | None,
+    read_spans: Sequence[tuple[str, int, int]],
+) -> Anchored | None:
+    """一条 anchor → 出自哪本书、哪一节、哪几行。解析不了就 None。
+
+    两半边验的是**不同的东西**：
+
+    · 当前这本：拿索引核行号在不在、level 说得对不对。
+    · 别的书：**不查索引**。那几行的行号本来就是我们自己 read_file 读给模型的
+      （回来的正文每行都带 `行号\t`），要验的不是「这行存不存在」，而是
+      「这行是不是我们本轮真读过的那几段之一」——`read_spans` 就是那几段。
+      模型读了 L60-140 却在 anchor 里写 L3000，那才是编。
+
+    今天没有 book 字段，于是另一本书的 L60/L500/L3000 在 13083 行的当前手册里
+    全部「合法」，被静默算成本册的「开篇 / 全景图」存下来。题在讲另一本书，
+    出处却指向当前手册一段毫不相干的话——比拒掉更糟。
+    """
     try:
         start = int(a.get("start_line") or 0)
         end = int(a.get("end_line") or start)
     except (TypeError, ValueError):
-        return False
-    if start < 1 or end < start or end > max(idx.n_lines, 1):
-        return False
+        return None
+    if start < 1 or end < start:
+        return None
+
+    want = str(a.get("book") or "").strip()
+    if want:
+        if shelf is None or current is None:
+            return None  # 没有书架就无从核实，宁可不认
+        hit, shown = resolve_book(shelf, want, current)
+        if hit is None or hit == current:
+            # 点了书架上没有的，或者绕回当前这本——都不算「另一本书」
+            return None
+        covered = any(
+            b == shown and s <= start and end <= e for b, s, e in read_spans
+        )
+        if not covered:
+            return None  # 没读过就写行号 = 编
+        return Anchored(book=shown, section=None, start=start, end=end)
+
+    if end > max(idx.n_lines, 1):
+        return None
     try:
         sec = idx.locate(start)
     except ValueError:
-        return False
+        return None
     claimed = str(a.get("level") or "").strip()
-    return not claimed or claimed == sec.level
+    if claimed and claimed != sec.level:
+        return None
+    return Anchored(book="", section=sec, start=start, end=end)
+
+
+@dataclass(frozen=True)
+class Anchored:
+    """一条 anchor 解析完的样子。五条轴全部吃这一份，别各自再去碰 idx——
+    `bridge` 按 level 字符串去重、`vs_real` 拿当前手册的版式给别的书背书，
+    都是「各自解释一遍」惹的祸。
+
+    跨书那半边**不需要索引**：行号本来就是我们自己 `read_file` 读给模型的
+    （回来的正文每行都带 `行号\t`），要验的不是「这行存不存在」，
+    而是「这行是不是我们本轮真读过的那几段之一」。
+    """
+
+    book: str                 # "" = 当前这本
+    section: Any | None       # 只有当前这本有；别的书没有八拍体例
+    start: int
+    end: int
+
+    @property
+    def level_key(self) -> tuple[str, str]:
+        """跨书去重用的身份。两本书都有「Level 0」，光比 level 字符串会把
+        「本册 Level 0 + 另一本 Level 0」判成同一关，跨书搭桥直接被毙。"""
+        return (self.book, str(getattr(self.section, "level", "") or ""))
+
+    @property
+    def is_third_beat(self) -> bool:
+        """「第三拍 · 出身」是本手册特有的八拍体例，别的书没有——
+        所以跨书锚恒为 False，vs_real 必须有一条本册锚才成立。"""
+        return str(getattr(self.section, "beat", "") or "").startswith(THIRD_BEAT)
 
 
 def _quoted_tokens(text: str) -> list[str]:
@@ -206,6 +295,9 @@ def validate_slots(
     idx: HandbookIndex,
     *,
     source: str = "",
+    shelf: dict[str, Path] | None = None,
+    current: Path | None = None,
+    read_spans: Sequence[tuple[str, int, int]] = (),
 ) -> tuple[bool, str]:
     """强制填槽 + 确定性校验。
 
@@ -236,30 +328,33 @@ def validate_slots(
 
     if not anchors:
         return False, "no-anchors"
-    for a in anchors:
-        if not _anchor_ok(a, idx):
-            return False, "anchor-invalid"
+    # 一次性解析，五条轴吃同一份。别再各自去碰 idx——「各自解释一遍」正是
+    # 跨书锚点被静默当成本册行号的原因。
+    got = [resolve_anchor(a, idx, shelf=shelf, current=current, read_spans=read_spans)
+           for a in anchors]
+    if any(x is None for x in got):
+        return False, "anchor-invalid"
+    marks: list[Anchored] = [x for x in got if x is not None]
+    # 通用硬判据：至少一条锚落在**当前这本**。
+    # 少了它，altitude / tradeoff / failure 在跨书下就是免检通道——随便指另一本
+    # 任意一行都能过，而读者是在读当前这本，一条跟手上这本毫无关系的题不该冒出来。
+    if not any(m.book == "" for m in marks):
+        return False, "needs-an-anchor-in-this-book"
 
     if axis == "bridge":
-        levels = {str(a.get("level") or "") for a in anchors}
-        levels.discard("")
-        if len(levels) < 2:
+        # 按 (哪本书, 哪一关) 去重，不按 level 字符串：两本书都有「Level 0」，
+        # 光比字符串会把「本册 Level 0 + 另一本 Level 0」判成同一关，跨书搭桥直接毙。
+        if len({m.level_key for m in marks}) < 2:
             return False, "bridge-needs-two-levels"
     if axis == "tradeoff" and not str(item.get("alt") or "").strip():
         return False, "tradeoff-needs-alt"
     if axis == "failure" and not str(item.get("trigger") or "").strip():
         return False, "failure-needs-trigger"
     if axis == "vs_real":
-        hit = False
-        for a in anchors:
-            try:
-                sec = idx.locate(int(a.get("start_line") or 0))
-            except (ValueError, TypeError):
-                continue
-            if (sec.beat or "").startswith(THIRD_BEAT):
-                hit = True
-                break
-        if not hit:
+        # 「第三拍 · 出身」是这本手册特有的八拍体例，别的书没有——跨书锚恒 False，
+        # 所以这条轴必须有一条本册的第三拍锚。这正是它该有的样子：
+        # 「对出身」本来就是拿本册的出身拍去跟真实系统比。
+        if not any(m.is_third_beat for m in marks):
             return False, "vs-real-needs-third-beat"
 
     # 反引号引起来的词必须真在那几行里，否则就是「看着像有出处」
@@ -282,6 +377,8 @@ def anchor_source(item: dict[str, Any], original_path: Path, extra_roots: list[P
     for a in list(item.get("anchors") or [])[:2]:
         if not isinstance(a, dict):
             continue
+        if str(a.get("book") or "").strip():
+            continue  # 跨书锚的正文在 excerpt 里，这儿读的是当前手册，别拿错书当出处
         try:
             start = max(1, int(a.get("start_line") or 1))
             end = int(a.get("end_line") or start)
@@ -530,58 +627,86 @@ def _shelf_paths(current_path: Path, roots: list[Path] | None = None) -> dict[st
     return out
 
 
-def _read_excerpts(job: ProbeJob, reads: Sequence[dict[str, Any]]) -> str:
+def _shelf_or_empty(job: ProbeJob) -> dict[str, Path]:
+    """书架反查表，取不到就空表——绝不让异常掀掉整轮探索。"""
+    try:
+        return _shelf_paths(job.original_path, _reading_roots(job))
+    except Exception:
+        return {}
+
+
+def resolve_book(
+    shelf: dict[str, Path],
+    want: str,
+    current: Path,
+) -> tuple[Path | None, str]:
+    """模型写的书名 → (那本书的路径, 书架上印的名字)。
+
+    **`need_read` 和 `anchors` 必须共用这一个函数。** 再抄一遍就是本仓踩过三次的
+    同一个坑：书架的闸 vs read_file 的闸、两处各拼一遍根、两处各筛一遍书。
+
+    `want` 为空 = 当前这本。点了书架上没有的 → `(None, "")`，
+    调用方必须当「没读到」处理，**不许回退到当前这本**——那是拿自己那本书冒充别人。
+    """
+    if not want:
+        return current, ""
+    hit = shelf.get(want)
+    if hit is None:
+        # 模糊匹配只认**唯一**命中。「手册」「教材」这种词谁都沾边，
+        # 猜中哪本纯看 dict 顺序，猜错就是拿别的书冒充。
+        # 数的是**书**不是 key：_shelf_paths 给每本登记两个 key（正文 H1 和
+        # meta.title），Obsidian 笔记带 YAML frontmatter 时 H1 被推离第 1 行、
+        # build_index 退回文件名，两个 key 就不一样了——同一本书占两条候选，
+        # 按 key 数会误判成歧义，把简称全毙掉。而 frontmatter 正是 vault 里
+        # 第三方教材的默认形态。
+        # 按 resolve 后的路径去重：表里存的是未 resolve 的 Path(raw)，两条登记
+        # 记录指向同一个文件却写法不同（一条带 ..）时裸 Path 比较不相等。
+        cands: dict[Path, Path] = {}
+        for k in shelf:
+            if want in k or k in want:
+                try:
+                    cands.setdefault(shelf[k].expanduser().resolve(), shelf[k])
+                except Exception:
+                    cands.setdefault(shelf[k], shelf[k])
+        hit = next(iter(cands.values())) if len(cands) == 1 else None
+    if hit is None:
+        return None, ""
+    # 名字用**书架上印的那个**（_shelf_paths 先插正文 H1、后插 meta.title，
+    # 所以第一个指向它的 key 就是书架印的），不用模型写的 want：
+    # 它写「教材」，题面就会引用一本叫《教材》的书，书架上根本没有这本。
+    shown = next((k for k, v in shelf.items() if v == hit), want)
+    return hit, shown
+
+
+def _read_excerpts(
+    job: ProbeJob, reads: Sequence[dict[str, Any]]
+) -> tuple[str, list[tuple[str, int, int]]]:
     """定向读正文。由 Python 执行，不给模型自主循环的机会。
 
     支持点名读书架上的别本（`book` 字段）——不然「结合其他教材」这条就只能
     停在标题层。目标必须是已登记且落在允许根内的，读取次数上限跨不跨书都一样。
+
+    第二个返回值是**真读过的那几段** `[(书架印的书名, 起, 止)]`，只收别本的。
+    跨书 anchor 的合法性就靠它：行号是我们读给模型的，要验的不是「这行存不存在」，
+    而是「这行是不是我们真读过的那几段之一」。
     """
     from pen.readtool import read_file_report
 
     shelf: dict[str, Path] | None = None
     chunks = []
+    spans: list[tuple[str, int, int]] = []
     for r in list(reads)[: config.PROBE_MAX_READS]:
         try:
             start = max(1, int(r.get("start_line") or 1))
         except (TypeError, ValueError):
             continue
-        target = job.original_path
-        label = ""
         want = str(r.get("book") or "").strip()
-        if want:
-            if shelf is None:
-                try:
-                    shelf = _shelf_paths(job.original_path, _reading_roots(job))
-                except Exception:
-                    shelf = {}
-            hit = shelf.get(want)
-            if hit is None:
-                # 模糊匹配只认**唯一**命中。「手册」「教材」这种词谁都沾边，
-                # 猜中哪本纯看 dict 顺序，猜错就是拿别的书冒充。
-                # 数的是**书**不是 key：_shelf_paths 给每本登记两个 key
-                # （正文 H1 和 meta.title），Obsidian 笔记带 YAML frontmatter 时
-                # H1 被推离第 1 行、build_index 退回文件名，两个 key 就不一样了——
-                # 同一本书占两条候选，按 key 数会误判成歧义，把简称全毙掉。
-                # 而 frontmatter 正是 vault 里第三方教材的默认形态。
-                # 按 resolve 后的路径去重：out 里存的是未 resolve 的 Path(raw)，
-                # 两条登记记录指向同一个文件却写法不同（一条带 ..）时，
-                # 裸 Path 比较不相等，又会退回「同一本书被当成两本」。
-                cands: dict[Path, Path] = {}
-                for k in shelf:
-                    if want in k or k in want:
-                        try:
-                            cands.setdefault(shelf[k].expanduser().resolve(), shelf[k])
-                        except Exception:
-                            cands.setdefault(shelf[k], shelf[k])
-                hit = next(iter(cands.values())) if len(cands) == 1 else None
-            if hit is None:
-                continue  # 点了一本书架上没有的，忽略而不是回退到当前这本
-            target = hit
-            # 标签用**书架上印的那个名字**（_shelf_paths 先插正文 H1、后插 meta.title，
-            # 所以第一个指向它的 key 就是书架印的），不用模型写的 want：
-            # 它写「教材」，题面就会引用一本叫《教材》的书，书架上根本没有这本。
-            shown = next((k for k, v in shelf.items() if v == hit), want)
-            label = f"〔出自《{shown}》〕\n"
+        if shelf is None:
+            shelf = _shelf_or_empty(job)
+        target, shown = resolve_book(shelf, want, job.original_path)
+        if target is None:
+            continue  # 点了一本书架上没有的，忽略而不是回退到当前这本
+        label = f"〔出自《{shown}》〕\n" if want else ""
         # end_line 以前被忽略，一律读 80 行——模型要的「一段」和拿到的
         # 不一定是一回事。给了就按它要的算，仍受 PROBE_READ_LINES 封顶。
         try:
@@ -598,7 +723,13 @@ def _read_excerpts(job: ProbeJob, reads: Sequence[dict[str, Any]]) -> str:
         )
         if out.get("ok"):
             chunks.append(label + str(out.get("text") or ""))
-    return "\n\n".join(chunks)
+            if want:
+                # 真读到了才记。记的是**实际读到的范围**（受 PROBE_READ_LINES 封顶），
+                # 不是模型要的范围——不然它写 start=1 end=99999 就等于拿到了整本书的
+                # 通行证。
+                got_lines = str(out.get("text") or "").count("\n") + 1
+                spans.append((shown, start, start + max(got_lines, 1) - 1))
+    return "\n\n".join(chunks), spans
 
 
 def explore(job: ProbeJob, idx: HandbookIndex) -> tuple[list[DeepQuestion], str]:
@@ -611,13 +742,14 @@ def explore(job: ProbeJob, idx: HandbookIndex) -> tuple[list[DeepQuestion], str]
     raw = _create(job.cfg, messages)
     data = parse_probe_json(raw)
     excerpt = ""
+    spans: list[tuple[str, int, int]] = []
     if data["need_read"]:
-        excerpt = _read_excerpts(job, data["need_read"])
+        excerpt, spans = _read_excerpts(job, data["need_read"])
         if excerpt:
             messages[-1] = {"role": "user", "content": build_user_message(job, excerpt)}
             raw = _create(job.cfg, messages)
             data = parse_probe_json(raw)
-    items = _harvest(data["questions"], job, idx, excerpt)
+    items = _harvest(data["questions"], job, idx, excerpt, spans)
     return items, ("" if items else "no-candidate")
 
 
@@ -626,6 +758,7 @@ def _harvest(
     job: ProbeJob,
     idx: HandbookIndex,
     excerpt: str = "",
+    read_spans: Sequence[tuple[str, int, int]] = (),
 ) -> list[DeepQuestion]:
     from pen.session import FIXED_CHIPS, PROMPT_EXAMPLE_LINES
 
@@ -633,6 +766,9 @@ def _harvest(
     kept: list[DeepQuestion] = []
     seen: set[str] = {normalize_qkey(a) for a in job.asked}
     open_used = 0
+    # 只有真出现跨书锚时才去扫书架——没读过别的书就不可能有合法的跨书锚，
+    # 白扫一遍盘没意义。
+    shelf: dict[str, Path] | None = _shelf_or_empty(job) if read_spans else None
     for raw in raw_items:
         text = str(raw.get("text") or "").strip()
         if not text:
@@ -643,16 +779,28 @@ def _harvest(
             depth = 0
         if depth and depth < 4:
             continue
-        # 不能短路。excerpt 非空（跨书真读到了）时 `or` 会让当前手册锚点行的正文
-        # 根本不取，而 validate_slots 要求题面每个反引号词都在 source 里——
-        # 跨教材题天然两边各引一个词，于是**读了反而归零，不读倒能过**。
-        # probe.py 上面那段注释记着这个 bug 修过一次（「拿不到正文时跳过，
-        # 宁可漏也别误杀」），`excerpt or` 在跨书这条新路上原样复活了它。
-        # 两段都是合法出处，拼起来。
-        src = "\n".join(
-            x for x in (excerpt, anchor_source(raw, job.original_path, job.extra_roots)) if x
+        # 反引号校验的语料。两段都是合法出处，但**只有真指了别本时才把别本的
+        # 正文放进袋子**：不填 book 的锚点是本册锚点，它引用的词就该在本册那几行里。
+        # 一律拼上跨书正文的话，一条「不填 book 却在讲另一本书」的题会拿别人的正文
+        # 蒙混过关——那正是今天最难堵的那种假出处。
+        #
+        # 也不能反过来只留 excerpt：那样跨教材题天然两边各引一个词，
+        # 当前手册那个词找不到就被判死——**读了反而归零，不读倒能过**。
+        # （这个坑本仓修过两次，注释在 validate_slots 上面那段。）
+        has_cross = any(
+            isinstance(a, dict) and str(a.get("book") or "").strip()
+            for a in (raw.get("anchors") or [])
         )
-        ok, _why = validate_slots(raw, idx, source=src)
+        src = "\n".join(
+            x for x in (
+                excerpt if has_cross else "",
+                anchor_source(raw, job.original_path, job.extra_roots),
+            ) if x
+        )
+        ok, _why = validate_slots(
+            raw, idx, source=src,
+            shelf=shelf, current=job.original_path, read_spans=read_spans,
+        )
         if not ok:
             continue
         grounding = str(raw.get("grounding") or "book")
@@ -764,5 +912,43 @@ OPEN_INTENT_EN = (
 )
 
 
+CROSS_INTENT_ZH = (
+    "这题的出处在《{book}》第 {span} 行——那本书就在读者的库里，路径在"
+    "【工作目录里的其他教材】那一段。**先 read_file 把那几行读出来再开口**，"
+    "读到什么讲什么。读不到就照实说读不到，别按书名猜。"
+)
+CROSS_INTENT_EN = (
+    "The source for this one is in 《{book}》 around line {span}. That book is in the "
+    "reader's own library — its path is in the [other handbooks] section. "
+    "**Read those lines with read_file before you answer.** If you cannot read it, "
+    "say so plainly; never guess from the title."
+)
+
+
 def open_intent(lang: str = "zh") -> str:
     return OPEN_INTENT_EN if lang == "en" else OPEN_INTENT_ZH
+
+
+def cross_intent(anchors: Sequence[dict[str, Any]], lang: str = "zh") -> str:
+    """读者点开一条出处在别本的深题时，给师傅的话。
+
+    以前这里只有布尔分支：不是 open 就什么都不给。于是同一个 packet 里，
+    书架段把那本书的**真实路径**递到师傅手里说「先 read_file 读了再说」，
+    而 open 那条分支紧接着命令它「手册里没有出处，凭记忆讲，不要编文件路径」——
+    等于把它从当时唯一通畅的那条路上主动劝退。
+    """
+    for a in anchors or []:
+        if not isinstance(a, dict):
+            continue
+        book = str(a.get("book") or "").strip()
+        if not book:
+            continue
+        try:
+            start = int(a.get("start_line") or 0)
+            end = int(a.get("end_line") or start)
+        except (TypeError, ValueError):
+            continue
+        span = f"{start}-{end}" if end > start else str(start)
+        tpl = CROSS_INTENT_EN if lang == "en" else CROSS_INTENT_ZH
+        return tpl.format(book=book, span=span)
+    return ""

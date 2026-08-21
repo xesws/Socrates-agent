@@ -444,7 +444,7 @@ def test_read_excerpts_can_reach_another_registered_book(idx, tmp_path, monkeypa
         user_text="", reply="x", born_round=1, lang="zh",
         cfg=LLMConfig("http://x", "sk", "m", "t", "off"), extra_roots=[tmp_path],
     )
-    got = probe._read_excerpts(job, [{"book": "另一本教材", "start_line": 3}])
+    got = probe._read_excerpts(job, [{"book": "另一本教材", "start_line": 3}])[0]
     assert "另一本的正文这一行" in got
     assert "〔出自《另一本教材》〕" in got, "读者要能看出这段来自哪本"
 
@@ -461,7 +461,7 @@ def test_read_excerpts_ignores_a_book_not_on_the_shelf(idx, tmp_path, monkeypatc
         user_text="", reply="x", born_round=1, lang="zh",
         cfg=LLMConfig("http://x", "sk", "m", "t", "off"), extra_roots=[tmp_path],
     )
-    assert probe._read_excerpts(job, [{"book": "根本不存在的书", "start_line": 3}]) == ""
+    assert probe._read_excerpts(job, [{"book": "根本不存在的书", "start_line": 3}])[0] == ""
 
 
 def test_shelf_paths_excludes_registrations_outside_allowed_roots(tmp_path, monkeypatch) -> None:
@@ -522,10 +522,10 @@ def test_read_excerpts_honours_end_line(idx, tmp_path, monkeypatch) -> None:
         user_text="", reply="x", born_round=1, lang="zh",
         cfg=LLMConfig("http://x", "sk", "m", "t", "off"), extra_roots=[tmp_path],
     )
-    short = probe._read_excerpts(job, [{"start_line": 7, "end_line": 9}])
+    short = probe._read_excerpts(job, [{"start_line": 7, "end_line": 9}])[0]
     assert len(short.strip().splitlines()) == 3, short
     # 仍受 PROBE_READ_LINES 封顶
-    long = probe._read_excerpts(job, [{"start_line": 1, "end_line": 9999}])
+    long = probe._read_excerpts(job, [{"start_line": 1, "end_line": 9999}])[0]
     assert len(long.strip().splitlines()) <= config.PROBE_READ_LINES
 
 
@@ -670,9 +670,9 @@ def test_ambiguous_book_name_never_falls_back_to_the_current_handbook(tmp_path, 
     # 那样 got=="" 跟歧义毫无关系，是条空转断言。和 v0.8.9.2 揪出的那条同一个病根。
     job = _job(cur, [vault])
     # 正对照：先证明这条链路本来读得到，下面那条 assert 才有意义
-    ok = probe._read_excerpts(job, [{"book": "通关手册甲", "start_line": 1, "end_line": 2}])
+    ok = probe._read_excerpts(job, [{"book": "通关手册甲", "start_line": 1, "end_line": 2}])[0]
     assert "《通关手册甲》" in ok, f"链路本身就不通，下面那条是空转：{ok!r}"
-    got = probe._read_excerpts(job, [{"book": "通关手册", "start_line": 1, "end_line": 2}])
+    got = probe._read_excerpts(job, [{"book": "通关手册", "start_line": 1, "end_line": 2}])[0]
     assert got == "", f"歧义时不该猜一本读：{got!r}"
 
 
@@ -720,7 +720,7 @@ def test_one_book_with_two_keys_is_not_mistaken_for_two_books(tmp_path, monkeypa
 
     job = _job(cur, [vault])
     for want in ("Prompt", "工程手册"):
-        got = probe._read_excerpts(job, [{"book": want, "start_line": 6, "end_line": 7}])
+        got = probe._read_excerpts(job, [{"book": want, "start_line": 6, "end_line": 7}])[0]
         assert got, f"book={want!r} 落空了——同一本书被当成两本"
         assert "《Prompt 工程手册》" in got, f"标签没印书架上那个名字：{got[:60]!r}"
 
@@ -758,7 +758,7 @@ def test_same_file_registered_under_two_spellings_is_still_one_book(tmp_path, mo
 
     got = probe._read_excerpts(
         _job(cur, [vault]), [{"book": "别的教材（登记", "start_line": 1, "end_line": 2}]
-    )
+    )[0]
     assert got, "同一个文件的两种写法被当成两本书了"
     assert "别的教材" in got
 
@@ -811,7 +811,7 @@ def test_shelf_reverse_lookup_never_sees_a_book_the_model_cannot(tmp_path, monke
     # 而不是被看不见的第 10 本《Prompt 工程手册》投票否决
     got = probe._read_excerpts(
         _job(cur, [vault]), [{"book": "Prompt", "start_line": 1, "end_line": 2}]
-    )
+    )[0]
     assert "《Prompt 注入攻防》" in got, f"被看不见的书否决了：{got!r}"
 
 
@@ -846,3 +846,122 @@ def test_meta_title_key_survives_a_noncanonical_registered_path(tmp_path, monkey
     shelf = probe._shelf_paths(cur, [vault])
     assert "别的教材" in shelf, f"正文 H1 那个 key 丢了：{list(shelf)}"
     assert "别的.md" in shelf, f"meta.title 那个 key 丢了：{list(shelf)}"
+
+
+def _cross_fixture(tmp_path, monkeypatch):
+    """当前手册 + 书架上另一本，返回 (job, idx, shelf, 书名)。"""
+    from pen import config, libraries, library_scan, probe
+
+    lib = tmp_path / ".pen" / "libraries"
+    lib.mkdir(parents=True)
+    monkeypatch.setattr(libraries, "LIBRARIES_DIR", lib)
+    library_scan._CACHE.clear()
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    cur = vault / "cur.md"
+    cur.write_text(
+        "# 手搓当前这本\n\n# Level 0 — 终端\n\n## 第三拍 · 出身：真实框架里的 Bash\n"
+        + "\n".join(f"本册第 {i} 行" for i in range(6, 60))
+        + "\n\n# Level 5 — 审批\n"
+        + "\n".join(f"本册第 {i} 行" for i in range(62, 90)),
+        encoding="utf-8",
+    )
+    other = vault / "别本.md"
+    other.write_text(
+        "# 另一本教材\n\n# Level 0 — 它自己的开头\n"
+        + "\n".join(f"别本第 {i} 行，里面有 approval_gate 这个词" for i in range(4, 200)),
+        encoding="utf-8",
+    )
+    libraries.register(str(cur), "cur", extra_roots=[vault])
+    libraries.register(str(other), "oth", extra_roots=[vault])
+    monkeypatch.setattr(config, "handbook_allow_roots", lambda *a, **k: [vault])
+
+    job = probe.ProbeJob(
+        session_id="s", handbook_id="cur", original_path=cur, anchor={}, atom="a",
+        chip="free", user_text="", reply="", born_round=1, lang="zh",
+        cfg=config.LLMConfig(base_url="", api_key="", model="m", key_source="t"),
+        extra_roots=[vault],
+    )
+    return job, libraries.load_index("cur"), probe._shelf_or_empty(job), "另一本教材"
+
+
+def test_cross_anchor_must_be_in_a_span_we_actually_read(tmp_path, monkeypatch) -> None:
+    """跨书行号是我们自己 read_file 读给模型的，要验的不是「这行存不存在」
+    （查别本索引那条路要付并发写、索引中毒、mtime 陷阱一整套代价），
+    而是「这行是不是我们本轮真读过的那几段之一」。读了 L4-40 却写 L3000 就是编。"""
+    from pen import probe
+
+    job, idx, shelf, book = _cross_fixture(tmp_path, monkeypatch)
+    _, spans = probe._read_excerpts(job, [{"book": book, "start_line": 4, "end_line": 20}])
+    assert spans and spans[0][0] == book
+
+    here = {"level": "Level 0", "start_line": 3, "end_line": 5}
+    ok = probe.validate_slots(
+        {"axis": "altitude", "grounding": "book",
+         "anchors": [here, {"book": book, "start_line": 6, "end_line": 8}]},
+        idx, shelf=shelf, current=job.original_path, read_spans=spans,
+    )
+    assert ok == (True, ""), ok
+    bad = probe.validate_slots(
+        {"axis": "altitude", "grounding": "book",
+         "anchors": [here, {"book": book, "start_line": 3000, "end_line": 3005}]},
+        idx, shelf=shelf, current=job.original_path, read_spans=spans,
+    )
+    assert bad == (False, "anchor-invalid"), bad
+
+
+def test_every_question_needs_an_anchor_in_this_book(tmp_path, monkeypatch) -> None:
+    """少了这条，altitude / tradeoff / failure 在跨书下就是免检通道——
+    随便指另一本任意一行都能过，而读者手里拿的是当前这本。"""
+    from pen import probe
+
+    job, idx, shelf, book = _cross_fixture(tmp_path, monkeypatch)
+    _, spans = probe._read_excerpts(job, [{"book": book, "start_line": 4, "end_line": 20}])
+    got = probe.validate_slots(
+        {"axis": "altitude", "grounding": "book",
+         "anchors": [{"book": book, "start_line": 6, "end_line": 8}]},
+        idx, shelf=shelf, current=job.original_path, read_spans=spans,
+    )
+    assert got == (False, "needs-an-anchor-in-this-book"), got
+
+
+def test_bridge_across_books_is_not_killed_by_two_level_zeros(tmp_path, monkeypatch) -> None:
+    """两本书都有「Level 0」。按 level 字符串去重会把「本册 Level 0 + 另一本
+    Level 0」判成同一关，跨书搭桥直接被毙——而那正是最该抛的那种题。"""
+    from pen import probe
+
+    job, idx, shelf, book = _cross_fixture(tmp_path, monkeypatch)
+    _, spans = probe._read_excerpts(job, [{"book": book, "start_line": 4, "end_line": 20}])
+    got = probe.validate_slots(
+        {"axis": "bridge", "grounding": "book",
+         # 别本那一关**也叫 Level 0**——这正是按 level 字符串去重会踩的地方
+         "anchors": [{"level": "Level 0", "start_line": 3, "end_line": 5},
+                     {"book": book, "level": "Level 0", "start_line": 6, "end_line": 8}]},
+        idx, shelf=shelf, current=job.original_path, read_spans=spans,
+    )
+    assert got == (True, ""), got
+
+
+def test_an_anchor_without_book_cannot_borrow_the_other_books_source(tmp_path, monkeypatch) -> None:
+    """不填 book 的锚是本册锚，它引用的词就该在本册那几行里。
+    一律把跨书正文拼进语料的话，一条「不填 book 却在讲另一本书」的题会拿别人的
+    正文蒙混过关——那是最难堵的那种假出处。"""
+    from pen import probe
+
+    job, idx, shelf, book = _cross_fixture(tmp_path, monkeypatch)
+    excerpt, spans = probe._read_excerpts(job, [{"book": book, "start_line": 4, "end_line": 20}])
+    assert "approval_gate" in excerpt
+    assert "approval_gate" not in job.original_path.read_text(encoding="utf-8")
+
+    # axis 用 altitude：它只要求一条合法锚。用 bridge 的话第一条会因为
+    # 「需要两个不同的关」被拒，测试就通过了却跟语料隔离毫无关系——
+    # 突变表抓到过这条假测试。
+    item = {"text": "那本书讲的 `approval_gate` 跟这本第三拍对得上吗？",
+            "axis": "altitude", "grounding": "book", "depth": 4, "why": "w", "timing": "now",
+            "anchors": [{"level": "Level 0", "start_line": 3, "end_line": 5}]}
+    assert probe._harvest([item], job, idx, excerpt, spans) == [], "借了别本的正文当出处"
+    item2 = dict(item)
+    item2["anchors"] = [{"level": "Level 0", "start_line": 3, "end_line": 5},
+                        {"book": book, "start_line": 6, "end_line": 8}]
+    assert probe._harvest([item2], job, idx, excerpt, spans), "老实填了 book 反而被毙"

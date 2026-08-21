@@ -590,8 +590,12 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
         intent_extra = ""
         try:
             clicked = probe_store.mark_clicked(sess.session_id, body.user_text or "")
-            if clicked is not None and clicked.grounding == "open":
-                intent_extra = probemod.open_intent(lang)
+            if clicked is not None:
+                # 出处在别本的题**不能**走 open 那条「凭记忆讲」——书就在读者库里，
+                # 沙箱放行，本轮跨书预算满额，它本可以直接去读。
+                intent_extra = probemod.cross_intent(clicked.anchors, lang)
+                if not intent_extra and clicked.grounding == "open":
+                    intent_extra = probemod.open_intent(lang)
         except Exception:
             pass
         # 书架。v0.8.1 把「跨教材」整个挂在 probe 上，实时这条线一个字都没有——

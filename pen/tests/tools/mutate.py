@@ -27,37 +27,84 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
     (
         "D1 跨书正文不该短路掉锚点正文",
         "pen/probe.py",
-        '''        src = "\\n".join(
-            x for x in (excerpt, anchor_source(raw, job.original_path, job.extra_roots)) if x
-        )''',
+        """        src = "\\n".join(
+            x for x in (
+                excerpt if has_cross else "",
+                anchor_source(raw, job.original_path, job.extra_roots),
+            ) if x
+        )""",
         "        src = excerpt or anchor_source(raw, job.original_path, job.extra_roots)",
         "excerpt_does_not_shadow",
     ),
     (
+        "跨书锚必须是本轮真读过的那几段",
+        "pen/probe.py",
+        """        covered = any(
+            b == shown and s <= start and end <= e for b, s, e in read_spans
+        )
+        if not covered:
+            return None  # 没读过就写行号 = 编""",
+        "        covered = True",
+        "cross_anchor",
+    ),
+    (
+        "每条题至少一条锚落在当前这本",
+        "pen/probe.py",
+        '''    if not any(m.book == "" for m in marks):
+        return False, "needs-an-anchor-in-this-book"''',
+        "    pass",
+        "anchor_in_this_book",
+    ),
+    (
+        "bridge 按 (书, 关) 去重，不按 level 字符串",
+        "pen/probe.py",
+        "        if len({m.level_key for m in marks}) < 2:",
+        '''        _lv = {str(a.get("level") or "") for a in anchors}
+        _lv.discard("")
+        if len(_lv) < 2:''',
+        "bridge_across_books",
+    ),
+    (
+        "不填 book 的锚不许拿别本正文当出处",
+        "pen/probe.py",
+        '''                excerpt if has_cross else "",''',
+        "                excerpt,",
+        "cannot_borrow",
+    ),
+    (
+        "later 投递不许认错书",
+        "pen/probe_store.py",
+        """        cross = any(str(a.get("book") or "").strip() for a in q.anchors)
+        if not cross:
+            return True""",
+        "        return True",
+        "does_not_confuse",
+    ),
+    (
         "D3 书名歧义时不许猜一本",
         "pen/probe.py",
-        "                hit = next(iter(cands.values())) if len(cands) == 1 else None",
-        "                hit = next(iter(cands.values())) if cands else None",
+        "        hit = next(iter(cands.values())) if len(cands) == 1 else None",
+        "        hit = next(iter(cands.values())) if cands else None",
         "ambiguous_book_name",
     ),
     (
         "D3 label 用命中那本的真名，不用模型写的 want",
         "pen/probe.py",
-        '''            shown = next((k for k, v in shelf.items() if v == hit), want)''',
-        "            shown = want",
+        '''    shown = next((k for k, v in shelf.items() if v == hit), want)''',
+        "    shown = want",
         "one_book_with_two_keys",
     ),
     (
         "N1 唯一命中数的是书不是 key",
         "pen/probe.py",
-        """                cands: dict[Path, Path] = {}
-                for k in shelf:
-                    if want in k or k in want:
-                        try:
-                            cands.setdefault(shelf[k].expanduser().resolve(), shelf[k])
-                        except Exception:
-                            cands.setdefault(shelf[k], shelf[k])""",
-        """                cands = {k: shelf[k] for k in shelf if want in k or k in want}""",
+        """        cands: dict[Path, Path] = {}
+        for k in shelf:
+            if want in k or k in want:
+                try:
+                    cands.setdefault(shelf[k].expanduser().resolve(), shelf[k])
+                except Exception:
+                    cands.setdefault(shelf[k], shelf[k])""",
+        """        cands = {k: shelf[k] for k in shelf if want in k or k in want}""",
         "two_keys or two_spellings",
     ),
     (
@@ -146,9 +193,32 @@ def main() -> int:
             finally:
                 p.write_text(bak, encoding="utf-8")
             line = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "(无输出)"
+            if "failed" not in line and " passed" in line:
+                # 复查一次。实测出现过假阴性：同一条突变连跑三次有一次报绿，
+                # 手工在同样的副本上跑却是红的。方向比假阳性安全（会去查而不是放过），
+                # 但每次都要人手工排查就白搭了。
+                p.write_text(bak.replace(old, new), encoding="utf-8")
+                try:
+                    r2 = subprocess.run(
+                        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-k", expr],
+                        capture_output=True, text=True, cwd=work,
+                    )
+                finally:
+                    p.write_text(bak, encoding="utf-8")
+                line2 = r2.stdout.strip().splitlines()[-1] if r2.stdout.strip() else "(无输出)"
+                if "failed" in line2:
+                    print(f"  ✓ 会红  {name}  （第一次报绿，复查是红的）")
+                    continue
+                line = line2
             if "failed" in line:
                 print(f"  ✓ 会红  {name}")
-            elif " passed" not in line and " deselected" not in line:
+            elif " passed" not in line:
+                # 只有 deselected、一条都没跑 = -k 表达式没选中任何用例。
+                # 这和「测试是空转」一样危险，实测栽过两次（测试名和表里的
+                # 表达式对不上，表却报绿）。
+                print(f"  ?? {name}: -k {expr!r} 没选中任何用例 → {line}")
+                bad += 1
+            elif False:
                 # 既没红也没绿：多半是 collect 出错或 -k 没选中任何用例，
                 # 那和「测试没抓住」一样危险，不能当通过。
                 print(f"  ?? {name}: 跑不起来 → {line}")
