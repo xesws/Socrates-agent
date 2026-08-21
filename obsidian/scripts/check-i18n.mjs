@@ -7,7 +7,7 @@
  */
 import { build } from "esbuild";
 import { createRequire } from "node:module";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -130,6 +130,44 @@ check("thinkTick 两边都在且翻过", Boolean(zhSec.thinkTick) && Boolean(enS
   && zhSec.thinkTick(1200) !== enSec.thinkTick(1200));
 check("thinkTick 带得上数字（读者看的就是它在跳）", zhSec.thinkTick(1200).includes("1.2k"));
 check("thinkTick 不出现货币符号", !/[¥$€£]/.test(zhSec.thinkTick(1200) + enSec.thinkTick(1200)));
+
+// ── v0.12.10：两条通吃的闸 ─────────────────────────────────────────
+//
+// 起因：`reviveSession()` 顶上那条早退现在靠「写一句非空的 this.err」
+// 撑起一条不变式（返回 false ⇒ this.err 非空），而这条不变式的前提是
+// **两张表里那个键都非空**。`en.ts` 上的 `Dict` 类型能挡住漏键，
+// 挡不住空串。上面那些 check 全是按名字点到的 spot check，
+// 一个新键加进来不会被任何东西看一眼。
+
+const zhOnly = [];
+for (const [k, v] of Object.entries(zhSec)) {
+  if (typeof v !== "string") continue; // 函数型的由下面那条 arity 自检守
+  const e = enSec[k];
+  if (typeof e !== "string" || !e) zhOnly.push(k);
+}
+check(
+  `zh 的每个字符串键在 en 里都非空（${Object.keys(zhSec).length} 个键）`,
+  zhOnly.length === 0,
+);
+if (zhOnly.length) console.error("   en 缺或为空：" + zhOnly.join(", "));
+
+// **键名要和去处对得上。** v0.12.6 ⑤ 立的规矩：`notice*` 进 `new Notice()`，
+// `err*` 进 `this.err`（错误条，由 paintAlert 渲染）。两者的写法不一样——
+// Notice 是短祈使句、不收句；错误条要完整句，还可能被 `+=` 追加东西。
+// v0.12.9 自己破过一次这条规矩（把 noticeRegisterFirst 塞进了 this.err），
+// 拼出来的英文整句不终止。规矩靠人记不住，做成扫描。
+const src = readFileSync("src/views/PenView.ts", "utf8");
+const wrongInErr = [...src.matchAll(/this\.err\s*\+?=\s*t\(\)\.(\w+)/g)]
+  .map((m) => m[1])
+  .filter((k) => !k.startsWith("err"));
+check("this.err 右边只出现 err* 的键", wrongInErr.length === 0);
+if (wrongInErr.length) console.error("   走错槽：" + wrongInErr.join(", "));
+
+const wrongInNotice = [...src.matchAll(/new Notice\(\s*t\(\)\.(\w+)/g)]
+  .map((m) => m[1])
+  .filter((k) => !k.startsWith("notice"));
+check("new Notice() 里只出现 notice* 的键", wrongInNotice.length === 0);
+if (wrongInNotice.length) console.error("   走错槽：" + wrongInNotice.join(", "));
 
 // 模块加载时的 arity 自检不该报警（报了说明英文表漏用了占位符）
 check("中英表函数形参个数一致（无 arity 警告）", warnings.length === 0);

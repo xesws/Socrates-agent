@@ -906,7 +906,11 @@ export class PenView extends ItemView {
       // 两个调用点的兜底分支都建立在这条不变式上；靠外部事实的话，将来
       // 有人加一条「重开面板时从 noteBind 恢复上次会话」，这里就静默变成
       // 可达路径，而那两处注释当场变成假话。
-      this.err = t().noticeRegisterFirst;
+      // 用一条**为这个位置写的完整句**，不是复用 `noticeRegisterFirst`：
+      // 那句只说「去框选」不说「这场对话没了」，`send()` 那条路会整句丢掉
+      // 读者最想知道的事；而且它不以「。」收句，`doApprove()` 那条路
+      // `+= errApprovalUntouched` 拼出来标点接不上。
+      this.err = t().errSessionGoneNoHandbook;
       return false;
     }
     try {

@@ -154,6 +154,8 @@ export const en: Dict = {
 
   noticeUnreachable: "Can't reach the sidecar — check the error up in the panel",
   noticeRegisterFirst: "Pick a passage first so this note gets registered",
+  errSessionGoneNoHandbook:
+    "This conversation is gone from the sidecar, and no note is registered in the panel yet, so a fresh one can't be opened. Pick a passage first.",
   noticeResolveApproval: "Allow or reject the pending edit first",
   noticeUseSelectionFirst: "Hit “Use selection” first",
   noticeRolledBack: "Rolled back one version",

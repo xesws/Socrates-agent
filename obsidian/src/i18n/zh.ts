@@ -198,6 +198,16 @@ export const zh = {
   // ── Notice ──
   noticeUnreachable: "连不上 sidecar，先看面板上的错误信息",
   noticeRegisterFirst: "先框选并登记当前笔记",
+  // `reviveSession()` 顶上那条早退专用。**不要**图省事复用上面那句
+  // `noticeRegisterFirst`：那是给 `new Notice()` 写的短祈使句，
+  //   - 塞进 `this.err` 之后读者只被要求做个动作，「这场对话没了」整句缺席；
+  //   - 它不以「。」收句，而 `errApprovalUntouched` 是按「前面已经收句」
+  //     设计的追加物，拼出来那个括号会像在修饰「登记笔记」这个动作
+  //     （英文那边更糟：整句从头到尾不终止）；
+  //   - 键名和去处也对不上（v0.12.6 ⑤ 立的规矩）。
+  // 所以这里要一条为这个位置写的完整句：既说发生了什么，也说该做什么。
+  errSessionGoneNoHandbook:
+    "这场对话在 sidecar 上已经找不到了，而面板上还没有登记过笔记，没法给你开新的一场。请先框选一次。",
   noticeResolveApproval: "先批准或拒绝这次编辑",
   noticeUseSelectionFirst: "先点「用当前选区」",
   noticeRolledBack: "已回到上一版",
