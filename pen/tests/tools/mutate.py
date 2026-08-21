@@ -11,10 +11,16 @@
 from __future__ import annotations
 
 import pathlib
+import shutil
 import subprocess
 import sys
+import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
+# 别在工作区里改：① 脚本跑到一半崩了会留下坏代码；② 别的进程（编辑器、
+# 另一个 agent、watch 模式）正好在这一瞬读到坏文件，结果就飘——实测同一条
+# 突变连跑三次会出现一次假绿。整个仓库复制一份到 tmp，在副本上折腾。
+_SKIP = {".git", "node_modules", ".pytest_cache", "__pycache__", ".pen", "dist", ".venv"}
 
 # (名字, 文件, 原文, 改坏成什么, 该变红的 -k 表达式)
 MUTATIONS: list[tuple[str, str, str, str, str]] = [
@@ -90,6 +96,18 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
         "caps_the_number_of_reads",
     ),
     (
+        "近度三档：当前手册自己那棵树优先于其他根",
+        "pen/library_scan.py",
+        """            if home is not None and (r == home or home in r.parents):
+                near = 0
+            elif any(r == b or b in r.parents for b in bases):
+                near = 1
+            else:
+                near = 2""",
+        """            near = 0 if any(r == b or b in r.parents for b in bases) else 1""",
+        "readers_own_tree",
+    ),
+    (
         "书架的闸与 read_file 的闸同源",
         "pen/tutor.py",
         "    return [REPO_ROOT, *(extra_roots or [])]",
@@ -99,29 +117,45 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
 ]
 
 
+def _clone(dest: pathlib.Path) -> pathlib.Path:
+    shutil.copytree(
+        ROOT, dest / "repo",
+        ignore=lambda d, names: [n for n in names if n in _SKIP],
+        symlinks=True,
+    )
+    return dest / "repo"
+
+
 def main() -> int:
     bad = 0
-    for name, rel, old, new, expr in MUTATIONS:
-        p = ROOT / rel
-        bak = p.read_text(encoding="utf-8")
-        if bak.count(old) != 1:
-            print(f"  ?? {name}: 锚点在 {rel} 里出现 {bak.count(old)} 次，改过实现就要更新这张表")
-            bad += 1
-            continue
-        p.write_text(bak.replace(old, new), encoding="utf-8")
-        try:
-            r = subprocess.run(
-                [sys.executable, "-m", "pytest", "-q", "-k", expr],
-                capture_output=True, text=True, cwd=ROOT,
-            )
-        finally:
-            p.write_text(bak, encoding="utf-8")
-        line = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "(无输出)"
-        if "failed" in line:
-            print(f"  ✓ 会红  {name}")
-        else:
-            print(f"  ✗ 空转  {name}  →  {line}")
-            bad += 1
+    with tempfile.TemporaryDirectory() as td:
+        work = _clone(pathlib.Path(td))
+        for name, rel, old, new, expr in MUTATIONS:
+            p = work / rel
+            bak = p.read_text(encoding="utf-8")
+            if bak.count(old) != 1:
+                print(f"  ?? {name}: 锚点在 {rel} 里出现 {bak.count(old)} 次，改过实现就要更新这张表")
+                bad += 1
+                continue
+            p.write_text(bak.replace(old, new), encoding="utf-8")
+            try:
+                r = subprocess.run(
+                    [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-k", expr],
+                    capture_output=True, text=True, cwd=work,
+                )
+            finally:
+                p.write_text(bak, encoding="utf-8")
+            line = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "(无输出)"
+            if "failed" in line:
+                print(f"  ✓ 会红  {name}")
+            elif " passed" not in line and " deselected" not in line:
+                # 既没红也没绿：多半是 collect 出错或 -k 没选中任何用例，
+                # 那和「测试没抓住」一样危险，不能当通过。
+                print(f"  ?? {name}: 跑不起来 → {line}")
+                bad += 1
+            else:
+                print(f"  ✗ 空转  {name}  →  {line}")
+                bad += 1
     print(f"\n{len(MUTATIONS)} 项，{'全部会红' if not bad else f'{bad} 项没抓住'}")
     return 1 if bad else 0
 

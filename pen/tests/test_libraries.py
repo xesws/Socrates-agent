@@ -408,3 +408,48 @@ def test_probe_reading_roots_keep_their_own_semantics(tmp_path, monkeypatch) -> 
     assert probe._reading_roots(job([vault])) == [vault], "probe 那支不该含 REPO_ROOT"
     assert probe._reading_roots(job([])) == [(tmp_path / "repo").resolve()]
     assert read_roots(None) == [tmp_path / "repo"]
+
+
+def test_the_readers_own_tree_beats_mtime_when_both_copies_are_in_range(tmp_path, monkeypatch) -> None:
+    """实时层的读取根是 [REPO_ROOT, vault]——同名的两份拷贝**都**算「近」，
+    分不出胜负就退到纯 mtime。读者 git pull 刷新了仓库那份、vault 那份没动，
+    师傅就照着仓库那份讲，而读者在编辑的是 vault 那份。
+    今天真实登记表上 vault 那份更新所以碰巧对，那是运气。"""
+    import os
+
+    from pen import config, library_scan
+
+    monkeypatch.setattr(config, "PEN_DIR", tmp_path / ".pen")
+    repo = tmp_path / "repo"
+    vault = tmp_path / "vault"
+    repo.mkdir()
+    vault.mkdir()
+    body = "# 通关手册\n\n## 开篇\n"
+    r = repo / "handbook.md"
+    v = vault / "handbook.md"
+    r.write_text(body, encoding="utf-8")
+    v.write_text(body, encoding="utf-8")
+    # 仓库那份更新——刚 git pull 过
+    os.utime(r, (1_800_000_000, 1_800_000_000))
+    os.utime(v, (1_700_000_000, 1_700_000_000))
+
+    for label, cur_dir in (("手册在 vault 根", vault), ("手册在 vault 子目录", vault / "level0")):
+        cur_dir.mkdir(exist_ok=True)
+        cur = cur_dir / "当前.md"
+        cur.write_text("# 当前这本\n", encoding="utf-8")
+        library_scan._CACHE.clear()
+        got = library_scan.shelf_digest(
+            cur, [str(r), str(v)], allow_roots=[repo, vault], with_paths=True
+        )
+        assert str(v) in got, f"{label}：选了仓库那份（mtime 新），而读者在编辑 vault 那份\n{got}"
+        assert str(r) not in got
+
+    # 反向：当前手册就在仓库根里时，仓库那份才该赢
+    cur_repo = repo / "当前.md"
+    cur_repo.write_text("# 当前这本\n", encoding="utf-8")
+    os.utime(v, (1_900_000_000, 1_900_000_000))  # vault 那份反而更新
+    library_scan._CACHE.clear()
+    got = library_scan.shelf_digest(
+        cur_repo, [str(r), str(v)], allow_roots=[repo, vault], with_paths=True
+    )
+    assert str(r) in got, f"当前手册在仓库根，却选了 vault 那份：\n{got}"

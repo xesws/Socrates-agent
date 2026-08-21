@@ -76,9 +76,19 @@ def _prefer_nearby(
     实测留下的是仓库根那份（8-13），而读者眼前编辑的是 vault 那份（8-17）——
     师傅照着旧版讲，还讲得理直气壮。
 
-    「近」按**读取根**算，不按当前手册的父目录：手册放在 `vault/level0/` 这种子目录
-    里时，`vault/` 根下的兄弟书就不算同一棵树了，于是退到 mtime 比大小——仓库那份
-    被 git pull 刷新过就会赢，又绕回原来那个 bug。
+    「近」分三档，不是两档：
+
+    0. **当前手册自己所在的那个根**——读者眼前编辑的就是这一棵树
+    1. 其他读取根（仓库根、别的 vault）
+    2. 不在任何根内 / 路径坏掉
+
+    只分「在根内 / 不在根内」两档不够：实时层的根是 `[REPO_ROOT, vault]`，
+    两份拷贝都算「近」，分不出胜负就退到纯 mtime 比大小——读者 `git pull` 刷新了
+    仓库那份、vault 那份没动，师傅就照着仓库那份讲，而读者在编辑的是 vault 那份。
+    今天真实登记表上 vault 那份更新（8-17 vs 8-13）所以碰巧是对的，那是运气。
+
+    也不按当前手册的父目录算：手册放在 `vault/level0/` 这种子目录里时，
+    `vault/` 根下的兄弟书就不算同一棵树了，同样会退到 mtime 比大小。
     用 stat 而不是 meta.json 里的 mtime：那是登记那一刻的快照，写回之后就过期了。
     """
     bases: list[Path] = []
@@ -87,22 +97,34 @@ def _prefer_nearby(
             bases.append(Path(r).expanduser().resolve())
         except Exception:
             continue
-    if not bases and current_path is not None:
-        try:
-            bases.append(current_path.expanduser().resolve().parent)
-        except Exception:
-            pass
+    try:
+        me = current_path.expanduser().resolve() if current_path is not None else None
+    except Exception:
+        me = None
+    if not bases and me is not None:
+        bases.append(me.parent)
+    # 当前手册落在哪个根里。多个根嵌套时取**最深**的那个——那才是「它自己那棵树」。
+    home: Path | None = None
+    if me is not None:
+        for b in bases:
+            if (me == b or b in me.parents) and (home is None or len(b.parts) > len(home.parts)):
+                home = b
 
     def key(raw: str) -> tuple[int, float]:
         try:
             r = Path(raw).expanduser().resolve()
-            near = 0 if any(r == b or b in r.parents for b in bases) else 1
+            if home is not None and (r == home or home in r.parents):
+                near = 0
+            elif any(r == b or b in r.parents for b in bases):
+                near = 1
+            else:
+                near = 2
             return (near, -r.stat().st_mtime)
         except Exception:
             # OSError 不够：resolve() 对含 \x00 的路径抛 ValueError，对 symlink 环
             # 抛 RuntimeError。key 抛异常会掀掉整个 sorted()，一条坏登记记录
             # 就让整张书架消失——而调用方只看得到一个空字符串。
-            return (2, 0.0)
+            return (3, 0.0)
 
     return sorted(registered, key=key)
 
