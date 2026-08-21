@@ -59,8 +59,19 @@ def test_pen_home_moves_pen_dir(tmp_path: Path, monkeypatch) -> None:
     assert config.PEN_DIR == dest.resolve()
     assert config.LIBRARIES_DIR == dest.resolve() / "libraries"
     monkeypatch.delenv("PEN_HOME", raising=False)
-    config.PEN_DIR = config.REPO_ROOT / ".pen"
+    config.PEN_DIR = config.default_pen_dir()
     config.LIBRARIES_DIR = config.PEN_DIR / "libraries"
+
+
+def test_default_pen_dir_source_tree() -> None:
+    assert config.default_pen_dir(config.REPO_ROOT) == config.REPO_ROOT / ".pen"
+
+
+def test_default_pen_dir_installed_package(tmp_path: Path) -> None:
+    pkg = tmp_path / "pen"
+    pkg.mkdir()
+    (pkg / "app.py").write_text("#", encoding="utf-8")
+    assert config.default_pen_dir(tmp_path) == Path.home() / ".socrates-pen"
 
 
 def test_merge_llm_request_wins_and_key_alone_works(tmp_path: Path, monkeypatch) -> None:
@@ -266,8 +277,9 @@ def test_tests_never_write_the_real_pen_dir() -> None:
     # libraries / snapshots 是 import 时冻结的副本，要单独盯。
     assert libraries.LIBRARIES_DIR.resolve() == config.LIBRARIES_DIR.resolve()
     assert snapshots.LIBRARIES_DIR.resolve() == config.LIBRARIES_DIR.resolve()
-    # 真实手册还得能读到——patch 掉 REPO_ROOT 的话沙箱会把默认手册也关在门外。
-    assert config.DEFAULT_HANDBOOK.is_file()
+    # 实验室检出里默认手册还得能读到；公开仓 / pip 安装没有这份文件。
+    if (config.REPO_ROOT / "SWE-Agent通关手册v2.md").is_file():
+        assert config.DEFAULT_HANDBOOK.is_file()
 
 
 def test_isolated_pen_dir_is_not_pre_created() -> None:

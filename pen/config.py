@@ -10,7 +10,25 @@ from typing import Any
 from urllib.parse import urlparse
 
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent
-PEN_DIR: Path = REPO_ROOT / ".pen"
+
+
+def is_source_tree(root: Path | None = None) -> bool:
+    """git 检出或带 pyproject 的源码树。pip 装进 site-packages 为假。"""
+    base = root if root is not None else REPO_ROOT
+    if not (base / "pen" / "app.py").is_file():
+        return False
+    return (base / ".git").is_dir() or (base / "pyproject.toml").is_file()
+
+
+def default_pen_dir(root: Path | None = None) -> Path:
+    """源码树用仓库里的 `.pen`；安装后的包用 `~/.socrates-pen`。"""
+    base = root if root is not None else REPO_ROOT
+    if is_source_tree(base):
+        return base / ".pen"
+    return Path.home() / ".socrates-pen"
+
+
+PEN_DIR: Path = default_pen_dir()
 LIBRARIES_DIR: Path = PEN_DIR / "libraries"
 DEFAULT_HANDBOOK_ID = "swe-agent-v2"
 DEFAULT_HANDBOOK: Path = REPO_ROOT / "SWE-Agent通关手册v2.md"

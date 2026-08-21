@@ -7,6 +7,13 @@ from pen import config, libraries
 FIXTURE = Path(__file__).parent / "fixtures" / "mini_handbook.md"
 
 
+def test_ensure_default_noop_when_handbook_missing(tmp_path: Path, monkeypatch) -> None:
+    _isolate_pen(tmp_path, monkeypatch)
+    missing = tmp_path / "no-such-handbook.md"
+    monkeypatch.setattr(libraries, "DEFAULT_HANDBOOK", missing)
+    assert libraries.ensure_default() is None
+
+
 def _isolate_pen(tmp_path: Path, monkeypatch) -> Path:
     lib = tmp_path / "libraries"
     lib.mkdir()

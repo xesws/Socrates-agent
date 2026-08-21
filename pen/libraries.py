@@ -124,13 +124,14 @@ def register(
     return meta
 
 
-def ensure_default() -> HandbookMeta:
+def ensure_default() -> HandbookMeta | None:
+    """实验室检出里登记默认手册。pip 安装后没有那份文件，空操作，让 sidecar 能起。"""
     if DEFAULT_HANDBOOK.is_file():
         existing = get(DEFAULT_HANDBOOK_ID)
         if existing and Path(existing.original_path).resolve() == DEFAULT_HANDBOOK.resolve():
             return refresh_if_stale(DEFAULT_HANDBOOK_ID)
         return register(DEFAULT_HANDBOOK, DEFAULT_HANDBOOK_ID)
-    raise FileNotFoundError(f"默认手册不存在：{DEFAULT_HANDBOOK}")
+    return None
 
 
 def list_handbooks() -> list[HandbookMeta]:
