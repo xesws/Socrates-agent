@@ -101,6 +101,7 @@ export const en: Dict = {
     "The conversation this edit belongs to is gone from the sidecar. The note was not modified. A fresh conversation is open; just ask again.",
   errApprovalArchivedHard:
     "The conversation this edit belongs to is gone from the sidecar, and a fresh one couldn't be opened either. The note was not modified.",
+  errApprovalUntouched: " (The write-back never ran — your note was not modified.)",
 
   usage: (ctx, out) => `context ${k(ctx)} · reply ${k(out)}`,
   spendTurn: (tok) => `turn ${k(tok)}`,

@@ -1042,6 +1042,9 @@ export class PenView extends ItemView {
       this.status = "";
       // reviveSession 写过 this.err 就说明服务端给了准确因由（多半是
       // 「笔记被改名或移走，请重新框选一次」），别用兜底那句盖掉。
+      // 注意这道闸现在**几乎恒真**：reviveSession 的 catch 一定会写 this.err，
+      // 所以下面这句只在「抛出来的 Error 消息是空串」时才出得来。
+      // 它是真·最后兜底，不是常规回退路径——别照着它推断读者常看到什么。
       if (!this.err) this.err = t().errSessionArchivedHard;
       this.paintBar();
       await this.paintLog();
@@ -1157,11 +1160,17 @@ export class PenView extends ItemView {
     if (!gone) return;
     if (await this.reviveSession()) {
       this.err = t().errApprovalArchived;
-    } else if (!this.err) {
-      // 同上：reviveSession 已经写下服务端那句真话就不要盖。
-      // 用 errApprovalArchived**Hard** 而不是 errSessionArchivedHard：
-      // 后者被提问那条路共用，里面没有「原文没有被改动」——而读者刚点完
-      // 「同意写回」，此刻他唯一想知道的就是笔记被改了没有。
+    } else if (this.err) {
+      // reviveSession 写下了服务端那句准确因由（多半是「笔记被改名或移走，
+      // 请重新框选一次」）。**不盖掉它**——但「原文没有被改动」是审批这条路
+      // 上唯一要紧的一句，不能因为让位就整句缺席。所以是**追加**不是替换：
+      // 读者刚点完「同意写回」，此刻他唯一想知道的就是笔记被改了没有。
+      this.err += t().errApprovalUntouched;
+    } else {
+      // 真·最后兜底。`reviveSession` 的 catch **一定**会写 this.err，
+      // 所以走到这里只剩一种可能：抛出来的 Error 消息是空串，连一句
+      // 因由都没有。用 errApprovalArchived**Hard** 而不是
+      // errSessionArchivedHard——后者被提问那条路共用，里面没有那句话。
       this.err = t().errApprovalArchivedHard;
     }
     this.paintBar();
