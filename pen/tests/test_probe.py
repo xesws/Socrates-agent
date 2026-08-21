@@ -665,9 +665,14 @@ def test_ambiguous_book_name_never_falls_back_to_the_current_handbook(tmp_path, 
     targets = {shelf[k] for k in shelf if "通关手册" in k or k in "通关手册"}
     assert len(targets) == 2, "前提变了：这两本本来就该都沾边"
     assert shelf.get("通关手册") is None
-    got = probe._read_excerpts(
-        _job(cur), [{"book": "通关手册", "start_line": 1, "end_line": 2}]
-    )
+    # job 必须带上 vault：_read_excerpts 内部用 _reading_roots(job) 自建 shelf，
+    # extra_roots=[] 时那是仓库根，tmp vault 里的书全被滤掉，shelf 恒为 {}——
+    # 那样 got=="" 跟歧义毫无关系，是条空转断言。和 v0.8.9.2 揪出的那条同一个病根。
+    job = _job(cur, [vault])
+    # 正对照：先证明这条链路本来读得到，下面那条 assert 才有意义
+    ok = probe._read_excerpts(job, [{"book": "通关手册甲", "start_line": 1, "end_line": 2}])
+    assert "《通关手册甲》" in ok, f"链路本身就不通，下面那条是空转：{ok!r}"
+    got = probe._read_excerpts(job, [{"book": "通关手册", "start_line": 1, "end_line": 2}])
     assert got == "", f"歧义时不该猜一本读：{got!r}"
 
 

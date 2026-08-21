@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from pen.readtool import read_file_report
-from pen.config import CROSS_BOOK_CHARS
+from pen.config import CROSS_BOOK_CHARS, CROSS_BOOK_READS
 from pen.sandbox import SandboxError, assert_write_target, resolve_read_target
 from pen import libraries, snapshots
 
@@ -62,7 +62,8 @@ def handle_read_file(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
     # 那正是我们要止住的循环。
     if report["ok"] and _is_cross_book(original, str(report["resolved"])):
         spent = int(ctx.get("cross_book_chars") or 0)
-        if spent >= CROSS_BOOK_CHARS:
+        reads = int(ctx.get("cross_book_reads") or 0)
+        if spent >= CROSS_BOOK_CHARS or reads >= CROSS_BOOK_READS:
             return {
                 "ok": True,
                 "text": (
@@ -73,6 +74,7 @@ def handle_read_file(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
                 "detail": raw_path,
             }
         ctx["cross_book_chars"] = spent + len(text)
+        ctx["cross_book_reads"] = reads + 1
     return {
         "ok": bool(report["ok"]),
         "text": text,

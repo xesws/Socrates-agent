@@ -348,6 +348,12 @@ def test_cross_book_budget_stops_the_翻书_loop_without_erroring(tmp_path) -> N
             break
     assert stopped_at is not None, "翻了 39 次还没停"
     assert ctx["cross_book_chars"] >= CROSS_BOOK_CHARS
+    # 必须是**字节**闸停的，不是次数闸兜住的——否则拿掉字节闸这条测试照样绿。
+    from pen.config import CROSS_BOOK_READS
+
+    assert ctx["cross_book_reads"] < CROSS_BOOK_READS, (
+        f"次数先触顶了（{ctx['cross_book_reads']}），这条测不到字节闸"
+    )
     # 单次 read_file 已被 MAX_OUTPUT 截到 5000，所以约等于 5 次满窗
     assert 2 <= stopped_at <= 12, f"预算档位不对：第 {stopped_at} 次才停"
     assert "没读到" in got["text"] or "只读了哪几段" in got["text"], "得告诉它怎么诚实收场"
@@ -377,3 +383,25 @@ def test_case_typo_in_handbook_path_is_not_charged_as_cross_book(tmp_path) -> No
     other.write_text("# 别的书\n", encoding="utf-8")
     handle_read_file({"path": str(other)}, ctx)
     assert ctx.get("cross_book_chars")
+
+
+def test_cross_book_budget_also_caps_the_number_of_reads(tmp_path) -> None:
+    """光封字节封不住轮数：模型每次只读一行，字节预算永远用不完，
+    而 MAX_TOOL_ROUNDS=50 一次不少，每轮 prompt 还要把整段 messages 重发一遍。"""
+    from pen.agent.tools_impl import handle_read_file
+    from pen.config import CROSS_BOOK_CHARS, CROSS_BOOK_READS
+
+    cur = tmp_path / "cur.md"
+    cur.write_text("# 当前这本\n", encoding="utf-8")
+    other = tmp_path / "other.md"
+    other.write_text("\n".join(f"第 {i} 行" for i in range(1, 500)), encoding="utf-8")
+    ctx = {"original_path": cur, "extra_roots": [tmp_path]}
+
+    stopped = None
+    for i in range(1, 40):
+        got = handle_read_file({"path": str(other), "offset": i, "limit": 1}, ctx)
+        if "额度用完" in got["text"]:
+            stopped = i
+            break
+    assert stopped == CROSS_BOOK_READS + 1, f"次数闸没生效，第 {stopped} 次才停"
+    assert ctx["cross_book_chars"] < CROSS_BOOK_CHARS, "前提：每次只读一行，字节预算根本用不完"
