@@ -569,8 +569,17 @@ def _read_excerpts(job: ProbeJob, reads: Sequence[dict[str, Any]]) -> str:
                 # H1 被推离第 1 行、build_index 退回文件名，两个 key 就不一样了——
                 # 同一本书占两条候选，按 key 数会误判成歧义，把简称全毙掉。
                 # 而 frontmatter 正是 vault 里第三方教材的默认形态。
-                cands = {shelf[k] for k in shelf if want in k or k in want}
-                hit = next(iter(cands)) if len(cands) == 1 else None
+                # 按 resolve 后的路径去重：out 里存的是未 resolve 的 Path(raw)，
+                # 两条登记记录指向同一个文件却写法不同（一条带 ..）时，
+                # 裸 Path 比较不相等，又会退回「同一本书被当成两本」。
+                cands: dict[Path, Path] = {}
+                for k in shelf:
+                    if want in k or k in want:
+                        try:
+                            cands.setdefault(shelf[k].expanduser().resolve(), shelf[k])
+                        except Exception:
+                            cands.setdefault(shelf[k], shelf[k])
+                hit = next(iter(cands.values())) if len(cands) == 1 else None
             if hit is None:
                 continue  # 点了一本书架上没有的，忽略而不是回退到当前这本
             target = hit

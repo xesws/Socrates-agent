@@ -716,3 +716,41 @@ def test_one_book_with_two_keys_is_not_mistaken_for_two_books(tmp_path, monkeypa
         got = probe._read_excerpts(job, [{"book": want, "start_line": 6, "end_line": 7}])
         assert got, f"book={want!r} 落空了——同一本书被当成两本"
         assert "《Prompt 工程手册》" in got, f"标签没印书架上那个名字：{got[:60]!r}"
+
+
+def test_same_file_registered_under_two_spellings_is_still_one_book(tmp_path, monkeypatch) -> None:
+    """_shelf_paths 存的是未 resolve 的 Path(raw)。两条登记记录指向同一个文件
+    却写法不同（一条绕 ..），裸 Path 比较不相等，又会退回「同一本书当成两本」。"""
+    from pen import config, libraries, library_scan, probe
+
+    lib = tmp_path / ".pen" / "libraries"
+    lib.mkdir(parents=True)
+    monkeypatch.setattr(libraries, "LIBRARIES_DIR", lib)
+    library_scan._CACHE.clear()
+
+    vault = tmp_path / "vault"
+    sub = vault / "sub"
+    sub.mkdir(parents=True)
+    cur = vault / "cur.md"
+    cur.write_text("# 手搓当前这本\n\n## 一\n", encoding="utf-8")
+    other = vault / "别的教材.md"
+    other.write_text("# 别的教材\n\n## 第一章\n", encoding="utf-8")
+    libraries.register(str(cur), "cur", extra_roots=[vault])
+    libraries.register(str(other), "o1", extra_roots=[vault])
+    monkeypatch.setattr(config, "handbook_allow_roots", lambda *a, **k: [vault])
+
+    # _read_excerpts 内部会自己调 _shelf_paths 重建，所以必须 patch 掉，
+    # 光在外面改返回值是没用的（这条测试第一版就是这么写假的）。
+    fake = {
+        "别的教材": other,
+        "别的教材（登记表里的另一种写法）": Path(str(sub / ".." / "别的教材.md")),
+    }
+    assert len(set(fake.values())) == 2, "前提：裸 Path 比较不相等"
+    assert len({v.resolve() for v in fake.values()}) == 1, "前提：其实是同一个文件"
+    monkeypatch.setattr(probe, "_shelf_paths", lambda *a, **k: fake)
+
+    got = probe._read_excerpts(
+        _job(cur, [vault]), [{"book": "别的教材（登记", "start_line": 1, "end_line": 2}]
+    )
+    assert got, "同一个文件的两种写法被当成两本书了"
+    assert "别的教材" in got
