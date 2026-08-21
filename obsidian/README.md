@@ -1,5 +1,7 @@
 # Socrates Pen（Obsidian 客户端）
 
+**源码已迁到平行公开仓 `../socrates-pen`。不要在这个目录改插件。** 本目录只留作对照，下一轮删除。
+
 薄插件。脑子在本机的 `python -m pen`。
 
 模型、钥匙、节点都在 **设置 → Socrates Pen** 里填，不要去配环境变量。

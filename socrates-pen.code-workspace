@@ -2,7 +2,7 @@
   "folders": [
     {
       "name": "plugin",
-      "path": "obsidian"
+      "path": "../socrates-pen"
     },
     {
       "name": "sidecar",
