@@ -570,3 +570,86 @@ def test_second_edit_in_rest_asks_again(monkeypatch, tmp_path: Path) -> None:
     assert sess.pending is not None
     assert sess.pending["args"]["old_string"] == "第二段。"
     assert not any(e["type"] == "done" for e in events)
+
+
+# ── v0.10.0 计量 ────────────────────────────────────────────────
+
+
+def test_spend_event_fires_once_per_llm_call_and_only_grows(monkeypatch, tmp_path: Path) -> None:
+    """实时计量的整条链：每打一枪就报一次，数字只增不减。
+
+    读者要看的就是这个——翻书翻到一半时数字还在往上爬，那是失控循环
+    唯一看得见的信号。
+    """
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n唯一段。\n", encoding="utf-8")
+    _patch_script(
+        monkeypatch,
+        [
+            _Msg(tool_calls=[_Tc("c1", "read_file", {"path": str(book), "offset": 1, "limit": 20})]),
+            _Msg(tool_calls=[_Tc("c2", "read_file", {"path": str(book), "offset": 1, "limit": 20})]),
+            _Msg(content="看过了。" * 30),
+        ],
+    )
+    sess = PenSession(session_id="s" * 32, handbook_id="demo")
+    events = list(
+        stream_chat(sess, book, "packet", llm=_cfg(), extra_roots=[tmp_path], allow_env_fallback=False)
+    )
+    spends = [e for e in events if e["type"] == "spend"]
+    # 假 client 每枪报 prompt_tokens=8 / completion_tokens=3
+    # 上一行钉死了确切序列，再断言一次「有序」是空转的，不写。
+    assert [s["turn"] for s in spends] == [11, 22, 33], "三枪，每枪 11，逐枪累加"
+    assert sess.spend["chat"]["calls"] == 3
+    assert sess.turn_spend["in_tokens"] == 24
+
+
+def test_turn_spend_survives_the_approval_pause(monkeypatch, tmp_path: Path) -> None:
+    """一轮从 /v1/chat 开始，到 /v1/chat/approve 那一枪结束，中间隔着两个
+    HTTP 请求和一次落盘。turn_spend 必须跨过去——它在会话上而不是在
+    _agent_loop 的闭包里，就是为了这个。"""
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n第二段。\n", encoding="utf-8")
+    _patch_script(
+        monkeypatch,
+        [
+            _Msg(tool_calls=[_Tc("r1", "read_file", {"path": str(book), "offset": 1, "limit": 20})]),
+            _Msg(tool_calls=[_Tc("e1", "edit_file", {"path": str(book), "old_string": "第二段。", "new_string": "改过。"})]),
+        ],
+    )
+    sess = PenSession(session_id="p" * 32, handbook_id="demo")
+    list(stream_chat(sess, book, "packet", llm=_cfg(), extra_roots=[tmp_path], allow_env_fallback=False))
+    assert sess.pending is not None
+    before = dict(sess.turn_spend)
+    assert before["calls"] == 2
+
+    _patch_script(monkeypatch, [_Msg(content="改完了。" * 30)])
+    list(
+        resume_chat(
+            sess, book, allow=True, pending_id=sess.pending["id"],
+            llm=_cfg(), extra_roots=[tmp_path], allow_env_fallback=False,
+        )
+    )
+    assert sess.turn_spend["calls"] == 3, "续跑那一枪要加在同一轮上，不是从头数"
+    assert sess.turn_spend["in_tokens"] > before["in_tokens"]
+
+
+def test_usage_and_spend_are_two_different_things(monkeypatch, tmp_path: Path) -> None:
+    """done.usage 是「最后一枪」的快照（此刻窗口占多大），
+    spend 是累加器（一共花了多少）。同一轮里这两个数必须不同，
+    否则说明有人把它们合并了。"""
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n唯一段。\n", encoding="utf-8")
+    _patch_script(
+        monkeypatch,
+        [
+            _Msg(tool_calls=[_Tc("c1", "read_file", {"path": str(book), "offset": 1, "limit": 20})]),
+            _Msg(content="看过了。" * 30),
+        ],
+    )
+    sess = PenSession(session_id="u" * 32, handbook_id="demo")
+    events = list(
+        stream_chat(sess, book, "packet", llm=_cfg(), extra_roots=[tmp_path], allow_env_fallback=False)
+    )
+    done = next(e for e in events if e["type"] == "done")
+    assert done["usage"]["prompt_tokens"] == 8, "最后一枪的窗口占用"
+    assert sess.spend["chat"]["in_tokens"] == 16, "两枪累加"

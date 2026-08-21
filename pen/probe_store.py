@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from pen import config
+from pen import meter
 from pen.questions import normalize_qkey
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -103,6 +104,10 @@ class SessionLedger:
     running: list[str] = field(default_factory=list)
     running_since: str = ""
     asked_qkeys: list[str] = field(default_factory=list)
+    # 本会话深挖累计花掉的 token。**这是读者唯一看不见的花钱路径**，
+    # 在 v0.10.0 之前一个 token 都没记。它落在账本上而不是 PenSession 上，
+    # 理由见模块开头那段红线。
+    spend: dict[str, int] = field(default_factory=meter.blank)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -115,6 +120,7 @@ class SessionLedger:
             "running": list(self.running),
             "running_since": self.running_since,
             "asked_qkeys": list(self.asked_qkeys)[-60:],
+            "spend": dict(self.spend),
             "updated_at": _now(),
         }
 
@@ -136,6 +142,7 @@ class SessionLedger:
             probe_calls=int(raw.get("probe_calls") or 0),
             last_probe_round=int(raw.get("last_probe_round") or -99),
             pool=pool,
+            spend=meter.coerce(raw.get("spend")),
             running=[str(x) for x in raw.get("running") or []],
             running_since=str(raw.get("running_since") or ""),
             asked_qkeys=[str(x) for x in raw.get("asked_qkeys") or []],
@@ -264,12 +271,25 @@ def try_claim(session_id: str, handbook_id: str, now_round: int) -> str | None:
         return pid
 
 
-def release(session_id: str, probe_id: str, *, refund: bool = False) -> None:
+def release(
+    session_id: str,
+    probe_id: str,
+    *,
+    refund: bool = False,
+    spend: dict[str, int] | None = None,
+) -> None:
     """放掉坑位。refund=True 时连记账一起退——一次 LLM 都没打就失败了
     （起线程失败、抢不到信号量、书架读盘炸了），不该扣读者的配额。
-    失败越多能用的次数越少，那是反的。"""
+    失败越多能用的次数越少，那是反的。
+
+    spend 是**已经花掉**的 token：探索炸在第二枪上时，第一枪的钱早花了，
+    不记就永远对不上账。它和 refund 不矛盾——refund 退的是「次数配额」，
+    spend 记的是「已发生的花销」，refund 那条路上 spend 恒为空。
+    """
     with _LOCK:
         led = load(session_id)
+        if spend:
+            led.spend = meter.merge(led.spend, spend)
         led.running = [x for x in led.running if x != probe_id]
         if not led.running:
             led.running_since = ""
@@ -280,10 +300,26 @@ def release(session_id: str, probe_id: str, *, refund: bool = False) -> None:
         save(led)
 
 
-def add_questions(session_id: str, probe_id: str, items: list[DeepQuestion]) -> None:
-    """探索线程唯一的写入口。"""
+def add_questions(
+    session_id: str,
+    probe_id: str,
+    items: list[DeepQuestion],
+    spend: dict[str, int] | None = None,
+) -> None:
+    """探索线程唯一的写入口。
+
+    深挖的账**搭这次 save 一起写，不新开写入口**：多一个 load-modify-save
+    就多一个和这里的竞态窗口（_LOCK 是 RLock，两次调用之间别的线程能插进来）。
+    于是探索线程的终态仍然是**恰好一次 save**。
+
+    顺带一个前端依赖的保证：spend 的更新和 running 的清空落在同一次 save 里，
+    所以轮询看到 running: [] 的那一拍，读到的 spend 必然是终值，
+    不会「停早了拿到半截数」。
+    """
     with _LOCK:
         led = load(session_id)
+        if spend:
+            led.spend = meter.merge(led.spend, spend)
         known = {normalize_qkey(q.text) for q in led.pool} | set(led.asked_qkeys)
         for q in items:
             key = normalize_qkey(q.text)
@@ -391,6 +427,9 @@ def inbox(
             "items": out,
             "cursor": cursor,
             "running": list(led.running),
+            # 深挖累计花掉的 token。和 budget 是两件事：budget 数「还能探几次」，
+            # 这里数「已经烧了多少」。前端把它加进状态行第三格。
+            "spend": dict(led.spend),
             "budget": {
                 "used": led.probe_calls,
                 "max": config.PROBE_MAX_PER_SESSION,

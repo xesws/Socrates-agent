@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from pen import config
+from pen import meter as metermod
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 
@@ -156,6 +157,15 @@ class PenSession:
     last_chips: list[dict[str, Any]] = field(default_factory=list)
     # 完成的对话轮次。给追问冷却和「这条深问题是第几轮生的」用。
     turns: int = 0
+    # 本会话累计花掉的 token，按用途分格（chat / fold / probe）。
+    # **probe 那一格永远不由后台线程写**——它一碰 PenSession 就会和请求线程抢
+    # 同一个 to_dict() 快照，后写的赢，丢掉的是一整轮对话。深挖的账落在
+    # probe_store.SessionLedger 上，只在读的时候（_merged_spend）合进来。
+    spend: dict[str, dict[str, int]] = field(default_factory=metermod.blank_book)
+    # 本轮主对话已花。**跨审批暂停仍然有效**：一轮从 /v1/chat 开始，到
+    # /v1/chat/approve 里那一枪结束，中间隔着两个 HTTP 请求和一次落盘，
+    # 所以它必须在会话上，不能只活在 _agent_loop 的闭包里。
+    turn_spend: dict[str, int] = field(default_factory=metermod.blank)
 
     def __post_init__(self) -> None:
         if not self.messages:
@@ -175,6 +185,8 @@ class PenSession:
             "lang": self.lang,
             "last_chips": list(self.last_chips),
             "turns": self.turns,
+            "spend": {k: dict(v) for k, v in self.spend.items()},
+            "turn_spend": dict(self.turn_spend),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -196,6 +208,8 @@ class PenSession:
             "last_assistant": self.last_assistant,
             "pending": pending,
             "dyn_chips": list(self.last_chips),
+            # probe 那一格在这里恒为 0；app._public_session 会从账本补上。
+            "spend": {k: dict(v) for k, v in self.spend.items()},
         }
 
     @classmethod
@@ -215,6 +229,9 @@ class PenSession:
             lang=str(data.get("lang") or "zh"),
             last_chips=[c for c in (data.get("last_chips") or []) if isinstance(c, dict)],
             turns=int(data.get("turns") or 0),
+            # coerce_* 吃任何脏输入。旧快照里根本没这两个键 → 全 0，不需要迁移。
+            spend=metermod.coerce_book(data.get("spend")),
+            turn_spend=metermod.coerce(data.get("turn_spend")),
         )
 
 

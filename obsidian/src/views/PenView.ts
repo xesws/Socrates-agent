@@ -11,7 +11,15 @@ import {
 import type SocratesPenPlugin from "../main";
 import { makeApi, streamApprove, streamChat } from "../api";
 import { handbookIdFromPath, vaultRoot, type EditorPick } from "../selection";
-import type { ChatMessage, Chip, DynChip, PendingEdit, SessionView } from "../types";
+import type {
+  ChatMessage,
+  Chip,
+  DynChip,
+  PendingEdit,
+  SessionView,
+  SpendBook,
+  TokenRow,
+} from "../types";
 import { chipHint, chipLabel, phaseText, t } from "../i18n";
 import { keepDeep, mergeDeep, pollDeep } from "../deeppoll";
 import { measureMonoAdvance, renderSplash, type SplashLevel } from "./splash";
@@ -132,6 +140,16 @@ export class PenView extends ItemView {
   private deepNote = "";
   /** 有新深题刚到：这一轮画完把它滚进可视区。 */
   private deepArrived = false;
+  /**
+   * 本会话累计花掉的 token，按用途分格。和 usage 是**两个口径**：
+   * usage 是「此刻窗口占多大」（诊断用），这个是「一共烧了多少」（花费）。
+   * 服务端每轮 done 给权威值，中途由 spend 事件和深挖轮询各推各的那一格。
+   */
+  private spend: SpendBook = {};
+  /** 本轮已花。忙的时候挂在状态行尾巴上，看着它爬。 */
+  private turnTokens = 0;
+  /** tooltip 的内容签名。没变就一个 DOM 都不碰。 */
+  private statusTipSig = "";
   private els: Els | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: SocratesPenPlugin) {
@@ -302,23 +320,100 @@ export class PenView extends ItemView {
     if (e.quote.textContent !== text) e.quote.textContent = text;
   }
 
+  private static row(r: TokenRow | undefined): number {
+    return (r?.in_tokens ?? 0) + (r?.out_tokens ?? 0);
+  }
+
+  private sessionTokens(): number {
+    const s = this.spend;
+    return PenView.row(s.chat) + PenView.row(s.probe) + PenView.row(s.fold);
+  }
+
+  /** 悬停明细。只在闲下来时求值——拼字符串的活别挂在 token 事件的频率上。 */
+  private spendTip(): string {
+    const s = this.spend;
+    const cached =
+      (s.chat?.cached_tokens ?? 0) + (s.probe?.cached_tokens ?? 0) + (s.fold?.cached_tokens ?? 0);
+    const lines = [
+      t().spendTipTotal(this.sessionTokens()),
+      t().spendTipRow(t().spendKindChat, s.chat?.in_tokens, s.chat?.out_tokens),
+      t().spendTipRow(t().spendKindProbe, s.probe?.in_tokens, s.probe?.out_tokens),
+      t().spendTipRow(t().spendKindFold, s.fold?.in_tokens, s.fold?.out_tokens),
+    ];
+    if (cached > 0) lines.push(t().spendTipCached(cached));
+    lines.push(t().spendTipNote);
+    return lines.join("\n");
+  }
+
   /**
-   * 状态行一格两用：忙的时候显示「师傅在想…」，闲下来显示用量。
+   * 状态行一格三用：
+   *   忙 → 师傅在想… · 本轮 3.2k
+   *   闲 → 上下文 12.4k · 回复 0.8k · 本会话 128k [· 深挖已用满]
+   *
+   * 忙的那条尾巴不是装饰：实时计量最有价值的时刻恰恰是忙的时候——看着数字
+   * 往上爬，是失控循环唯一看得见的信号。没有它这功能只在事后有效。
+   *
    * 一轮对话跑完之后用量一直在，所以后续来回不会因为状态出现/消失而跳高度；
    * 只有全新会话发第一问之前这一行是空的（隐藏）。
+   *
+   * **三条路径都只往同一个文本节点写。绝不能在这里调 paintBar()**——
+   * token 事件每 48 字符来一次，那会把整条底座重建几十次。
    */
   private setStatus(): void {
     const e = this.els;
     if (!e) return;
-    const line = this.busy
-      ? this.status
-      : this.usage
-        ? t().usage(this.usage.ctx, this.usage.out) +
-          (this.deepNote ? ` \u00b7 ${this.deepNote}` : "")
-        : this.deepNote;
+    const total = this.sessionTokens();
+    const parts = this.busy
+      ? [this.status, this.turnTokens ? t().spendTurn(this.turnTokens) : ""]
+      : [
+          this.usage ? t().usage(this.usage.ctx, this.usage.out) : "",
+          total ? t().spendSession(total) : "",
+          this.deepNote,
+        ];
+    const line = parts.filter(Boolean).join(" \u00b7 ");
     e.status.classList.toggle("is-off", !line);
     e.status.classList.toggle("is-usage", !this.busy);
     if (e.status.textContent !== line) e.status.textContent = line;
+    // tooltip 会建 DOM，忙的时候一律不碰；内容没变也不碰。
+    if (this.busy) return;
+    const sig = JSON.stringify(this.spend);
+    if (sig === this.statusTipSig) return;
+    this.statusTipSig = sig;
+    setTooltip(e.status, total ? this.spendTip() : "");
+  }
+
+  /**
+   * done 事件的收尾。**两处消费点（chat / approve）共用这一份。**
+   * 它们本来是逐字复制的两坨，这次要各改两行，下次还是各改两行。
+   */
+  private takeDone(ev: Record<string, unknown>): void {
+    this.status = "";
+    const u = ev.usage as {
+      context_tokens?: number;
+      prompt_tokens?: number;
+      completion_tokens?: number;
+    };
+    this.usage = { ctx: u?.context_tokens ?? u?.prompt_tokens, out: u?.completion_tokens };
+    // 服务端给的是权威值（主对话 + 写回 + 从账本合进来的深挖）。
+    // 这条路径同时是自愈通道：轮询漏掉的、面板关着那阵子的深挖花销，
+    // 下一轮 done 一定补齐。
+    if (ev.spend) this.spend = ev.spend as SpendBook;
+    this.turnTokens = 0;
+    // 只换掉实时层那两条。深题是单独花一次调用挖出来的，服务端已经
+    // 标成 shown、游标也推过去了，整体覆盖等于点一次就再也找不回来。
+    this.dyn = [...keepDeep(this.dyn), ...readDynChips(ev)];
+    this.substantive = Boolean(ev.has_substantive);
+    // 后台在挖。轮询自己会因为 running 变空而停，不用管它。
+    // approve 那条线不下发这个键，于是这里是个空操作。
+    if (ev.deep_running) void this.pollDeep();
+  }
+
+  /** 每打完一枪服务端报一次。只刷状态行那一个文本节点。 */
+  private takeSpend(ev: Record<string, unknown>): void {
+    this.turnTokens = Number(ev.turn) || 0;
+    // 只推 chat 那一格：深挖走轮询那条通道，写回有自己的轮次。
+    if (ev.chat) this.spend = { ...this.spend, chat: ev.chat as TokenRow };
+    this.setStatus();
   }
 
   /** 只改 disabled，绝不碰 DOM 结构——这是流式期间唯一被高频调用的路径之一。 */
@@ -556,6 +651,13 @@ export class PenView extends ItemView {
         this.deepArrived = true;
         this.paintChips();
       },
+      onSpend: (row) => {
+        // 深挖那一格由这条通道推进。花钱的窗口恰好就是 running 非空的窗口，
+        // 所以停轮询不会漏账；真漏了下一轮 done 也会补齐。
+        if (JSON.stringify(this.spend.probe) === JSON.stringify(row)) return;
+        this.spend = { ...this.spend, probe: row };
+        this.setStatus();
+      },
       onBudget: (b) => {
         const spent =
           (b.window_max ?? 0) > 0 && (b.window_used ?? 0) >= (b.window_max ?? 0);
@@ -694,6 +796,12 @@ export class PenView extends ItemView {
     // 换会话就换了一个收件箱，游标必须归零，在途的那一拍也要作废
     this.stopDeepPoll();
     this.deepCursor = 0;
+    // 花销跟着会话走：换会话就换一本账，重开侧栏则从服务端把旧账取回来
+    // ——不取的话，关一次面板第三格就归零，读者以为钱没花过。
+    this.spend = sess.spend || {};
+    this.turnTokens = 0;
+    this.usage = null;
+    this.statusTipSig = "";
     // 以前这里无条件清空，刷新一次上一轮的追问就永久丢了。
     this.dyn = (sess.dyn_chips || []).filter((c) => c && c.text);
     const p = sess.pending;
@@ -747,6 +855,8 @@ export class PenView extends ItemView {
     this.busy = true;
     this.err = "";
     this.usage = null;
+    // 本轮从零数起。**this.spend 不清**——那是会话累计，清了第三格就每轮归零。
+    this.turnTokens = 0;
     this.status = phaseText("thinking", "");
     const shown =
       userText.trim() ||
@@ -807,22 +917,10 @@ export class PenView extends ItemView {
             };
             this.status = t().statusAwaitApproval;
             this.paintBar();
+          } else if (ev.type === "spend") {
+            this.takeSpend(ev);
           } else if (ev.type === "done") {
-            this.status = "";
-            const u = ev.usage as {
-              context_tokens?: number;
-              prompt_tokens?: number;
-              completion_tokens?: number;
-            };
-            const ctx = u?.context_tokens ?? u?.prompt_tokens;
-            const out = u?.completion_tokens;
-            this.usage = { ctx, out };
-            // 只换掉实时层那两条。深题是单独花一次调用挖出来的，服务端已经
-            // 标成 shown、游标也推过去了，整体覆盖等于点一次就再也找不回来。
-            this.dyn = [...keepDeep(this.dyn), ...readDynChips(ev)];
-            this.substantive = Boolean(ev.has_substantive);
-            // 后台在挖。轮询自己会因为 running 变空而停，不用管它。
-            if (ev.deep_running) void this.pollDeep();
+            this.takeDone(ev);
           } else if (ev.type === "error") {
             this.status = "";
             this.err = String(ev.message);
@@ -904,19 +1002,11 @@ export class PenView extends ItemView {
             // 却写着「审批这次编辑」，两句话互相打架。
             this.status = t().statusAwaitApproval;
             this.paintBar();
+          } else if (ev.type === "spend") {
+            this.takeSpend(ev);
           } else if (ev.type === "done") {
             this.pending = null;
-            this.status = "";
-            const u = ev.usage as {
-              context_tokens?: number;
-              completion_tokens?: number;
-              prompt_tokens?: number;
-            };
-            const ctx = u?.context_tokens ?? u?.prompt_tokens;
-            const out = u?.completion_tokens;
-            this.usage = { ctx, out };
-            this.dyn = [...keepDeep(this.dyn), ...readDynChips(ev)];
-            this.substantive = Boolean(ev.has_substantive);
+            this.takeDone(ev);
           } else if (ev.type === "error") {
             this.err = String(ev.message);
           }

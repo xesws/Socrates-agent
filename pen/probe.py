@@ -26,6 +26,7 @@ from typing import Any, Sequence
 from pen import config
 from pen.config import LLMConfig
 from pen.index import HandbookIndex
+from pen.meter import KIND_PROBE, Meter
 from pen.probe_store import DeepQuestion
 from pen.questions import clean_candidates, normalize_qkey, similarity
 
@@ -620,7 +621,14 @@ def should_probe(
     return True, ""
 
 
-def _create(cfg: LLMConfig, messages: list[dict[str, str]]) -> str:
+def _create(cfg: LLMConfig, messages: list[dict[str, str]], meter: Meter | None = None) -> str:
+    """探索这条线唯一的 LLM 出口。
+
+    meter 是可选的**参数**而不是线程局部：线程局部会把「这几个 token 是谁的」
+    变成「谁最后调的」，而 tutor 里也有一个叫 _create 的东西。更实在的理由是
+    单次深挖的上限判定必须在 explore() 里做（判在这里的话，测试一换桩判定就
+    绕过去了，等于没测），所以 explore() 本来就得看得见花销。
+    """
     from openai import OpenAI
 
     client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key, timeout=config.PROBE_TIMEOUT)
@@ -630,6 +638,8 @@ def _create(cfg: LLMConfig, messages: list[dict[str, str]]) -> str:
         stream=False,
         # 刻意不传 tools。见模块注释——这是结构性的成本保证，不是自律。
     )
+    if meter is not None:
+        meter.add(getattr(resp, "usage", None))
     return (resp.choices[0].message.content or "").strip()
 
 
@@ -783,14 +793,17 @@ def _read_excerpts(
     return "\n\n".join(chunks), spans
 
 
-def explore(job: ProbeJob, idx: HandbookIndex) -> tuple[list[DeepQuestion], str]:
+def explore(
+    job: ProbeJob, idx: HandbookIndex, meter: Meter | None = None
+) -> tuple[list[DeepQuestion], str]:
     """跑一次探索。返回 (问题, 原因)。最多两次调用，最多两段读取。"""
+    m = meter if meter is not None else Meter(kind=KIND_PROBE)
     system = build_system(idx, job.lang)
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": build_user_message(job)},
     ]
-    raw = _create(job.cfg, messages)
+    raw = _create(job.cfg, messages, m)
     data = parse_probe_json(raw)
     excerpt = ""
     spans: list[tuple[str, int, int]] = []
@@ -798,7 +811,7 @@ def explore(job: ProbeJob, idx: HandbookIndex) -> tuple[list[DeepQuestion], str]
         excerpt, spans = _read_excerpts(job, data["need_read"])
         if excerpt:
             messages[-1] = {"role": "user", "content": build_user_message(job, excerpt)}
-            raw = _create(job.cfg, messages)
+            raw = _create(job.cfg, messages, m)
             data = parse_probe_json(raw)
     items = _harvest(data["questions"], job, idx, excerpt, spans)
     return items, ("" if items else "no-candidate")
@@ -913,6 +926,9 @@ def run_probe(job: ProbeJob, probe_id: str) -> None:
         # 一次调用都没打，配额要退。
         probe_store.release(job.session_id, probe_id, refund=True)
         return
+    # meter 建在 try 外面，except 里也看得见：炸在第二枪上时第一枪的钱早花了，
+    # 不记这一笔账就永远对不上。
+    m = Meter(kind=KIND_PROBE)
     try:
         idx = libraries.load_index(job.handbook_id)
         # 书架要扫盘（登记表 + 逐本读前 400 行），放在这儿而不是 done 事件里。
@@ -930,11 +946,11 @@ def run_probe(job: ProbeJob, probe_id: str) -> None:
                 )
             except Exception:
                 job.shelf = ""
-        items, _reason = explore(job, idx)
-        probe_store.add_questions(job.session_id, probe_id, items)
+        items, _reason = explore(job, idx, m)
+        probe_store.add_questions(job.session_id, probe_id, items, spend=m.to_dict())
     except Exception:
         try:
-            probe_store.release(job.session_id, probe_id)
+            probe_store.release(job.session_id, probe_id, spend=m.to_dict())
         except Exception:
             pass
     finally:

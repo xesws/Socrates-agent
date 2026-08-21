@@ -4,6 +4,14 @@ const NF = new Intl.NumberFormat("en-US");
 const n = (v: number | undefined): string =>
   typeof v === "number" ? NF.format(v) : "?";
 
+const k = (v: number | undefined): string => {
+  if (typeof v !== "number" || !Number.isFinite(v)) return "?";
+  const a = Math.abs(v);
+  if (a < 1000) return String(Math.round(v));
+  // 十万以上才丢小数：12.4k 有信息量，而 128.3k 在窄栏里太长。
+  return `${(v / 1000).toFixed(a >= 100000 ? 0 : 1)}k`;
+};
+
 /**
  * 这一行的 `: Dict` 就是全部的强制力：
  *   缺键   -> TS2741 Property 'x' is missing
@@ -43,7 +51,16 @@ export const en: Dict = {
   errNoSelection:
     "Didn't catch a selection. Highlight a passage in the note, then hit “Use selection”.",
 
-  usage: (ctx, out) => `context ${n(ctx)} · reply ${n(out)}`,
+  usage: (ctx, out) => `context ${k(ctx)} · reply ${k(out)}`,
+  spendTurn: (tok) => `turn ${k(tok)}`,
+  spendSession: (tok) => `session ${k(tok)}`,
+  spendTipTotal: (tok) => `${k(tok)} tokens this session`,
+  spendTipRow: (label, inTok, outTok) => `${label}  in ${k(inTok)} / out ${k(outTok)}`,
+  spendTipCached: (tok) => `${k(tok)} of that was cache hits (much cheaper)`,
+  spendKindChat: "Tutor",
+  spendKindProbe: "Deep dig",
+  spendKindFold: "Write-back",
+  spendTipNote: "Tokens only — not converted to money",
 
   kickerYou: "You",
   kickerPen: "Pen",

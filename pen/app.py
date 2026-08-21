@@ -25,6 +25,7 @@ from pen import diagnose as diagnosemod
 from pen import proposals as proposalsmod
 from pen import probe as probemod, probe_store, trajectory
 from pen import config as configmod
+from pen import meter as metermod
 from pen.config import DEFAULT_HANDBOOK_ID, LLMConfig, llm_public_status, merge_llm
 from pen.i18n import localized, msg, norm_lang
 from pen.libraries import RegisterError
@@ -360,6 +361,23 @@ def locate(handbook_id: str, line: int, lang: str = Depends(req_lang)) -> dict[s
     return sec.__dict__
 
 
+def _merged_spend(sess) -> dict[str, Any]:
+    """本会话累计 = 主对话 + 写回（在 PenSession 上）+ 深挖（在账本上）。
+
+    **绝不取 STORE.lock_for()**——那把锁在 /v1/chat 整个请求期间被持有，
+    抢它会把读者下一次提问顶成 409。probe_store.load() 只是一次文件读。
+
+    这条路径同时是自愈通道：轮询漏掉的、面板关着那段时间发生的深挖花销，
+    下一轮 done 一定会补齐。
+    """
+    book = {k: dict(v) for k, v in (sess.spend or {}).items()}
+    try:
+        book[metermod.KIND_PROBE] = dict(probe_store.load(sess.session_id).spend)
+    except Exception:
+        book.setdefault(metermod.KIND_PROBE, metermod.blank())
+    return book
+
+
 def _public_session(sess) -> dict[str, Any]:
     """to_public() 再拼上已经抛给读者看过的深题。
 
@@ -372,6 +390,9 @@ def _public_session(sess) -> dict[str, Any]:
         led = probe_store.load(sess.session_id)
         deep = [q.to_chip() for q in sorted(led.pool, key=lambda x: x.seq)
                 if q.state in ("shown", "clicked")]
+        # to_public() 里 probe 那格恒为 0，在这儿补上。这是「重开侧栏之后
+        # 第三格不归零」的唯一真相来源。
+        out["spend"][metermod.KIND_PROBE] = dict(led.spend)
     except Exception:
         deep = []
     if deep:
@@ -569,7 +590,14 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
             yield _sse(
                 {
                     "type": "done",
-                    "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+                    # context_tokens 一直缺着，前端靠 ?? prompt_tokens 才没露馅。
+                    "usage": {
+                        "context_tokens": 0,
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                    },
+                    # 这一轮一分钱没花，但会话累计不该因此被前端清零。
+                    "spend": _merged_spend(sess),
                     "dynamic_chips": [],
                     "has_substantive": False,
                 }
@@ -666,7 +694,11 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
                     has_sub = bool(ev.get("has_substantive"))
                     # 探索和「伪流式吐字」并行跑，多数情况读者读完回复时结果已就绪。
                     # 绝不延长这条流——busy=false 要等流关闭，多挂一秒就多冻一秒输入框。
-                    ev = {**ev, "deep_running": _maybe_probe(sess, body, anchor, path, lang)}
+                    ev = {
+                        **ev,
+                        "deep_running": _maybe_probe(sess, body, anchor, path, lang),
+                        "spend": _merged_spend(sess),
+                    }
                 elif ev.get("type") == "error":
                     ok = False
                 yield _sse(ev)
@@ -967,8 +999,11 @@ def narrate_diagnosis(handbook_id: str, lang: str = Depends(req_lang)) -> dict[s
     turns = trajectory.load_turns(handbook_id)
     report = diagnosemod.aggregate(turns)
     report["handbook_id"] = handbook_id
+    m = metermod.Meter(kind="diag")
     try:
-        text = diagnosemod.narrate(report)
+        text = diagnosemod.narrate(report, m)
     except RuntimeError as exc:
         raise HTTPException(400, localized(exc, lang)) from exc
-    return {"handbook_id": handbook_id, "narrative": text}
+    # 这一格**不进「本会话累计」**：诊断按 handbook 索引，没有会话可挂。
+    # 只放在这里，谁想看谁看。见 docs/v0.10.0。
+    return {"handbook_id": handbook_id, "narrative": text, "spend": m.to_dict()}

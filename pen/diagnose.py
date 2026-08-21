@@ -251,7 +251,13 @@ def narrate_prompt(report: dict[str, Any]) -> tuple[str, str]:
     return system, user
 
 
-def narrate(report: dict[str, Any]) -> str:
+def narrate(report: dict[str, Any], meter: Any = None) -> str:
+    """诊断评语。
+
+    meter 这一格**不进「本会话累计」**：这个端点按 handbook 索引，没有会话
+    可挂，为一个读者手动触发、每次一调用的东西新开第四个 store 不值得。
+    调用方（app）把它直接放进 HTTP 响应体，谁想看谁看。见 docs/v0.10.0。
+    """
     from pen.config import resolve_llm
 
     cfg = resolve_llm()
@@ -269,4 +275,6 @@ def narrate(report: dict[str, Any]) -> str:
         ],
         stream=False,
     )
+    if meter is not None:
+        meter.add(getattr(resp, "usage", None))
     return (resp.choices[0].message.content or "").strip()

@@ -909,3 +909,104 @@ def test_failed_spawn_gives_the_claim_back(tmp_path, monkeypatch) -> None:
     got = _maybe_probe(sess, body, {"level": "Level 0"}, DEFAULT_HANDBOOK, "zh")
     assert got is False
     assert probe_store.load("spawnfail").running == [], "坑没还回去"
+
+
+# ── v0.10.0 计量 ────────────────────────────────────────────────
+
+
+def test_done_event_carries_the_merged_session_spend(monkeypatch, tmp_path) -> None:
+    """done 是自愈通道：轮询漏掉的、面板关着那段时间发生的深挖花销，
+    下一轮 done 一定会补齐。所以它必须是**合并后**的三格。"""
+    from pen import probe_store
+    from pen.meter import Meter
+
+    _isolate_pen(tmp_path, monkeypatch)
+
+    def fake_stream(sess, path, packet, llm=None, extra_roots=None,
+                    allow_env_fallback=True, lang="zh", **_kw):
+        sess.spend["chat"] = {"calls": 2, "in_tokens": 900, "out_tokens": 40,
+                              "cached_tokens": 0, "reasoning_tokens": 0}
+        yield {
+            "type": "done",
+            "usage": {"context_tokens": 1, "completion_tokens": 1, "prompt_tokens": 1},
+            "dynamic_chips": [],
+            "has_substantive": False,
+        }
+
+    monkeypatch.setattr("pen.app.stream_chat", fake_stream)
+    monkeypatch.setattr("pen.app.probemod.spawn", lambda job, pid: None)
+    text = DEFAULT_HANDBOOK.read_text(encoding="utf-8").splitlines()
+    line = next(i for i, ln in enumerate(text, 1) if ln.startswith("**Q1. shell 和 Bash"))
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        # 先往账本里塞一笔深挖花销，模拟「面板关着的时候后台花了钱」
+        pid = probe_store.try_claim(sid, "swe-agent-v2", 0)
+        m = Meter()
+        m.add({"prompt_tokens": 6000, "completion_tokens": 300})
+        probe_store.release(sid, pid, spend=m.to_dict())
+
+        resp = client.post("/v1/chat", json={
+            "session_id": sid, "selected_text": "shell 和 Bash",
+            "start_line": line, "end_line": line, "chip": "socratic", "user_text": "",
+        })
+        done = next(
+            json.loads(ln[6:])
+            for ln in resp.text.splitlines()
+            if ln.startswith("data: ") and json.loads(ln[6:]).get("type") == "done"
+        )
+    assert done["spend"]["chat"]["in_tokens"] == 900
+    assert done["spend"]["probe"]["in_tokens"] == 6000, "深挖那格从账本合进来"
+    assert done["spend"]["fold"]["in_tokens"] == 0
+
+
+def test_search_chip_done_carries_every_usage_key(tmp_path, monkeypatch) -> None:
+    """search 分支不调 LLM 也发 done。context_tokens 一直缺着，
+    前端靠 ?? prompt_tokens 才没露馅。"""
+    _isolate_pen(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        resp = client.post("/v1/chat", json={
+            "session_id": sid, "selected_text": "x", "start_line": 1, "end_line": 1,
+            "chip": "search", "user_text": "",
+        })
+        done = next(
+            json.loads(ln[6:])
+            for ln in resp.text.splitlines()
+            if ln.startswith("data: ") and json.loads(ln[6:]).get("type") == "done"
+        )
+    assert set(done["usage"]) == {"context_tokens", "prompt_tokens", "completion_tokens"}
+    assert done["spend"]["chat"]["in_tokens"] == 0, "这一轮没花钱，但会话累计不该被清零"
+
+
+def test_deep_inbox_never_takes_the_session_lock(tmp_path, monkeypatch) -> None:
+    """那把锁在 /v1/chat 整个请求期间被持有。轮询端点去抢，就会把读者
+    下一次提问顶成 409。这条测试今天之前是缺的——而往 inbox() 里加字段
+    正是最容易有人顺手在端点里 STORE.get() 拿点别的东西的时刻。"""
+    _isolate_pen(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        lock = STORE.lock_for(sid)
+        assert lock.acquire(blocking=False)
+        try:
+            got = client.get(f"/v1/sessions/{sid}/deep?since=0")
+        finally:
+            lock.release()
+    assert got.status_code == 200, "持锁期间也必须能查"
+    assert "spend" in got.json()
+
+
+def test_session_get_restores_spend_after_reopening_the_panel(tmp_path, monkeypatch) -> None:
+    """关掉侧栏再打开，第三格要从这里恢复而不是归零。"""
+    from pen import probe_store
+    from pen.meter import Meter
+
+    _isolate_pen(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        pid = probe_store.try_claim(sid, "swe-agent-v2", 0)
+        m = Meter()
+        m.add({"prompt_tokens": 1234, "completion_tokens": 56})
+        probe_store.release(sid, pid, spend=m.to_dict())
+        got = client.get(f"/v1/sessions/{sid}").json()
+    assert got["spend"]["probe"]["in_tokens"] == 1234
+    assert got["spend"]["chat"]["in_tokens"] == 0

@@ -83,6 +83,27 @@ check("深挖开关标题确实翻过", zhDeep !== enDeep);
 check("深挖说明两边都在", Boolean(i18n.t().setDeepDesc) && i18n.t().setDeepDesc !== zhDeep);
 check("深挖芯片前缀是同一个记号", i18n.t().tipDeepPrefix.trim() === "\u25c6");
 
+// v0.10.0 花销文案：紧凑计数 + 三格明细
+i18n.setLang("zh");
+const zhS = i18n.t();
+check("12.4k 这种紧凑写法（窄侧栏三格放不下 12,400）", zhS.spendSession(12400).includes("12.4k"));
+check("一万以上不留小数", zhS.spendSession(128000).includes("128k"));
+check("一千以下不加 k", zhS.spendSession(840) === zhS.spendSession(840) && !zhS.spendSession(840).includes("k"));
+check("本轮和本会话是两个口径，文案不能一样", zhS.spendTurn(100) !== zhS.spendSession(100));
+check("明细行带得上标签和两个数", zhS.spendTipRow("主对话", 96100, 4200).includes("96.1k"));
+check("缓存命中单列（它便宜十倍，是有信息量的）", zhS.spendTipCached(71200).includes("71.2k"));
+check("三个用途各有名字", new Set([zhS.spendKindChat, zhS.spendKindProbe, zhS.spendKindFold]).size === 3);
+i18n.setLang("en");
+const enS = i18n.t();
+for (const k of ["spendKindChat", "spendKindProbe", "spendKindFold", "spendTipNote"]) {
+  check(`${k} 两边都在且确实翻过`, Boolean(zhS[k]) && Boolean(enS[k]) && zhS[k] !== enS[k]);
+}
+check("英文侧也用紧凑写法", enS.spendSession(12400).includes("12.4k"));
+// 不折算货币是拍板过的。谁把货币符号写回文案，这条就红。
+for (const [name, fn] of [["spendSession", enS.spendSession], ["spendTurn", enS.spendTurn]]) {
+  check(`${name} 不出现货币符号`, !/[¥$€£]/.test(fn(12400)));
+}
+
 // 模块加载时的 arity 自检不该报警（报了说明英文表漏用了占位符）
 check("中英表函数形参个数一致（无 arity 警告）", warnings.length === 0);
 if (warnings.length) warnings.forEach((w) => console.error("   " + w));

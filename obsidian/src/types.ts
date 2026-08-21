@@ -52,6 +52,11 @@ export type SessionView = {
   pending?: PendingEdit | null;
   /** 上一轮的动态追问。以前只在内存里，刷新就没了。sidecar >= v0.8.0 才有。 */
   dyn_chips?: DynChip[];
+  /**
+   * 本会话累计花掉的 token。关掉侧栏再打开时第三格靠它恢复，
+   * 而不是归零。sidecar >= v0.10.0 才有。
+   */
+  spend?: SpendBook;
 };
 
 export type ChatMessage = {
@@ -66,12 +71,26 @@ export type ChatMessage = {
 };
 
 /** GET /v1/sessions/{id}/deep 的回包。running 为空 = 可以停轮询了。 */
+/** 一格 token 账。字段名和后端 pen/meter.py 的 _FIELDS 一一对应。 */
+export type TokenRow = {
+  calls: number;
+  in_tokens: number;
+  out_tokens: number;
+  cached_tokens: number;
+  reasoning_tokens: number;
+};
+
+/** 本会话的三格账。probe 那格由后端从账本合进来。 */
+export type SpendBook = { chat?: TokenRow; probe?: TokenRow; fold?: TokenRow };
+
 export type DeepInbox = {
   session_id: string;
   items: DynChip[];
   cursor: number;
   running: string[];
   budget: { used: number; max: number; window_used?: number; window_max?: number };
+  /** 深挖累计花掉的 token。和 budget 是两件事：budget 数还能探几次。 */
+  spend?: TokenRow;
 };
 
 export type SnapshotStatus = {

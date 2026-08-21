@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from pen.i18n import msg
+from pen import meter as metermod
 from pen.config import LLMConfig, REPO_ROOT, resolve_llm
 from pen.index import HandbookIndex, neighborhood
 from pen.agent.permissions import decide, read_first_block
@@ -315,7 +316,11 @@ def _agent_loop(
 
     client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key, timeout=120.0)
     tools = schemas()
+    # usage 是「最后一枪」的快照（此刻窗口占多大），meter 是累加器（一共花了多少）。
+    # 两件事，键名刻意不同，永远不合并——见 pen/meter.py 开头和
+    # test_tutor.test_usage_snapshot_is_last_call_not_a_sum。
     usage = usage_snapshot(0, 0)
+    meter = metermod.Meter(kind=metermod.KIND_CHAT)
 
     def _create(*, with_tools: bool) -> Any:
         kwargs = llm_create_kwargs(
@@ -334,7 +339,23 @@ def _agent_loop(
                     resp.usage.completion_tokens or 0,
                 )
             )
+        # 记账在 if 外面：usage 缺失时这一枪照样是花过钱的，calls 该 +1。
+        # read_usage(None) 会安静地回零，不会炸。
+        row = meter.add(getattr(resp, "usage", None))
+        session.turn_spend = metermod.merge(session.turn_spend, row)
+        session.spend[metermod.KIND_CHAT] = metermod.merge(
+            session.spend.get(metermod.KIND_CHAT), row
+        )
         return resp.choices[0].message
+
+    def _spend_ev() -> dict[str, Any]:
+        # chat 下发**整行**而不是一个总数：前端的悬停明细要分「输入 / 输出 /
+        # 缓存命中」，只给总数的话流式期间那份明细会是错的。
+        return {
+            "type": "spend",
+            "turn": metermod.total(session.turn_spend),
+            "chat": dict(session.spend.get(metermod.KIND_CHAT) or metermod.blank()),
+        }
 
     for _step in range(MAX_TOOL_ROUNDS):
         yield {"type": "status", "phase": "thinking", "text": "师傅在想…"}
@@ -345,6 +366,8 @@ def _agent_loop(
             yield {"type": "error", "message": str(exc)}
             return
         session.messages.append(reply.model_dump(exclude_none=True))
+        # 刚花完钱就报。前端只拿它刷状态行那一个文本节点，成本可以忽略。
+        yield _spend_ev()
         if not reply.tool_calls:
             raw = (reply.content or "").strip()
             if not raw:
@@ -368,6 +391,7 @@ def _agent_loop(
         yield {"type": "error", "message": str(exc)}
         return
     session.messages.append(reply.model_dump(exclude_none=True))
+    yield _spend_ev()
     raw = (reply.content or "").strip()
     if not raw:
         yield {
@@ -613,4 +637,9 @@ def propose_fold_md(
         )
     except (OpenAIError, OSError, TimeoutError) as exc:
         raise ProviderError(provider_error_message(exc, lang)) from exc
+    # 写回这一枪也要记账。它落在会话上（请求线程独占，没有 probe 那条红线）。
+    session.spend[metermod.KIND_FOLD] = metermod.merge(
+        session.spend.get(metermod.KIND_FOLD),
+        metermod.read_usage(getattr(resp, "usage", None)),
+    )
     return (resp.choices[0].message.content or "").strip()

@@ -50,6 +50,9 @@ function harness(inbox, opts = {}) {
         onBudget: (b) => {
           st.budget = b;
         },
+        onSpend: (row) => {
+          st.spend = row;
+        },
       }),
   };
 }
@@ -104,6 +107,18 @@ check("配额会报给调用方（用满时读者得知道为什么深题不来�
 h = harness(async () => ({ items: [], cursor: 0, running: [] }));
 await h.run();
 check("没有 budget 字段也不炸", h.st.budget === undefined);
+
+// v0.10.0：深挖花掉的 token 走同一条轮询报上来
+h = harness(async () => ({
+  items: [], cursor: 0, running: [],
+  spend: { calls: 2, in_tokens: 26400, out_tokens: 1100, cached_tokens: 0, reasoning_tokens: 0 },
+}));
+await h.run();
+check("深挖花销会报给调用方", h.st.spend?.in_tokens === 26400);
+
+h = harness(async () => ({ items: [], cursor: 0, running: [] }));
+await h.run();
+check("旧 sidecar 不带 spend 字段也不炸", h.st.spend === undefined);
 
 // ── mergeDeep / keepDeep 的直测 ──
 const quick = (t) => ({ id: t, kind: "quick", text: t });

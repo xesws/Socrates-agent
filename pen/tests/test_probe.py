@@ -270,7 +270,7 @@ def test_explore_makes_exactly_two_calls_when_it_asks_to_read(idx, monkeypatch, 
         _json.dumps({"questions": []}),
     ]
 
-    def fake_create(cfg, messages):
+    def fake_create(cfg, messages, meter=None, **_kw):
         seen.append(messages)
         return replies[min(len(seen) - 1, len(replies) - 1)]
 
@@ -293,7 +293,7 @@ def test_explore_reads_at_most_two_segments(idx, monkeypatch, tmp_path) -> None:
 
     grabbed: list[int] = []
 
-    def fake_create(cfg, messages):
+    def fake_create(cfg, messages, meter=None, **_kw):
         if not grabbed:
             grabbed.append(1)
             return _json.dumps(
@@ -1028,3 +1028,89 @@ def test_level_with_beat_appended_is_still_a_valid_anchor(tmp_path, monkeypatch)
         idx, shelf=shelf, current=job.original_path, read_spans=spans,
     )
     assert bad == (False, "anchor-invalid"), bad
+
+
+# ── v0.10.0 计量：那条红线 ──────────────────────────────────────
+
+
+def _meter_cfg():
+    from pen.config import LLMConfig
+
+    return LLMConfig("http://x", "sk", "m", "t", "off")
+
+
+def _meter_job(tmp_path, **over):
+    base = dict(
+        session_id="s", handbook_id="probe-fx", original_path=tmp_path / "b.md",
+        anchor={"level": "Level 0", "start_line": 5, "end_line": 6}, atom="a",
+        chip="socratic", user_text="", reply="讲了一段。" * 30, born_round=1,
+        lang="zh", cfg=_meter_cfg(),
+    )
+    base.update(over)
+    return ProbeJob(**base)
+
+
+def test_probe_spend_lands_in_the_ledger_never_in_the_session(monkeypatch, idx, tmp_path) -> None:
+    """后台线程的账落在 SessionLedger 上，**PenSession 一个字节都不能被它碰**。
+
+    这是 probe_store 模块开头那条红线的测试：probe 线程一旦 save 会话，就会和
+    请求线程的 messages.append 抢同一个 to_dict() 快照，后写的赢，
+    丢掉的是一整轮对话。
+    """
+    from pen import probe_store
+    from pen.session import PenSession
+
+    def fake_create(cfg, messages, meter=None, **_kw):
+        if meter is not None:
+            meter.add({"prompt_tokens": 6000, "completion_tokens": 400})
+        return json.dumps({"need_read": [], "questions": []})
+
+    monkeypatch.setattr(probe, "_create", fake_create)
+
+    sid = "ledger" + "0" * 26
+    sess = PenSession(session_id=sid, handbook_id="probe-fx")
+
+    def _snapshot() -> str:
+        # updated_at 每次调用都是新的，比的是**别的**字段有没有被后台线程改过。
+        d = {k: v for k, v in sess.to_dict().items() if k != "updated_at"}
+        return json.dumps(d, ensure_ascii=False, sort_keys=True, default=str)
+
+    before = _snapshot()
+
+    pid = probe_store.try_claim(sid, "probe-fx", 0)
+    assert pid
+    m = probe.Meter(kind=probe.KIND_PROBE)
+    items, _reason = probe.explore(_meter_job(tmp_path, session_id=sid), idx, m)
+    probe_store.add_questions(sid, pid, items, spend=m.to_dict())
+
+    led = probe_store.load(sid)
+    assert led.spend["in_tokens"] == 6000, "账落在账本上"
+    assert led.spend["calls"] == 1
+    assert not led.running, "spend 和 running 的清空落在同一次 save 里"
+    assert _snapshot() == before, "PenSession 必须一个字节都没被后台那条线改过"
+    assert sess.spend["probe"]["in_tokens"] == 0, "probe 那一格在会话对象上恒为 0"
+
+
+def test_probe_spend_is_recorded_even_when_the_run_explodes(idx) -> None:
+    """炸在第二枪上时第一枪的钱早花了。不记这一笔，账永远对不上。
+    这条走的是 run_probe 的 except 分支那个调用形状。"""
+    from pen import probe_store
+
+    sid = "boom" + "0" * 28
+    pid = probe_store.try_claim(sid, "probe-fx", 0)
+    m = probe.Meter(kind=probe.KIND_PROBE)
+    m.add({"prompt_tokens": 5000, "completion_tokens": 200})
+    probe_store.release(sid, pid, spend=m.to_dict())
+    assert probe_store.load(sid).spend["in_tokens"] == 5000
+
+
+def test_refund_path_carries_no_spend(idx) -> None:
+    """抢不到并发位时一次 LLM 都没打——退配额，且不记任何花销。"""
+    from pen import probe_store
+
+    sid = "refund" + "0" * 26
+    pid = probe_store.try_claim(sid, "probe-fx", 0)
+    probe_store.release(sid, pid, refund=True)
+    led = probe_store.load(sid)
+    assert led.spend["calls"] == 0
+    assert led.probe_calls == 0, "配额退了"

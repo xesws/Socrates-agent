@@ -17,6 +17,18 @@ const NF = new Intl.NumberFormat("zh-CN");
 const n = (v: number | undefined): string =>
   typeof v === "number" ? NF.format(v) : "?";
 
+/**
+ * 紧凑计数：12400 → 12.4k。状态行是 10px 等宽，窄侧栏 300px 下三格加上
+ * 深挖提示用 NumberFormat 的「12,400」必然溢出。
+ */
+const k = (v: number | undefined): string => {
+  if (typeof v !== "number" || !Number.isFinite(v)) return "?";
+  const a = Math.abs(v);
+  if (a < 1000) return String(Math.round(v));
+  // 十万以上才丢小数：12.4k 有信息量，而 128.3k 在窄栏里太长。
+  return `${(v / 1000).toFixed(a >= 100000 ? 0 : 1)}k`;
+};
+
 export const zh = {
   // ── 品牌 / 视图元数据 ──
   appName: "点读笔",
@@ -53,9 +65,23 @@ export const zh = {
     `连不上 sidecar（CORS / 没启动 / 端口不对）：${detail}`,
   errNoSelection: "没读到选区。在笔记里划一段再点「用当前选区」。",
 
-  // ── 用量 ──
+  // ── 用量与花销 ──
+  // 前两格是**此刻窗口占用**（诊断用），第三格才是**累计花销**。
+  // 两个口径不一样，别合并。
   usage: (ctx: number | undefined, out: number | undefined): string =>
-    `上下文 ${n(ctx)} · 回复 ${n(out)}`,
+    `上下文 ${k(ctx)} · 回复 ${k(out)}`,
+  spendTurn: (tok: number | undefined): string => `本轮 ${k(tok)}`,
+  spendSession: (tok: number | undefined): string => `本会话 ${k(tok)}`,
+  spendTipTotal: (tok: number | undefined): string => `本会话共 ${k(tok)} token`,
+  spendTipRow: (label: string, inTok: number | undefined, outTok: number | undefined): string =>
+    `${label}　输入 ${k(inTok)} / 输出 ${k(outTok)}`,
+  spendTipCached: (tok: number | undefined): string => `其中缓存命中 ${k(tok)}（便宜很多）`,
+  spendKindChat: "主对话",
+  spendKindProbe: "深挖",
+  spendKindFold: "写回",
+  // 不折算成钱是拍板过的：第三方端点单价不可靠、缓存命中差十倍、
+  // SDK 重试那次的用量根本拿不到。乘出来的钱是假精度。
+  spendTipNote: "只数 token，不折算成钱",
 
   // ── 对话气泡 ──
   kickerYou: "你",
