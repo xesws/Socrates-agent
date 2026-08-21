@@ -898,7 +898,17 @@ export class PenView extends ItemView {
    * 又会捞回那个死 sid，同一个坑再踩一次。
    */
   private async reviveSession(): Promise<boolean> {
-    if (!this.handbookId) return false;
+    if (!this.handbookId) {
+      // **这句 `this.err` 不是装饰，别删。** 它让「返回 false ⇒ this.err 非空」
+      // 成为这个函数**自己**的不变式，而不是靠四条散在别处、没人守的事实
+      // （`sessionId` 只在 `adopt()` 里写、`adopt()` 三个调用方各自的前置、
+      // `handbookId` 从不被清空、`handbookIdFromPath()` 不返回空串）。
+      // 两个调用点的兜底分支都建立在这条不变式上；靠外部事实的话，将来
+      // 有人加一条「重开面板时从 noteBind 恢复上次会话」，这里就静默变成
+      // 可达路径，而那两处注释当场变成假话。
+      this.err = t().noticeRegisterFirst;
+      return false;
+    }
     try {
       const sess = await this.api().createSession(this.handbookId);
       this.adopt(sess);
@@ -1042,9 +1052,13 @@ export class PenView extends ItemView {
       this.status = "";
       // reviveSession 写过 this.err 就说明服务端给了准确因由（多半是
       // 「笔记被改名或移走，请重新框选一次」），别用兜底那句盖掉。
-      // 注意这道闸现在**几乎恒真**：reviveSession 的 catch 一定会写 this.err，
-      // 所以下面这句只在「抛出来的 Error 消息是空串」时才出得来。
-      // 它是真·最后兜底，不是常规回退路径——别照着它推断读者常看到什么。
+      // 注意这道闸现在**几乎恒真**。reviveSession 返回 false 有两条路，
+      // **两条都写 this.err**：catch 那条写服务端因由，顶上那条早退写
+      // noticeRegisterFirst。所以下面这句只剩一种出法——抛出来的 Error
+      // 消息是空串（`errorFrom()` 的 message 初值是 `res.statusText`，
+      // 而 HTTP/2 没有 reason phrase，Chromium 一律置空；本地 uvicorn 是
+      // HTTP/1.1 所以正常形态下走不到，读者把 sidecarUrl 指到 HTTP/2
+      // 反代后面才有可能）。它是真·最后兜底，不是常规回退路径。
       if (!this.err) this.err = t().errSessionArchivedHard;
       this.paintBar();
       await this.paintLog();
@@ -1167,10 +1181,12 @@ export class PenView extends ItemView {
       // 读者刚点完「同意写回」，此刻他唯一想知道的就是笔记被改了没有。
       this.err += t().errApprovalUntouched;
     } else {
-      // 真·最后兜底。`reviveSession` 的 catch **一定**会写 this.err，
-      // 所以走到这里只剩一种可能：抛出来的 Error 消息是空串，连一句
-      // 因由都没有。用 errApprovalArchived**Hard** 而不是
-      // errSessionArchivedHard——后者被提问那条路共用，里面没有那句话。
+      // 真·最后兜底。`reviveSession` 的**两条** false 出口现在都写
+      // this.err（见 `:901` 那条早退），所以走到这里只剩一种可能：
+      // 抛出来的 Error 消息是空串，连一句因由都没有（HTTP/2 反代后面
+      // `res.statusText` 为空 + body 不是 JSON，才凑得齐）。
+      // 用 errApprovalArchived**Hard** 而不是 errSessionArchivedHard——
+      // 后者被提问那条路共用，里面没有「原文没有被改动」那句话。
       this.err = t().errApprovalArchivedHard;
     }
     this.paintBar();
