@@ -1058,7 +1058,7 @@ export class PenView extends ItemView {
       // 「笔记被改名或移走，请重新框选一次」），别用兜底那句盖掉。
       // 注意这道闸现在**几乎恒真**。reviveSession 返回 false 有两条路，
       // **两条都写 this.err**：catch 那条写服务端因由，顶上那条早退写
-      // noticeRegisterFirst。所以下面这句只剩一种出法——抛出来的 Error
+      // errSessionGoneNoHandbook。所以下面这句只剩一种出法——抛出来的 Error
       // 消息是空串（`errorFrom()` 的 message 初值是 `res.statusText`，
       // 而 HTTP/2 没有 reason phrase，Chromium 一律置空；本地 uvicorn 是
       // HTTP/1.1 所以正常形态下走不到，读者把 sidecarUrl 指到 HTTP/2

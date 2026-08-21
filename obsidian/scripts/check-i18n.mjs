@@ -149,7 +149,16 @@ const walk = (zv, ev, path) => {
   for (const [k, v] of Object.entries(zv)) {
     const e = ev?.[k];
     const at = path ? `${path}.${k}` : k;
-    if (typeof v === "function") continue; // 函数型的由下面那条 arity 自检守
+    if (typeof v === "function") {
+      // **别把这一句省成 `continue`。** 底下那条 arity 自检的条件是
+      // 「两边都是函数」，en 那边一旦**不是**函数它就直接跳过、一声不吭；
+      // 真正守着这 20 个函数键的是 `en: Dict` + `tsc`，而 `npm test`
+      // **不跑 tsc**（只有 `npm run build` 跑）。只跑 npm test 的人会拿到
+      // 一个全绿的坏英文表。这是 npm test 里唯一一条通吃的闸，
+      // 不该把自己的覆盖度记在一个不在 npm test 里的工具头上。
+      if (typeof e !== "function") zhOnly.push(`${at}（en 不是函数）`);
+      continue;
+    }
     if (v && typeof v === "object") {
       if (!e || typeof e !== "object") zhOnly.push(at);
       else walk(v, e, at);
@@ -191,9 +200,19 @@ const src = tsFiles.map((f) => readFileSync(`src/${f}`, "utf8")).join("\n;\n");
 // 扫所有 `t().key`，三元和任何表达式形式才都进得来。
 const keysIn = (segment) => [...segment.matchAll(/t\(\)\.(\w+)/g)].map((m) => m[1]);
 
-const wrongInErr = [...src.matchAll(/this\.err\s*\+?=\s*([^;]*);/g)]
-  .flatMap((m) => keysIn(m[1]))
-  .filter((k) => !k.startsWith("err"));
+// `\+?=` 只认 `+=` 和 `=`，看不见 `||=` / `??=`——而 `PenView.ts:1066`
+// 现在就是 `if (!this.err) this.err = t().errSessionArchivedHard;`，
+// 正是任何一个「简化一下」的建议会改写成 `this.err ||= …` 的形状。
+// 改完那一刻这条闸就再也看不见它了。（比较形式 `this.err ==` 全仓 0 处，
+// 放宽不会误伤。）
+const ERR_ASSIGN = /this\.err\s*(?:\+|\|\||\?\?)?=\s*([^;]*);/g;
+// **执法的和数数的必须是同一份。** 上一版这两处各写了一遍同样的正则，
+// 于是只把执法那条写坏（`this.err` → `this.errr`）时，底下那条防瞎断言
+// 测的是它**自己那份副本**，照样报绿——而改的人只会改执法那一行。
+// 「两个闸不同源」这个坑，这个仓库栽过不止一次。
+const errStmts = [...src.matchAll(ERR_ASSIGN)];
+const seenErr = errStmts.flatMap((m) => keysIn(m[1]));
+const wrongInErr = seenErr.filter((k) => !k.startsWith("err"));
 check("this.err 右边只出现 err* 的键（含三元等表达式形式）", wrongInErr.length === 0);
 if (wrongInErr.length) console.error("   走错槽：" + wrongInErr.join(", "));
 
@@ -206,7 +225,7 @@ if (wrongInNotice.length) console.error("   走错槽：" + wrongInNotice.join("
 
 // 上面两条自己也可能扫空——正则写错、文件改名，`length === 0` 照样为真。
 // 数一下真的扫到了多少个键，掉到 0 就说明闸自己瞎了。
-const seenErr = [...src.matchAll(/this\.err\s*\+?=\s*([^;]*);/g)].flatMap((m) => keysIn(m[1]));
+// 两个 seen* 都直接复用上面执法用的那份结果，不再抄一遍正则。
 const seenNotice = noticeArgs.flatMap((m) => keysIn(m[1]));
 check(
   `槽位扫描真的看到了键（${tsFiles.length} 个文件 · err ${seenErr.length} 个 / notice ${seenNotice.length} 个）`,
