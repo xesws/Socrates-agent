@@ -494,9 +494,12 @@ def _reading_roots(job: ProbeJob) -> list[Path]:
     return reading_roots(job.original_path, job.extra_roots or [config.REPO_ROOT])
 
 
-def _shelf_paths(current_path: Path | None = None, roots: list[Path] | None = None) -> dict[str, Path]:
+def _shelf_paths(current_path: Path, roots: list[Path] | None = None) -> dict[str, Path]:
     """书名 → 路径。只收**已登记且落在允许根内**的，跟 shelf_digest 同一道闸——
     登记表里躺着指向 /private/var/folders 的 pytest 夹具。
+
+    `current_path` 是必需的：它既定排序又定「排除哪一本」。给默认值会让漏传
+    静默退化成一张全表或空表，而空表和「书架上真的没有别的书」长得一模一样。
 
     顺序必须和 shelf_digest 一致（同一棵目录树优先、再按 mtime）：同一本书在仓库根
     和 vault 各有一份、标题一模一样，`setdefault` 是先到先得。书架上列的是 vault
@@ -504,33 +507,20 @@ def _shelf_paths(current_path: Path | None = None, roots: list[Path] | None = No
     """
     from pen import libraries
     from pen.config import handbook_allow_roots
-    from pen.library_scan import _digest, _prefer_nearby, _within_allowed
+    from pen.library_scan import pick_books
 
     if roots is None:
         roots = handbook_allow_roots()
-    try:
-        me = current_path.expanduser().resolve() if current_path else None
-    except Exception:
-        me = None
     metas = {m.original_path: m for m in libraries.list_handbooks()}
-    order = _prefer_nearby(list(metas), current_path, roots)
+    # 和 shelf_digest 共用 pick_books：它决定模型「看得见哪几本」，这里决定它
+    # 点名时「能反查到哪几本」。两边各筛一遍就会错位——原来这边没有 MAX_FILES
+    # 上限，第 9 本以后模型从没见过的书照样在「书名沾边的有几本」里投票，
+    # 能把它唯一看得见的那本否决掉。排除当前这本也由 pick_books 统一负责。
     out: dict[str, Path] = {}
-    for raw in order:
-        p = Path(raw)
-        if not p.is_file() or not _within_allowed(p, roots):
-            continue
-        # 排除当前这本——shelf_digest 早就排了（library_scan 里的 seen），这边没排，
-        # 于是子串匹配会命中自己：book='手册' 拿到 writeback-fixture.md 本身，
-        # 模型照着**自己那本书**的正文写「跨教材」题，出处是伪造的。
-        try:
-            if me is not None and p.resolve() == me:
-                continue
-        except Exception:
-            pass
-        d = _digest(p)
-        if d:
-            out.setdefault(str(d["title"]), p)
-        meta = metas.get(raw)
+    for d in pick_books(current_path, list(metas), roots):
+        p = Path(str(d["path"]))
+        out.setdefault(str(d["title"]), p)
+        meta = metas.get(str(d["path"]))
         if meta is not None:
             out.setdefault(meta.title, p)
     return out

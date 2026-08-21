@@ -122,6 +122,48 @@ def _within_allowed(path: Path, roots: list[Path]) -> bool:
     return False
 
 
+def pick_books(
+    current_path: Path,
+    registered: list[str] | None,
+    roots: list[Path],
+) -> list[dict[str, Any]]:
+    """选出书架上要摆的那几本，返回各自的 `_digest`。
+
+    **`shelf_digest` 和 `probe._shelf_paths` 必须共用这一个函数**：前者决定模型
+    「看得见哪几本」，后者决定它点名时「能反查到哪几本」。两边各筛一遍就会错位——
+    `_shelf_paths` 原来没有 MAX_FILES 上限，于是第 9 本以后的书模型从没见过，
+    却在「书名沾边的有几本」这场投票里有一票，把它唯一看得见的那本否决掉。
+    这是本轮反复踩的同一个坑（书架的闸 vs read_file 的闸、两处各拼一遍根）的第三次。
+    """
+    try:
+        seen: set[Path] = {current_path.resolve()}
+    except Exception:
+        seen = set()
+    # 光按路径去重不够：同一本书常常在仓库根和 vault 里各有一份拷贝，
+    # 路径不同但内容同源，列两遍会让模型以为书架上真有两本。
+    cur_digest = _digest(current_path)
+    titles: set[str] = {cur_digest["title"]} if cur_digest else set()
+    picked: list[dict[str, Any]] = []
+    for raw in _prefer_nearby(registered or [], current_path, roots):
+        if len(picked) >= MAX_FILES:
+            break
+        p = Path(raw)
+        try:
+            r = p.resolve()
+        except Exception:
+            continue
+        # 登记表里躺着不少死记录（指向已删除的临时目录）和 pytest 夹具
+        # （/private/var/folders 下、系统还没清理掉的），两道都要挡
+        if r in seen or not p.is_file() or not _within_allowed(p, roots):
+            continue
+        seen.add(r)
+        d = _digest(p)
+        if d and d["title"] not in titles:
+            titles.add(d["title"])
+            picked.append(d)
+    return picked
+
+
 def shelf_digest(
     current_path: Path,
     registered: list[str] | None = None,
@@ -164,33 +206,7 @@ def shelf_digest(
         return hit[1]
 
     roots = allow_roots if allow_roots is not None else handbook_allow_roots()
-    try:
-        seen: set[Path] = {current_path.resolve()}
-    except Exception:
-        seen = set()
-    # 光按路径去重不够：同一本书常常在仓库根和 vault 里各有一份拷贝，
-    # 路径不同但内容同源，列两遍会让模型以为书架上真有两本。
-    cur_digest = _digest(current_path)
-    titles: set[str] = {cur_digest["title"]} if cur_digest else set()
-    picked: list[dict[str, Any]] = []
-    for raw in _prefer_nearby(registered or [], current_path, roots):
-        if len(picked) >= MAX_FILES:
-            break
-        p = Path(raw)
-        try:
-            r = p.resolve()
-        except Exception:
-            continue
-        # 登记表里躺着不少死记录（指向已删除的临时目录）和 pytest 夹具
-        # （/private/var/folders 下、系统还没清理掉的），两道都要挡
-        if r in seen or not p.is_file() or not _within_allowed(p, roots):
-            continue
-        seen.add(r)
-        d = _digest(p)
-        if d and d["title"] not in titles:
-            titles.add(d["title"])
-            picked.append(d)
-
+    picked = pick_books(current_path, registered, roots)
     if not picked:
         _remember(key, now, "")
         return ""

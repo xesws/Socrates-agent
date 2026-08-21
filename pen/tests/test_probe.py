@@ -479,7 +479,9 @@ def test_shelf_paths_excludes_registrations_outside_allowed_roots(tmp_path, monk
     libraries.register(str(outside / "bad.md"), "shelf-out", extra_roots=[tmp_path])
     monkeypatch.setattr("pen.config.handbook_allow_roots", lambda *a, **k: [inside])
 
-    names = probe._shelf_paths()
+    cur = inside / "cur.md"
+    cur.write_text("# 当前这本\n", encoding="utf-8")
+    names = probe._shelf_paths(cur)
     assert any("允许根内" in k for k in names)
     assert not any("根外" in k for k in names), names
 
@@ -754,3 +756,55 @@ def test_same_file_registered_under_two_spellings_is_still_one_book(tmp_path, mo
     )
     assert got, "同一个文件的两种写法被当成两本书了"
     assert "别的教材" in got
+
+
+def test_shelf_reverse_lookup_never_sees_a_book_the_model_cannot(tmp_path, monkeypatch) -> None:
+    """`shelf_digest` 只印 MAX_FILES 本，`_shelf_paths` 原来一本不落。
+    于是模型**从没见过**的书也在「书名沾边的有几本」这场投票里有一票，
+    能把它唯一看得见的那本否决掉。两边的候选集合本来就该是同一批。"""
+    import re
+
+    from pen import config, libraries, library_scan, probe
+
+    lib = tmp_path / ".pen" / "libraries"
+    lib.mkdir(parents=True)
+    monkeypatch.setattr(libraries, "LIBRARIES_DIR", lib)
+    library_scan._CACHE.clear()
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    cur = vault / "cur.md"
+    cur.write_text("# 手搓当前这本\n\n## 一\n", encoding="utf-8")
+    libraries.register(str(cur), "cur", extra_roots=[vault])
+    names = [
+        "Prompt 注入攻防", "向量库实战", "推理加速手册", "算子优化手记",
+        "多模态入门", "强化学习小抄", "分布式训练札记", "评测方法论",
+        "检索增强笔记", "Prompt 工程手册",
+    ]
+    import os
+
+    for i, name in enumerate(names):
+        f = vault / f"b{i}.md"
+        f.write_text(f"# {name}\n\n## 第一章\n", encoding="utf-8")
+        libraries.register(str(f), f"bk{i}", extra_roots=[vault])
+        # _prefer_nearby 按 mtime 新的优先，所以显式定序：靠前的 8 本进书架，
+        # 《检索增强笔记》和《Prompt 工程手册》被 MAX_FILES 截掉、模型看不见。
+        os.utime(f, (2_000_000_000 - i, 2_000_000_000 - i))
+    monkeypatch.setattr(config, "handbook_allow_roots", lambda *a, **k: [vault])
+
+    regs = [m.original_path for m in libraries.list_handbooks()]
+    shelf_text = library_scan.shelf_digest(cur, regs, allow_roots=[vault], with_paths=True)
+    visible = {Path(p) for p in re.findall(r"path: (\S.*)", shelf_text)}
+    assert len(visible) == library_scan.MAX_FILES, f"前提变了：{len(visible)} 本"
+
+    reachable = set(probe._shelf_paths(cur, [vault]).values())
+    assert reachable <= visible, f"反查能摸到模型看不见的书：{reachable - visible}"
+
+    assert not any("工程手册" in str(v) or "检索增强" in str(v) for v in visible), \
+        "前提变了：被截掉的那两本反而可见了"
+    # 「Prompt」在可见的 8 本里只沾《Prompt 注入攻防》一本 → 该命中，
+    # 而不是被看不见的第 10 本《Prompt 工程手册》投票否决
+    got = probe._read_excerpts(
+        _job(cur, [vault]), [{"book": "Prompt", "start_line": 1, "end_line": 2}]
+    )
+    assert "《Prompt 注入攻防》" in got, f"被看不见的书否决了：{got!r}"
