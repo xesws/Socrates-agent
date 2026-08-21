@@ -808,3 +808,36 @@ def test_shelf_reverse_lookup_never_sees_a_book_the_model_cannot(tmp_path, monke
         _job(cur, [vault]), [{"book": "Prompt", "start_line": 1, "end_line": 2}]
     )
     assert "《Prompt 注入攻防》" in got, f"被看不见的书否决了：{got!r}"
+
+
+def test_meta_title_key_survives_a_noncanonical_registered_path(tmp_path, monkeypatch) -> None:
+    """`pick_books` 回传的 `d["path"]` 是 `str(Path(raw))`，会把 `//` 和尾斜杠吃掉。
+    拿原始 `m.original_path` 当 metas 的 key 就是在赌登记表里存的一定是规范形式——
+    赌输了静默少一个 meta.title 的 key，表现为「某个简称突然反查不到」。"""
+    import json
+
+    from pen import config, libraries, library_scan, probe
+
+    lib = tmp_path / ".pen" / "libraries"
+    lib.mkdir(parents=True)
+    monkeypatch.setattr(libraries, "LIBRARIES_DIR", lib)
+    library_scan._CACHE.clear()
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    cur = vault / "cur.md"
+    cur.write_text("# 手搓当前这本\n", encoding="utf-8")
+    other = vault / "别的.md"
+    # frontmatter 把 H1 推离第 1 行 → meta.title 退回文件名，两个 key 才不同
+    other.write_text("---\nx: 1\n---\n\n# 别的教材\n\n## 一\n", encoding="utf-8")
+    libraries.register(str(cur), "c", extra_roots=[vault])
+    libraries.register(str(other), "o", extra_roots=[vault])
+    mp = lib / "o" / "meta.json"
+    d = json.loads(mp.read_text(encoding="utf-8"))
+    d["original_path"] = str(other).replace("/vault/", "/vault//")  # 非规范写法
+    mp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(config, "handbook_allow_roots", lambda *a, **k: [vault])
+
+    shelf = probe._shelf_paths(cur, [vault])
+    assert "别的教材" in shelf, f"正文 H1 那个 key 丢了：{list(shelf)}"
+    assert "别的.md" in shelf, f"meta.title 那个 key 丢了：{list(shelf)}"

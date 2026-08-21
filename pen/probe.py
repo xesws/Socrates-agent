@@ -511,7 +511,11 @@ def _shelf_paths(current_path: Path, roots: list[Path] | None = None) -> dict[st
 
     if roots is None:
         roots = handbook_allow_roots()
-    metas = {m.original_path: m for m in libraries.list_handbooks()}
+    # key 用 str(Path(...)) 规范化过的形式：pick_books 回传的 d["path"] 是
+    # str(Path(raw))，会把 `//` 和尾斜杠吃掉。登记表现在存的是 resolve 过的干净
+    # 路径所以对得上，但拿原始字符串当 key 是在赌这一点——赌输了就静默少一个
+    # meta.title 的 key，表现为「某个简称突然反查不到」。
+    metas = {str(Path(m.original_path)): m for m in libraries.list_handbooks()}
     # 和 shelf_digest 共用 pick_books：它决定模型「看得见哪几本」，这里决定它
     # 点名时「能反查到哪几本」。两边各筛一遍就会错位——原来这边没有 MAX_FILES
     # 上限，第 9 本以后模型从没见过的书照样在「书名沾边的有几本」里投票，
