@@ -211,6 +211,24 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
         "records_the_spend_in_the_ledger",
     ),
     (
+        "v0.10.2 孤儿窗口必须盖得住一次探索（短了会双份花钱）",
+        "pen/probe_store.py",
+        "    return max(ORPHAN_AFTER_SECONDS, timeout_s * 3 * 2 + 30.0)",
+        "    return ORPHAN_AFTER_SECONDS",
+        "outlasts_the_worst_case",
+    ),
+    (
+        "v0.10.2 配额报表报的是执行时用的那个数",
+        "pen/probe_store.py",
+        '        "max": led.max_per_session or config.PROBE_MAX_PER_SESSION,\n'
+        '        "window_used": quota_count(led.handbook_id) if led.handbook_id else 0,\n'
+        '        "window_max": led.max_per_window or config.PROBE_MAX_PER_WINDOW,',
+        '        "max": config.PROBE_MAX_PER_SESSION,\n'
+        '        "window_used": quota_count(led.handbook_id) if led.handbook_id else 0,\n'
+        '        "window_max": config.PROBE_MAX_PER_WINDOW,',
+        "snapshots_the_limits_it_actually_used",
+    ),
+    (
         "书架的闸与 read_file 的闸同源",
         "pen/tutor.py",
         "    return [REPO_ROOT, *(extra_roots or [])]",

@@ -31,6 +31,12 @@ _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 ITEM_TTL_TURNS = 6
 # 进程被杀时 running 会留在盘上。不回收的话 try_claim 永远抢不到坑，
 # 前端也会对着一个永远不会完成的幽灵轮询到超时。
+#
+# **这是下限，不是窗口本身**（v0.10.2）。真窗口由 orphan_window() 从本次的
+# 超时派生：300 秒连一次正常的跨书探索都盖不住——deeppoll.ts 自己记着实测
+# 351 秒，而最坏是 timeout 150 × SDK 重试 3 次 × explore 两次调用 = 900 秒。
+# 窗口短于真实耗时 = 在真线程还活着时清空 running = try_claim 能再起一个
+# = **同一场对话两份深挖并行，各花各的钱**。
 ORPHAN_AFTER_SECONDS = 300.0
 # 一次最多放出几条。深题是「跳出来」的，一轮蹦两条就成噪音了。
 MAX_RELEASE_PER_TURN = 1
@@ -108,6 +114,13 @@ class SessionLedger:
     # 在 v0.10.0 之前一个 token 都没记。它落在账本上而不是 PenSession 上，
     # 理由见模块开头那段红线。
     spend: dict[str, int] = field(default_factory=meter.blank)
+    # try_claim 那一刻生效的上限，用来回答两个问题：
+    #   running_timeout → 孤儿窗口该多大（见 orphan_window）
+    #   max_*           → GET /deep 该报多少（那个端点没有请求体，读不到设置）
+    # 老账本没有这三个字段（=0）→ 全部退回 config 现值 → 行为与 v0.10.1 一致。
+    running_timeout: float = 0.0
+    max_per_session: int = 0
+    max_per_window: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -121,6 +134,9 @@ class SessionLedger:
             "running_since": self.running_since,
             "asked_qkeys": list(self.asked_qkeys)[-60:],
             "spend": dict(self.spend),
+            "running_timeout": self.running_timeout,
+            "max_per_session": self.max_per_session,
+            "max_per_window": self.max_per_window,
             "updated_at": _now(),
         }
 
@@ -143,6 +159,9 @@ class SessionLedger:
             last_probe_round=int(raw.get("last_probe_round") or -99),
             pool=pool,
             spend=meter.coerce(raw.get("spend")),
+            running_timeout=_num(raw.get("running_timeout")),
+            max_per_session=int(_num(raw.get("max_per_session"))),
+            max_per_window=int(_num(raw.get("max_per_window"))),
             running=[str(x) for x in raw.get("running") or []],
             running_since=str(raw.get("running_since") or ""),
             asked_qkeys=[str(x) for x in raw.get("asked_qkeys") or []],
@@ -176,6 +195,30 @@ def load(session_id: str, handbook_id: str = "") -> SessionLedger:
     return led
 
 
+def _num(v: Any) -> float:
+    """盘上读回来的数字。脏数据退化成 0，不让一份坏 JSON 顶掉整个账本。"""
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    return n if n > 0 and n == n and n != float("inf") else 0.0
+
+
+def orphan_window(timeout_s: float = 0.0) -> float:
+    """孤儿回收的窗口。**必须大于一次探索的最坏耗时。**
+
+    最坏耗时 = 单次超时 × (1 + SDK 默认 max_retries=2) × explore 的两次调用。
+    窗口短于它 = 在真线程还活着时清空 running = try_claim 能再起一个 =
+    同一场对话两份深挖并行。这不是理论：ORPHAN_AFTER_SECONDS=300 而
+    deeppoll.ts 记着实测 351 秒，v0.10.2 之前一直在发生。
+
+    timeout_s=0（老账本没有这个字段）时退回常量，行为与 v0.10.1 一致。
+    """
+    if timeout_s <= 0:
+        return ORPHAN_AFTER_SECONDS
+    return max(ORPHAN_AFTER_SECONDS, timeout_s * 3 * 2 + 30.0)
+
+
 def _reap_orphan(led: SessionLedger) -> None:
     """就地清掉进程被杀时留下的 running。不清的话前端会白轮询到超时。"""
     if not led.running or not led.running_since:
@@ -186,7 +229,9 @@ def _reap_orphan(led: SessionLedger) -> None:
         led.running = []
         led.running_since = ""
         return
-    if (datetime.now(timezone.utc) - started).total_seconds() > ORPHAN_AFTER_SECONDS:
+    if (datetime.now(timezone.utc) - started).total_seconds() > orphan_window(
+        led.running_timeout
+    ):
         led.running = []
         led.running_since = ""
 
@@ -269,6 +314,10 @@ def try_claim(
         pid = uuid.uuid4().hex[:12]
         led.running = [pid]
         led.running_since = _now()
+        # 上限快照：孤儿窗口和 GET /deep 的报表都靠它。
+        led.running_timeout = float(lim.probe_timeout_s)
+        led.max_per_session = int(lim.probe_max_per_session)
+        led.max_per_window = int(lim.probe_max_per_window)
         led.probe_calls += 1
         led.last_probe_round = now_round
         save(led)
@@ -345,9 +394,11 @@ def budget(session_id: str) -> dict[str, int]:
     led = load(session_id)
     return {
         "used": led.probe_calls,
-        "max": config.PROBE_MAX_PER_SESSION,
+        # 报的必须是**执行时用的那个数**。读模块常量的话，设置页把每小时配额
+        # 调成 7 之后，界面会一直显示 40——两个来源，正是本仓踩过三次的形状。
+        "max": led.max_per_session or config.PROBE_MAX_PER_SESSION,
         "window_used": quota_count(led.handbook_id) if led.handbook_id else 0,
-        "window_max": config.PROBE_MAX_PER_WINDOW,
+        "window_max": led.max_per_window or config.PROBE_MAX_PER_WINDOW,
     }
 
 
@@ -438,11 +489,12 @@ def inbox(
             "spend": dict(led.spend),
             "budget": {
                 "used": led.probe_calls,
-                "max": config.PROBE_MAX_PER_SESSION,
+                # 和 budget() 一样，报执行时用的那个数，不是模块常量。
+                "max": led.max_per_session or config.PROBE_MAX_PER_SESSION,
                 # 窗口配额是跨会话的那道闸。不报出去的话，读者只会看到
                 # 「深题突然不来了」，没有任何解释。
                 "window_used": quota_count(led.handbook_id) if led.handbook_id else 0,
-                "window_max": config.PROBE_MAX_PER_WINDOW,
+                "window_max": led.max_per_window or config.PROBE_MAX_PER_WINDOW,
             },
         }
 

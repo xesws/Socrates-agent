@@ -202,7 +202,10 @@ def test_orphaned_running_is_reaped_after_a_restart() -> None:
     pid = probe_store.try_claim("s16", "h", 0)
     assert pid and probe_store.try_claim("s16", "h", 0) is None
     led = probe_store.load("s16")
-    stale = datetime.now(timezone.utc) - timedelta(seconds=probe_store.ORPHAN_AFTER_SECONDS + 60)
+    # v0.10.2：窗口不再是常量，而是从本次的超时派生的（见 orphan_window 的
+    # 注释——300 秒盖不住一次跨书探索，实测 351 秒）。所以这里要按真窗口算。
+    window = probe_store.orphan_window(led.running_timeout)
+    stale = datetime.now(timezone.utc) - timedelta(seconds=window + 60)
     led.running_since = stale.isoformat()
     probe_store.save(led)
     assert probe_store.load("s16").running == [], "孤儿没被回收"
@@ -341,3 +344,60 @@ def test_later_delivery_does_not_confuse_the_other_books_level(tmp_path, monkeyp
     assert _ripe(q([here, cross]), **at) is True, "本册锚就在这一关，该弹"
     assert _ripe(q([{"level": "Level 5", "start_line": 70}, cross]), **at) is False, \
         "本册锚在 Level 5，却因为别本的 Level 1 弹了出来"
+
+
+# ── v0.10.2 孤儿窗口必须盖得住一次探索 ─────────────────────────
+
+
+def test_orphan_window_always_outlasts_the_worst_case_run() -> None:
+    """窗口短于真实耗时 = 在真线程还活着时清空 running = try_claim 能再起一个
+    = **同一场对话两份深挖并行，各花各的钱**。
+
+    这不是理论：v0.10.2 之前窗口是死的 300 秒，而 deeppoll.ts 自己记着
+    实测一次跨书探索 351 秒。
+    """
+    for timeout in (30.0, 90.0, 150.0, 300.0):
+        window = probe_store.orphan_window(timeout)
+        worst = timeout * 3 * 2  # SDK 默认重试 3 次 × explore 最多两次调用
+        assert window > worst, f"超时 {timeout} 时窗口 {window} 盖不住最坏 {worst}"
+
+
+def test_the_old_351_second_run_would_no_longer_be_reaped_early() -> None:
+    """钉住那个实测数字。默认档 150 秒超时下，351 秒的探索不该被当成孤儿。"""
+    assert probe_store.orphan_window(150.0) > 351.0
+    assert probe_store.ORPHAN_AFTER_SECONDS < 351.0, "旧的死常量确实盖不住——这就是病因"
+
+
+def test_a_ledger_without_the_snapshot_falls_back_to_the_constant() -> None:
+    """老账本没有 running_timeout（=0）→ 退回常量 → 行为与 v0.10.1 一致，
+    不需要任何迁移。"""
+    assert probe_store.orphan_window(0.0) == probe_store.ORPHAN_AFTER_SECONDS
+    assert probe_store.orphan_window() == probe_store.ORPHAN_AFTER_SECONDS
+    led = probe_store.SessionLedger.from_dict({"session_id": "old", "running": []})
+    assert led.running_timeout == 0.0
+    assert (led.max_per_session, led.max_per_window) == (0, 0)
+
+
+def test_try_claim_snapshots_the_limits_it_actually_used() -> None:
+    """GET /deep 没有请求体，读不到设置页。报表只能靠这份快照——
+    否则会出现「执行用 7、界面显示 40」这种两个来源的老毛病。"""
+    from dataclasses import replace
+
+    from pen.config import default_limits
+
+    lim = replace(default_limits(), probe_timeout_s=90.0,
+                  probe_max_per_session=3, probe_max_per_window=7)
+    pid = probe_store.try_claim("snap1", "h", 0, lim)
+    assert pid
+    led = probe_store.load("snap1")
+    assert led.running_timeout == 90.0
+    assert (led.max_per_session, led.max_per_window) == (3, 7)
+    rep = probe_store.budget("snap1")
+    assert (rep["max"], rep["window_max"]) == (3, 7), "报表要报执行时用的那个数"
+
+
+def test_budget_report_falls_back_when_there_is_no_snapshot() -> None:
+    """还没探过的会话（try_claim 一次都没跑）报默认值，不报 0。"""
+    rep = probe_store.budget("never-probed")
+    assert rep["max"] == config.PROBE_MAX_PER_SESSION
+    assert rep["window_max"] == config.PROBE_MAX_PER_WINDOW
