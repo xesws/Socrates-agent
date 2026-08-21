@@ -205,7 +205,9 @@ const keysIn = (segment) => [...segment.matchAll(/t\(\)\.(\w+)/g)].map((m) => m[
 // 正是任何一个「简化一下」的建议会改写成 `this.err ||= …` 的形状。
 // 改完那一刻这条闸就再也看不见它了。（比较形式 `this.err ==` 全仓 0 处，
 // 放宽不会误伤。）
-const ERR_ASSIGN = /this\.err\s*(?:\+|\|\||\?\?)?=\s*([^;]*);/g;
+// `(?!=)` 挡掉 `this.err === t().x` 这种比较（`!==` / `!=` 本来就不匹配）。
+// 全仓比较形式今天是 0 处，所以这条不是在修现行 bug，是白捡的一个零宽断言。
+const ERR_ASSIGN = /this\.err\s*(?:\+|\|\||\?\?)?=(?!=)\s*([^;]*);/g;
 // **执法的和数数的必须是同一份。** 上一版这两处各写了一遍同样的正则，
 // 于是只把执法那条写坏（`this.err` → `this.errr`）时，底下那条防瞎断言
 // 测的是它**自己那份副本**，照样报绿——而改的人只会改执法那一行。
@@ -227,9 +229,21 @@ if (wrongInNotice.length) console.error("   走错槽：" + wrongInNotice.join("
 // 数一下真的扫到了多少个键，掉到 0 就说明闸自己瞎了。
 // 两个 seen* 都直接复用上面执法用的那份结果，不再抄一遍正则。
 const seenNotice = noticeArgs.flatMap((m) => keysIn(m[1]));
+// **下限必须是今天的真数，不能是随手写的魔数。** 富余多少，就是可以静默
+// 丢掉多少：上一版写 `notice >= 3`（真数 10，富余 7），实测把 Notice 那条
+// 正则收回成 v0.12.10 的形状 → `notice 8 个`，照样全绿，而丢掉的正是
+// `:1080` 那条三元——**这一整串的起点 bug 能原样溜回来，防瞎闸一个字不说**。
+// err 那边同理：`>= 5`（真数 7）能静默丢掉全仓唯一那条 `+=`，
+// 也就是 `this.err += t().errApprovalUntouched`——v0.12.8 整版就是围着它建的。
+//
+// 维护契约：**只涨不跌**。合法新增文案会把真数推高，`>=` 不会误伤；
+// 合法删键时手动把这里的数往下调一格，和 `mutate.py` 的锚点是同一套约定。
+const FLOOR = { files: 11, err: 7, notice: 10 };
 check(
   `槽位扫描真的看到了键（${tsFiles.length} 个文件 · err ${seenErr.length} 个 / notice ${seenNotice.length} 个）`,
-  tsFiles.length >= 3 && seenErr.length >= 5 && seenNotice.length >= 3,
+  tsFiles.length >= FLOOR.files &&
+    seenErr.length >= FLOOR.err &&
+    seenNotice.length >= FLOOR.notice,
 );
 
 // 模块加载时的 arity 自检不该报警（报了说明英文表漏用了占位符）
