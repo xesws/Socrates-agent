@@ -7,7 +7,7 @@
  */
 import { build } from "esbuild";
 import { createRequire } from "node:module";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -139,16 +139,35 @@ check("thinkTick 不出现货币符号", !/[¥$€£]/.test(zhSec.thinkTick(1200
 // 挡不住空串。上面那些 check 全是按名字点到的 spot check，
 // 一个新键加进来不会被任何东西看一眼。
 
+// **要递归。** 顶层 `typeof v !== "string" → continue` 会把 `phases`（4 条）
+// 和 `chips`（5 × label/hint = 10 条）两个嵌套对象整个跳过——那 14 条是
+// 真会显示给读者的：后端不下发标签时 `chipLabel()`/`chipHint()` 回落到
+// `chips.*`，`phaseText()` 回落到 `phases.*`。
 const zhOnly = [];
-for (const [k, v] of Object.entries(zhSec)) {
-  if (typeof v !== "string") continue; // 函数型的由下面那条 arity 自检守
-  const e = enSec[k];
-  if (typeof e !== "string" || !e) zhOnly.push(k);
-}
-check(
-  `zh 的每个字符串键在 en 里都非空（${Object.keys(zhSec).length} 个键）`,
-  zhOnly.length === 0,
-);
+let strings = 0;
+const walk = (zv, ev, path) => {
+  for (const [k, v] of Object.entries(zv)) {
+    const e = ev?.[k];
+    const at = path ? `${path}.${k}` : k;
+    if (typeof v === "function") continue; // 函数型的由下面那条 arity 自检守
+    if (v && typeof v === "object") {
+      if (!e || typeof e !== "object") zhOnly.push(at);
+      else walk(v, e, at);
+      continue;
+    }
+    if (typeof v !== "string") continue;
+    strings++;
+    // 守的是「zh 非空 ⇒ en 非空」，不是「en 一律非空」。`chips.*.hint` 里
+    // 有三条**两边都故意留空**（那几个 chip 本来就没有提示语），
+    // 一刀切成「en 必须非空」会把它们误报成漏译。
+    if (typeof e !== "string") zhOnly.push(`${at}（en 不是字符串）`);
+    else if (v && !e) zhOnly.push(at);
+  }
+};
+walk(zhSec, enSec, "");
+// 数字报**真正被断言的那个数**，不是 `Object.keys().length`（那里面还有
+// 20 个函数和 2 个对象，读的人会以为都验过了）。
+check(`zh 的每条字符串在 en 里都非空（${strings} 条，含嵌套）`, zhOnly.length === 0);
 if (zhOnly.length) console.error("   en 缺或为空：" + zhOnly.join(", "));
 
 // **键名要和去处对得上。** v0.12.6 ⑤ 立的规矩：`notice*` 进 `new Notice()`，
@@ -156,18 +175,43 @@ if (zhOnly.length) console.error("   en 缺或为空：" + zhOnly.join(", "));
 // Notice 是短祈使句、不收句；错误条要完整句，还可能被 `+=` 追加东西。
 // v0.12.9 自己破过一次这条规矩（把 noticeRegisterFirst 塞进了 this.err），
 // 拼出来的英文整句不终止。规矩靠人记不住，做成扫描。
-const src = readFileSync("src/views/PenView.ts", "utf8");
-const wrongInErr = [...src.matchAll(/this\.err\s*\+?=\s*t\(\)\.(\w+)/g)]
-  .map((m) => m[1])
+// **别只扫一个文件。** 第一版只读 `views/PenView.ts`，`main.ts:182` 的
+// `new Notice(t().noticeSidecarDown)` 完全在视野外——今天它是对的，但
+// 新加的文件不会被看一眼。排掉 `src/i18n/` 自己（那里是定义，不是用法）。
+const tsFiles = readdirSync("src", { recursive: true })
+  .map(String)
+  .filter((f) => f.endsWith(".ts") && !f.startsWith("i18n/"))
+  .sort();
+const src = tsFiles.map((f) => readFileSync(`src/${f}`, "utf8")).join("\n;\n");
+
+// **别把 `t().` 锚在 `=` 或 `(` 后面。** v0.12.10 第一版就是那么写的，
+// 于是 `new Notice(this.err ? t().a : t().b)`（`:1080`，v0.12.7 为了修
+// 「Notice 被吞掉」新写的那一行）整条逃逸——一次都没被看过。它合规不是
+// 因为闸守住了，是因为写的人当时对。先切出整条语句，再在**整段右值**里
+// 扫所有 `t().key`，三元和任何表达式形式才都进得来。
+const keysIn = (segment) => [...segment.matchAll(/t\(\)\.(\w+)/g)].map((m) => m[1]);
+
+const wrongInErr = [...src.matchAll(/this\.err\s*\+?=\s*([^;]*);/g)]
+  .flatMap((m) => keysIn(m[1]))
   .filter((k) => !k.startsWith("err"));
-check("this.err 右边只出现 err* 的键", wrongInErr.length === 0);
+check("this.err 右边只出现 err* 的键（含三元等表达式形式）", wrongInErr.length === 0);
 if (wrongInErr.length) console.error("   走错槽：" + wrongInErr.join(", "));
 
-const wrongInNotice = [...src.matchAll(/new Notice\(\s*t\(\)\.(\w+)/g)]
-  .map((m) => m[1])
+const noticeArgs = [...src.matchAll(/new Notice\(([\s\S]*?)\);/g)];
+const wrongInNotice = noticeArgs
+  .flatMap((m) => keysIn(m[1]))
   .filter((k) => !k.startsWith("notice"));
-check("new Notice() 里只出现 notice* 的键", wrongInNotice.length === 0);
+check("new Notice() 里只出现 notice* 的键（含三元等表达式形式）", wrongInNotice.length === 0);
 if (wrongInNotice.length) console.error("   走错槽：" + wrongInNotice.join(", "));
+
+// 上面两条自己也可能扫空——正则写错、文件改名，`length === 0` 照样为真。
+// 数一下真的扫到了多少个键，掉到 0 就说明闸自己瞎了。
+const seenErr = [...src.matchAll(/this\.err\s*\+?=\s*([^;]*);/g)].flatMap((m) => keysIn(m[1]));
+const seenNotice = noticeArgs.flatMap((m) => keysIn(m[1]));
+check(
+  `槽位扫描真的看到了键（${tsFiles.length} 个文件 · err ${seenErr.length} 个 / notice ${seenNotice.length} 个）`,
+  tsFiles.length >= 3 && seenErr.length >= 5 && seenNotice.length >= 3,
+);
 
 // 模块加载时的 arity 自检不该报警（报了说明英文表漏用了占位符）
 check("中英表函数形参个数一致（无 arity 警告）", warnings.length === 0);
