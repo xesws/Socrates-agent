@@ -150,6 +150,13 @@ export class PenView extends ItemView {
   private turnTokens = 0;
   /** tooltip 的内容签名。没变就一个 DOM 都不碰。 */
   private statusTipSig = "";
+  /**
+   * 本轮推理已经流下来多少字。0 表示不在推理阶段。
+   *
+   * 只存数不存内容：实测一次回复有 1633 个推理分片，把正文塞进窄侧栏是灾难，
+   * 而读者要的是「没卡住」，不是「让我读它的草稿」。
+   */
+  private thinkChars = 0;
   private els: Els | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: SocratesPenPlugin) {
@@ -364,7 +371,11 @@ export class PenView extends ItemView {
     if (!e) return;
     const total = this.sessionTokens();
     const parts = this.busy
-      ? [this.status, this.turnTokens ? t().spendTurn(this.turnTokens) : ""]
+      ? [
+          // 推理阶段用活体计数顶掉「在想…」那句死文案：它在跳，读者才知道没卡住。
+          this.thinkChars ? t().thinkTick(this.thinkChars) : this.status,
+          this.turnTokens ? t().spendTurn(this.turnTokens) : "",
+        ]
       : [
           this.usage ? t().usage(this.usage.ctx, this.usage.out) : "",
           total ? t().spendSession(total) : "",
@@ -882,7 +893,12 @@ export class PenView extends ItemView {
           if (ev.type === "status") {
             this.status = phaseText(String(ev.phase || ""), String(ev.text || ""));
             this.setStatus();
+          } else if (ev.type === "think") {
+            this.thinkChars = Number(ev.chars) || 0;
+            this.setStatus();
           } else if (ev.type === "token") {
+            // 正文开始了，推理阶段结束——计数让位给「在写…」
+            this.thinkChars = 0;
             this.status = phaseText("writing", "");
             acc += String(ev.text || "");
             const last = this.msgs[this.msgs.length - 1];
@@ -967,7 +983,11 @@ export class PenView extends ItemView {
           if (ev.type === "status") {
             this.status = phaseText(String(ev.phase || ""), String(ev.text || ""));
             this.setStatus();
+          } else if (ev.type === "think") {
+            this.thinkChars = Number(ev.chars) || 0;
+            this.setStatus();
           } else if (ev.type === "token") {
+            this.thinkChars = 0;
             acc += String(ev.text || "");
             const row = this.msgs[this.msgs.length - 1];
             if (row?.role === "assistant") row.text = acc;

@@ -125,6 +125,12 @@ check("分项三格都在", zhSec.setUsageBreak(1, 2, 3).includes("3"));
 check("说清了这是「一共」不是「这一场」", /一共/.test(zhSec.setUsageNote));
 check("统计里也不出现货币符号", !/[¥$€£]/.test(zhSec.setUsageTotal(12345, 7) + enSec.setUsageTotal(12345, 7)));
 
+// v0.12.0 推理阶段的活体计数
+check("thinkTick 两边都在且翻过", Boolean(zhSec.thinkTick) && Boolean(enSec.thinkTick)
+  && zhSec.thinkTick(1200) !== enSec.thinkTick(1200));
+check("thinkTick 带得上数字（读者看的就是它在跳）", zhSec.thinkTick(1200).includes("1.2k"));
+check("thinkTick 不出现货币符号", !/[¥$€£]/.test(zhSec.thinkTick(1200) + enSec.thinkTick(1200)));
+
 // 模块加载时的 arity 自检不该报警（报了说明英文表漏用了占位符）
 check("中英表函数形参个数一致（无 arity 警告）", warnings.length === 0);
 if (warnings.length) warnings.forEach((w) => console.error("   " + w));

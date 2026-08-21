@@ -117,6 +117,7 @@ export const en: Dict = {
     reading: "Flipping through the manual…",
     tool: "Working on it…",
   },
+  thinkTick: (chars) => `Socrates is thinking… ${k(chars)} chars`,
   statusEditing: "Editing the note…",
   statusDeclined: "Declined — letting it wrap up…",
   statusAwaitApproval: "Waiting for you to approve this edit",

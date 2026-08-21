@@ -209,6 +209,52 @@ class _Msg:
         return d
 
 
+def stream_chunks(
+    msg: _Msg,
+    usage: Any = None,
+    *,
+    content_slice: int = 7,
+    arg_slice: int = 5,
+) -> list[Any]:
+    """把一条完整回复切成分片，模拟真实供应商的流。
+
+    切得**碎且不对齐**是故意的：正文按 7 字一片、工具参数按 5 字一片，
+    id 和 name 只在第一片给。真实供应商就是这样，而拼错一个字节
+    json.loads 就炸、整轮对话失败。对齐的假分片测不出这个。
+    """
+    out: list[Any] = []
+
+    def d(**kw: Any) -> Any:
+        base = {"content": None, "reasoning_content": None, "tool_calls": None}
+        base.update(kw)
+        return SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(**base))], usage=None)
+
+    # 先来一段推理内容：真实模型 1.3 秒就开始流它，正文要等十几秒
+    out.append(d(reasoning_content="想一下…"))
+    text = msg.content or ""
+    for i in range(0, len(text), content_slice):
+        out.append(d(content=text[i : i + content_slice]))
+    for idx, tc in enumerate(msg.tool_calls or []):
+        args = tc.function.arguments or ""
+        out.append(
+            d(tool_calls=[SimpleNamespace(
+                index=idx, id=tc.id,
+                function=SimpleNamespace(name=tc.function.name, arguments=args[:arg_slice]),
+            )])
+        )
+        for i in range(arg_slice, len(args), arg_slice):
+            out.append(
+                d(tool_calls=[SimpleNamespace(
+                    index=idx, id=None,
+                    function=SimpleNamespace(name=None, arguments=args[i : i + arg_slice]),
+                )])
+            )
+    # 末片只带 usage，没有 choices——include_usage 就是这个形状
+    out.append(SimpleNamespace(choices=[], usage=usage or SimpleNamespace(
+        prompt_tokens=8, completion_tokens=3)))
+    return out
+
+
 def _patch_script(monkeypatch, replies: list[_Msg]) -> list[dict[str, Any]]:
     seen: list[dict[str, Any]] = []
     queue = list(replies)
@@ -216,9 +262,7 @@ def _patch_script(monkeypatch, replies: list[_Msg]) -> list[dict[str, Any]]:
     class _Completions:
         def create(self, **kwargs: Any) -> Any:
             seen.append(kwargs)
-            msg = queue.pop(0)
-            usage = SimpleNamespace(prompt_tokens=8, completion_tokens=3)
-            return SimpleNamespace(choices=[SimpleNamespace(message=msg)], usage=usage)
+            return iter(stream_chunks(queue.pop(0)))
 
     class _Client:
         def __init__(self, **_kwargs: Any) -> None:
@@ -752,12 +796,8 @@ def _capped_script(
                 ])
             else:
                 msg = _Msg(content="看过了，讲一段。" * 20)
-            return SimpleNamespace(
-                choices=[SimpleNamespace(message=msg)],
-                usage=SimpleNamespace(
-                    prompt_tokens=per_shot[0], completion_tokens=per_shot[1]
-                ),
-            )
+            return iter(stream_chunks(msg, SimpleNamespace(
+                prompt_tokens=per_shot[0], completion_tokens=per_shot[1])))
 
     monkeypatch.setattr(
         openai, "OpenAI",
@@ -1014,10 +1054,8 @@ def test_the_batch_is_not_executed_once_the_budget_is_gone(monkeypatch, tmp_path
                 msg = _Msg(tool_calls=tcs)
             else:
                 msg = _Msg(content="用手上的东西答一段。" * 20)
-            return SimpleNamespace(
-                choices=[SimpleNamespace(message=msg)],
-                usage=SimpleNamespace(prompt_tokens=4000, completion_tokens=500),
-            )
+            return iter(stream_chunks(msg, SimpleNamespace(
+                prompt_tokens=4000, completion_tokens=500)))
 
     monkeypatch.setattr(
         openai, "OpenAI",
@@ -1215,3 +1253,122 @@ def test_same_batch_read_and_edit_is_still_blocked(monkeypatch, tmp_path: Path) 
     )
     assert not any(e["type"] == "approval" for e in events), "同批里的 edit 该被挡下"
     assert "第二段。" in book.read_text(encoding="utf-8"), "原文不能被动"
+
+
+# ── v0.12.0 真流式 ─────────────────────────────────────────────
+
+
+def test_tool_call_fragments_reassemble_into_valid_json() -> None:
+    """`delta.tool_calls[i].function.arguments` 是一片一片来的，id 和 name
+    只在第一片出现。**拼错一个字节 json.loads 就炸，整轮对话失败。**
+    分片还不保证按 index 有序。
+    """
+    from pen.tutor import _ToolCallDraft, assemble_tool_calls
+
+    frags = [
+        (1, SimpleNamespace(id="b", function=SimpleNamespace(name="edit_file", arguments=""))),
+        (0, SimpleNamespace(id="a", function=SimpleNamespace(name="read_file", arguments='{"pa'))),
+        (0, SimpleNamespace(id=None, function=SimpleNamespace(name=None, arguments='th": "x.'))),
+        (1, SimpleNamespace(id=None, function=SimpleNamespace(name=None, arguments='{"old":"y"}'))),
+        (0, SimpleNamespace(id=None, function=SimpleNamespace(name=None, arguments='md"}'))),
+    ]
+    drafts: dict[int, Any] = {}
+    for i, f in frags:
+        drafts.setdefault(i, _ToolCallDraft()).eat(f)
+    got = assemble_tool_calls(drafts)
+    assert [c["id"] for c in got] == ["a", "b"], "要按 index 升序还原，不是按到达顺序"
+    assert json.loads(got[0]["function"]["arguments"]) == {"path": "x.md"}
+    assert json.loads(got[1]["function"]["arguments"]) == {"old": "y"}
+    assert got[0]["function"]["name"] == "read_file"
+
+
+def test_reasoning_is_reported_as_a_count_not_as_text(monkeypatch, tmp_path: Path) -> None:
+    """读者要的是「没卡住」，不是「让我读它的草稿」。推理内容实测 1633 个分片，
+    塞进窄侧栏是灾难——只报字数，让状态行跳数字。"""
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n唯一段。\n", encoding="utf-8")
+    _patch_script(monkeypatch, [_Msg(content="答一段。" * 30)])
+    sess = PenSession(session_id="s" * 32, handbook_id="demo")
+    events = list(stream_chat(sess, book, "packet", llm=_cfg(),
+                              extra_roots=[tmp_path], allow_env_fallback=False))
+    thinks = [e for e in events if e["type"] == "think"]
+    assert thinks, "推理阶段要报出来，否则那十几秒还是一片空白"
+    assert all(isinstance(e["chars"], int) for e in thinks)
+    said = "".join(str(e.get("text") or "") for e in events if e["type"] == "token")
+    assert "想一下" not in said, "推理内容不能混进正文"
+
+
+def test_content_streams_once_not_twice(monkeypatch, tmp_path: Path) -> None:
+    """前端是 `acc += text` 累加的。收分片时吐过一遍、收尾再吐一遍，
+    读者会看到两份。"""
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n唯一段。\n", encoding="utf-8")
+    _patch_script(monkeypatch, [_Msg(content="独一无二的这句话。" + "补" * 80)])
+    sess = PenSession(session_id="d" * 32, handbook_id="demo")
+    events = list(stream_chat(sess, book, "packet", llm=_cfg(),
+                              extra_roots=[tmp_path], allow_env_fallback=False))
+    said = "".join(str(e.get("text") or "") for e in events if e["type"] == "token")
+    assert said.count("独一无二的这句话。") == 1, f"吐了 {said.count('独一无二的这句话。')} 遍"
+    assert said.strip() == (sess.last_assistant or "").strip(), "吐出去的和落盘的要是同一份"
+
+
+def test_the_chips_block_never_reaches_the_reader(monkeypatch, tmp_path: Path) -> None:
+    """芯片块是给界面剥的。流式下它也是一片一片来的，marker 本身会被切碎——
+    保守切法必须挡住它，否则读者看到一段生注释。"""
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n唯一段。\n", encoding="utf-8")
+    _patch_script(
+        monkeypatch,
+        # 题面要够长：clean_candidates 的中文下限是 8 字，太短会被当噪音滤掉，
+        # 那样 dyn_chips 是空的，测的就不是「芯片有没有被挡住」了。
+        [_Msg(content="正文到此为止。" * 20
+              + "\n<!--pen:chips\n- 那这块和前面第三拍讲的是同一件事吗？\n"
+                "- 为什么这里选白名单不选沙箱，代价是什么？\n-->")],
+    )
+    sess = PenSession(session_id="p" * 32, handbook_id="demo")
+    events = list(stream_chat(sess, book, "packet", llm=_cfg(),
+                              extra_roots=[tmp_path], allow_env_fallback=False))
+    said = "".join(str(e.get("text") or "") for e in events if e["type"] == "token")
+    assert "pen:chips" not in said and "第三拍讲的是同一件事" not in said, f"漏出来了：{said[-60:]!r}"
+    assert "正文到此为止。" in said, "正文不能被切法误伤"
+    done = next(e for e in events if e["type"] == "done")
+    assert [c["text"] for c in done["dyn_chips"]], "芯片本身还要正常解析出来"
+
+
+def test_the_whole_tail_is_flushed_when_there_is_no_chips_block(monkeypatch, tmp_path: Path) -> None:
+    """保守切法会压着最后十几个字不吐，等下一片来了再说。没有下一片时
+    必须冲掉——否则每条回复都缺一截尾巴。"""
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n唯一段。\n", encoding="utf-8")
+    tail = "这是最后一句话，一个字都不能少。"
+    _patch_script(monkeypatch, [_Msg(content="开头。" * 30 + tail)])
+    sess = PenSession(session_id="t" * 32, handbook_id="demo")
+    events = list(stream_chat(sess, book, "packet", llm=_cfg(),
+                              extra_roots=[tmp_path], allow_env_fallback=False))
+    said = "".join(str(e.get("text") or "") for e in events if e["type"] == "token")
+    assert said.endswith(tail), f"尾巴被吞了：{said[-40:]!r}"
+
+
+def test_usage_comes_from_the_final_chunk(monkeypatch, tmp_path: Path) -> None:
+    """include_usage 让末片带回 usage，那一片没有 choices。不认这个形状就没账可记。"""
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n唯一段。\n", encoding="utf-8")
+    _patch_script(monkeypatch, [_Msg(content="答一段。" * 30)])
+    sess = PenSession(session_id="u" * 32, handbook_id="demo")
+    events = list(stream_chat(sess, book, "packet", llm=_cfg(),
+                              extra_roots=[tmp_path], allow_env_fallback=False))
+    done = next(e for e in events if e["type"] == "done")
+    assert done["usage"]["prompt_tokens"] == 8
+    assert sess.spend["chat"]["in_tokens"] == 8, "流式下也要记账"
+
+
+def test_streaming_is_actually_requested(monkeypatch, tmp_path: Path) -> None:
+    """别改回 stream=False——那样读者又要对着空屏幕干等十几秒。"""
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n唯一段。\n", encoding="utf-8")
+    seen = _patch_script(monkeypatch, [_Msg(content="答一段。" * 30)])
+    sess = PenSession(session_id="v" * 32, handbook_id="demo")
+    list(stream_chat(sess, book, "packet", llm=_cfg(),
+                     extra_roots=[tmp_path], allow_env_fallback=False))
+    assert seen[0]["stream"] is True
+    assert seen[0]["stream_options"] == {"include_usage": True}

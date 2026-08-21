@@ -507,10 +507,9 @@ def test_tool_rounds_limit_is_honoured(monkeypatch, tmp_path) -> None:
                     model_dump=lambda exclude_none=True: {"role": "assistant",
                                                           "content": "收口了。" * 30},
                 )
-            return SimpleNamespace(
-                choices=[SimpleNamespace(message=m)],
-                usage=SimpleNamespace(prompt_tokens=8, completion_tokens=3),
-            )
+            from pen.tests.test_agent import stream_chunks
+
+            return iter(stream_chunks(m))
 
     monkeypatch.setattr(
         openai, "OpenAI",

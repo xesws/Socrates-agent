@@ -377,10 +377,12 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
         "propose_persists_and_returns",
     ),
     (
-        "v0.11.1 边说边做的正文不许被吞",
+        # v0.11.1 那段手工吐正文的代码，v0.12.0 被真流式取代了——现在负责
+        # 「边说边做的话别被吞」的是收分片时那一句 yield。锚点跟着搬。
+        "v0.11.1 边说边做的正文不许被吞（v0.12.0 起由流负责）",
         "pen/tutor.py",
-        '                yield {"type": "token", "text": said[i : i + 48]}',
-        "                pass",
+        '                        yield {"type": "token", "text": buf[emitted:safe]}',
+        "                        pass",
         "narration_alongside",
     ),
     (
@@ -389,6 +391,41 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
         "    if got not in allowed:\n        return READ_FIRST_MSG",
         "    if False:\n        return READ_FIRST_MSG",
         "same_batch_read_and_edit",
+    ),
+    (
+        "v0.12.0 主对话线必须走真流式",
+        "pen/tutor.py",
+        '        "stream": True,',
+        '        "stream": False,',
+        "streaming_is_actually_requested",
+    ),
+    (
+        "v0.12.0 芯片块一个字都不许吐给读者",
+        "pen/tutor.py",
+        "                    safe = cut if cut >= 0 else max(0, len(buf) - len(CHIPS_MARKER) + 1)",
+        "                    safe = len(buf)",
+        "chips_block_never",
+    ),
+    (
+        "v0.12.0 保守切法压住的尾巴要冲掉",
+        "pen/tutor.py",
+        '        if tail_end > emitted:\n            yield {"type": "token", "text": buf[emitted:tail_end]}',
+        '        if False:\n            yield {"type": "token", "text": buf[emitted:tail_end]}',
+        "whole_tail_is_flushed",
+    ),
+    (
+        "v0.12.0 收尾不许把正文再吐一遍",
+        "pen/tutor.py",
+        "    if not streamed:",
+        "    if True:",
+        "streams_once_not_twice",
+    ),
+    (
+        "v0.12.0 工具分片要按 index 还原",
+        "pen/tutor.py",
+        "    return [drafts[i].done() for i in sorted(drafts)]",
+        "    return [d.done() for d in drafts.values()]",
+        "fragments_reassemble",
     ),
     (
         "书架的闸与 read_file 的闸同源",

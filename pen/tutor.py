@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from types import SimpleNamespace
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,8 @@ SHELF_CHARS = 3200
 # 预算到线时的收口话术。**不能复用 FORCE_ANSWER**——那句说的是「工具次数
 # 用完了」，而次数根本没用完，是钱到线了，对模型撒谎。措辞对齐跨书那道闸
 # 的现成先例，让两道闸给模型的心智模型一致。
+# 芯片块的起手记号。收分片时要拿它切，收尾时 parse_dynamic_chips 也认它。
+CHIPS_MARKER = "<!--pen:chips"
 FORCE_ANSWER_BUDGET = (
     "这一轮的翻阅额度用完了。用邻域和你已经读到的内容直接回答读者，"
     "并且说清楚你只读了哪几段、还有哪些没看。不要再调用任何工具，也不要凭书名猜。"
@@ -219,7 +222,13 @@ def _finish_text(
     usage: dict[str, int],
     *,
     user_text: str = "",
+    streamed: bool = False,
 ) -> Iterator[dict[str, Any]]:
+    """收尾：剥芯片块、落 last_assistant、发 done。
+
+    streamed=True 表示正文**已经在收分片的时候吐过了**，这里不能再吐一遍——
+    前端是 `acc += text` 累加的，重吐一次读者会看到两份。
+    """
     # 上一轮抛过的别再抛一遍
     asked = [str(c.get("text") or "") for c in session.last_chips]
     visible, dyn = parse_dynamic_chips(raw, user_text=user_text, asked=asked)
@@ -227,9 +236,10 @@ def _finish_text(
     session.last_chips = dyn
     if len(visible) > 80:
         session.has_substantive = True
-    yield {"type": "status", "phase": "writing", "text": "在写…"}
-    for i in range(0, len(visible), 48):
-        yield {"type": "token", "text": visible[i : i + 48]}
+    if not streamed:
+        yield {"type": "status", "phase": "writing", "text": "在写…"}
+        for i in range(0, len(visible), 48):
+            yield {"type": "token", "text": visible[i : i + 48]}
     yield {
         "type": "done",
         "usage": usage,
@@ -251,7 +261,11 @@ def llm_create_kwargs(
     kwargs: dict[str, Any] = {
         "model": cfg.model,
         "messages": messages,
-        "stream": False,
+        # 主对话线走真流式：读者要等 14.5 秒才看到第一个正文字，那段时间里
+        # 屏幕上什么都没有。推理内容 1.3 秒就开始流，拿它当「没卡住」的信号。
+        # include_usage 让末片带回 usage——不加就没账可记。
+        "stream": True,
+        "stream_options": {"include_usage": True},
     }
     if tools:
         kwargs["tools"] = tools
@@ -259,6 +273,82 @@ def llm_create_kwargs(
         kwargs["reasoning_effort"] = cfg.thinking
         kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
     return kwargs
+
+
+class _StreamedMessage:
+    """流式拼出来的一条 assistant 消息。
+
+    形状要和非流式那个 message 对得上：下游只用 `.content` / `.tool_calls`
+    和 `.model_dump()`，所以只实现这三样。tool_calls 里每个元素也要能被
+    `_run_tool_batch` 当对象用（`.id` / `.function.name` / `.function.arguments`）。
+    """
+
+    __slots__ = ("content", "tool_calls")
+
+    def __init__(self, content: str, calls: list[dict[str, Any]]) -> None:
+        self.content = content or None
+        self.tool_calls = [_StreamedCall(c) for c in calls] or None
+
+    def model_dump(self, exclude_none: bool = True) -> dict[str, Any]:
+        out: dict[str, Any] = {"role": "assistant"}
+        if self.content:
+            out["content"] = self.content
+        if self.tool_calls:
+            out["tool_calls"] = [c.raw for c in self.tool_calls]
+        return out
+
+
+class _StreamedCall:
+    __slots__ = ("raw", "id", "type", "function")
+
+    def __init__(self, raw: dict[str, Any]) -> None:
+        self.raw = raw
+        self.id = str(raw.get("id") or "")
+        self.type = "function"
+        fn = raw.get("function") or {}
+        self.function = SimpleNamespace(
+            name=str(fn.get("name") or ""),
+            arguments=str(fn.get("arguments") or ""),
+        )
+
+
+class _ToolCallDraft:
+    """把流式分片拼回一个完整的 tool_call。
+
+    `delta.tool_calls[i].function.arguments` 是**一片一片来的**，`id` 和 `name`
+    通常只在第一片出现，之后的片只带 index 和 arguments 的碎片。拼错一个字节
+    json.loads 就炸，整轮对话失败——所以这块单独测。
+    """
+
+    __slots__ = ("id", "name", "args")
+
+    def __init__(self) -> None:
+        self.id = ""
+        self.name = ""
+        self.args: list[str] = []
+
+    def eat(self, piece: Any) -> None:
+        if getattr(piece, "id", None):
+            self.id = str(piece.id)
+        fn = getattr(piece, "function", None)
+        if fn is not None:
+            if getattr(fn, "name", None):
+                self.name = str(fn.name)
+            frag = getattr(fn, "arguments", None)
+            if frag:
+                self.args.append(str(frag))
+
+    def done(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "type": "function",
+            "function": {"name": self.name, "arguments": "".join(self.args)},
+        }
+
+
+def assemble_tool_calls(drafts: dict[int, _ToolCallDraft]) -> list[dict[str, Any]]:
+    """按 index 升序还原。供应商不保证分片有序，所以这里排一次。"""
+    return [drafts[i].done() for i in sorted(drafts)]
 
 
 def _tool_ctx(
@@ -342,31 +432,81 @@ def _agent_loop(
     usage = usage_snapshot(0, 0)
     meter = metermod.Meter(kind=metermod.KIND_CHAT)
 
-    def _create(*, with_tools: bool) -> Any:
+    def _create(*, with_tools: bool) -> Iterator[dict[str, Any]]:
+        """打一枪，边收边报。**用 `yield from` 调它，返回值就是那条消息。**
+
+        写成生成器是为了让 _agent_loop 的结构不用动：它本来就是生成器，
+        而流式要在收分片的过程中往外报事件。
+
+        三样东西分开走：
+          reasoning_content → 只计数（1633 个分片，正文里显示是灾难），
+                              报出去让状态行跳数字——这是「没卡住」的信号
+          content           → 直接转 token 事件，**这才是真吐字**
+          tool_calls        → 按 index 拼回完整 JSON，见 _ToolCallDraft
+        """
         kwargs = llm_create_kwargs(
             cfg,
             messages=session.messages,
             tools=tools if with_tools else None,
         )
+        parts: list[str] = []
+        # 已经吐出去多少字。芯片块是给界面剥的，**一个字都不能吐给读者**——
+        # 而它是一片一片来的，marker 本身可能被切碎，所以尾巴留 len(marker)-1
+        # 不吐，等下一片来了再说；流完再冲一次。
+        emitted = 0
+        drafts: dict[int, _ToolCallDraft] = {}
+        got_usage: Any = None
+        think_chars = 0
         try:
-            resp = client.chat.completions.create(**kwargs)
+            stream = client.chat.completions.create(**kwargs)
+            for chunk in stream:
+                if getattr(chunk, "usage", None):
+                    got_usage = chunk.usage
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta = getattr(choices[0], "delta", None)
+                if delta is None:
+                    continue
+                think = getattr(delta, "reasoning_content", None)
+                if think:
+                    think_chars += len(str(think))
+                    yield {"type": "think", "chars": think_chars}
+                said = getattr(delta, "content", None)
+                if said:
+                    parts.append(str(said))
+                    buf = "".join(parts)
+                    cut = buf.find(CHIPS_MARKER)
+                    safe = cut if cut >= 0 else max(0, len(buf) - len(CHIPS_MARKER) + 1)
+                    if safe > emitted:
+                        yield {"type": "token", "text": buf[emitted:safe]}
+                        emitted = safe
+                for piece in getattr(delta, "tool_calls", None) or []:
+                    idx = int(getattr(piece, "index", 0) or 0)
+                    drafts.setdefault(idx, _ToolCallDraft()).eat(piece)
         except (OpenAIError, OSError, TimeoutError) as exc:
             raise ProviderError(provider_error_message(exc, lang)) from exc
-        if resp.usage:
+        # 冲掉尾巴：没有芯片块时上面那个保守切法会压着最后十几个字不吐。
+        buf = "".join(parts)
+        cut = buf.find(CHIPS_MARKER)
+        tail_end = cut if cut >= 0 else len(buf)
+        if tail_end > emitted:
+            yield {"type": "token", "text": buf[emitted:tail_end]}
+        if got_usage:
             usage.update(
                 usage_snapshot(
-                    resp.usage.prompt_tokens or 0,
-                    resp.usage.completion_tokens or 0,
+                    getattr(got_usage, "prompt_tokens", 0) or 0,
+                    getattr(got_usage, "completion_tokens", 0) or 0,
                 )
             )
         # 记账在 if 外面：usage 缺失时这一枪照样是花过钱的，calls 该 +1。
         # read_usage(None) 会安静地回零，不会炸。
-        row = meter.add(getattr(resp, "usage", None))
+        row = meter.add(got_usage)
         session.turn_spend = metermod.merge(session.turn_spend, row)
         session.spend[metermod.KIND_CHAT] = metermod.merge(
             session.spend.get(metermod.KIND_CHAT), row
         )
-        return resp.choices[0].message
+        return _StreamedMessage("".join(parts), assemble_tool_calls(drafts))
 
     def _spend_ev() -> dict[str, Any]:
         # chat 下发**整行**而不是一个总数：前端的悬停明细要分「输入 / 输出 /
@@ -397,7 +537,7 @@ def _agent_loop(
         yield {"type": "status", "phase": "thinking", "text": "苏格拉底在想…"}
         try:
             # 不要叫 msg：会遮蔽模块级的 i18n msg()，下面那条空正文文案就调不到了
-            reply = _create(with_tools=True)
+            reply = yield from _create(with_tools=True)
         except ProviderError as exc:
             yield {"type": "error", "message": str(exc)}
             return
@@ -412,7 +552,9 @@ def _agent_loop(
                     "message": msg("llm.empty_reply", lang, model=cfg.model, base_url=cfg.base_url),
                 }
                 return
-            yield from _finish_text(session, raw, usage, user_text=str(ctx.get("user_text") or ""))
+            yield from _finish_text(
+                session, raw, usage, user_text=str(ctx.get("user_text") or ""), streamed=True
+            )
             return
         # 执行这一批之前再判一次。循环顶部那道判在**这一枪之前**，此刻它的
         # 花销已经落袋——而模型常常一枪吐一整批（实测一次 7 个 read_file，
@@ -436,21 +578,8 @@ def _agent_loop(
                 )
             capped = True
             break
-        # 模型常常边说边动手：一条消息里既有正文又有 tool_calls。以前这里
-        # 只看 tool_calls，那段正文**一个字都不会到读者眼前**——实测落盘会话里
-        # 25 条带工具调用的回复有 14 条同时带正文，包括「收到，批准了，这轮直接
-        # 动手」这种。读者于是只看到审批弹窗凭空冒出来，觉得前后顺序错乱。
-        said = (reply.content or "").strip()
-        if said:
-            # 芯片块是收尾时才该出现的东西，中途漏出来就是一段生注释。
-            said = said.split("<!--pen:chips", 1)[0].strip()
-        if said:
-            # 只吐字，不走 _finish_text：那里会解析追问芯片、还会覆盖
-            # last_assistant，而 last_assistant 是写回和深挖的输入，
-            # 中途改掉它就等于拿一句「我先读一下文件」当解答去写回。
-            yield {"type": "status", "phase": "writing", "text": "在写…"}
-            for i in range(0, len(said), 48):
-                yield {"type": "token", "text": said[i : i + 48]}
+        # v0.11.1 曾在这里手工把 reply.content 吐出去（非流式时它会被吞掉）。
+        # 改真流式之后，那段话在收分片的当口就已经吐过了——再吐一遍读者看到两份。
         yield {"type": "status", "phase": "reading", "text": "在翻手册…"}
         # 跨书那第三道闸要看「这一轮已经烧了多少」，每轮刷新一次。
         ctx["turn_tokens"] = metermod.total(session.turn_spend)
@@ -463,7 +592,7 @@ def _agent_loop(
     )
     yield {"type": "status", "phase": "thinking", "text": "苏格拉底在想…"}
     try:
-        reply = _create(with_tools=False)
+        reply = yield from _create(with_tools=False)
     except ProviderError as exc:
         yield {"type": "error", "message": str(exc)}
         return
@@ -476,7 +605,9 @@ def _agent_loop(
             "message": msg("loop.exhausted", lang),
         }
         return
-    yield from _finish_text(session, raw, usage, user_text=str(ctx.get("user_text") or ""))
+    yield from _finish_text(
+        session, raw, usage, user_text=str(ctx.get("user_text") or ""), streamed=True
+    )
 
 
 def _tool_event(name: str, out: dict[str, Any]) -> dict[str, Any]:
