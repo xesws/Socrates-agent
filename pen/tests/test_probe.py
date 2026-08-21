@@ -1414,3 +1414,96 @@ def test_parse_cap_always_exceeds_keep() -> None:
     for keep in (1, 2, 3, 4, 5):
         got = merge_limits({"probe_keep_per_run": keep})
         assert got.probe_parse_cap > got.probe_keep_per_run, f"keep={keep} 时漏斗被掐死了"
+
+
+# ── v0.10.6 单次深挖的 token 上限 ──────────────────────────────
+
+
+def test_probe_cap_stops_before_the_first_call_when_absurdly_small(idx, tmp_path, monkeypatch) -> None:
+    """填了个比一次 system prompt 还小的数（实测 system 就 5.7k token），
+    读者该看到「一次都没探」，而不是「探了但每次都白花」。"""
+    from dataclasses import replace
+
+    from pen.config import default_limits
+
+    called: list[int] = []
+    monkeypatch.setattr(probe, "_create", lambda *a, **k: called.append(1) or "{}")
+    job = _meter_job(tmp_path, limits=replace(default_limits(), max_tokens_probe=100))
+    items, reason = probe.explore(job, idx)
+    assert called == [], "一次 LLM 都不该打"
+    assert (items, reason) == ([], "token-budget")
+
+
+def test_the_first_shot_check_is_not_dead_code(idx, tmp_path, monkeypatch) -> None:
+    """写成 `over(0, cap)` 的话，spent 和 headroom 都是 0，对任何 cap > 0
+    都是假——**一行永远不会触发的死代码**。写过一版，被测试抓到。
+
+    深挖是后台花销，没有「必须先给读者一个答案」那种义务，所以这里和主对话
+    不一样：cap 小于一次探索的最小开销时，该一次都不探。
+    """
+    from dataclasses import replace
+
+    from pen.config import default_limits
+
+    called: list[int] = []
+    monkeypatch.setattr(probe, "_create",
+                        lambda *a, **k: called.append(1) or json.dumps({"questions": []}))
+    # 给一个明显够用的额度，必须放行——证明拦住上一条的是「不够」，不是「恒拦」
+    job = _meter_job(tmp_path, limits=replace(default_limits(), max_tokens_probe=500_000))
+    probe.explore(job, idx)
+    assert called == [1], "额度充足时必须照常探"
+
+
+def test_probe_cap_stops_before_the_second_call(idx, tmp_path, monkeypatch) -> None:
+    """读正文那一枪之前也要判。"""
+    from dataclasses import replace
+
+    from pen.config import default_limits
+
+    third = _third(idx, "Level 0")
+    payload = json.dumps({
+        "need_read": [{"start_line": third.start_line, "end_line": third.start_line + 3}],
+        "questions": [{
+            "text": "白名单排在危险检测前面，危险命令会被静默放行吗？",
+            "axis": "altitude", "grounding": "book", "depth": 5, "timing": "now",
+            "anchors": [{"level": "Level 0", "start_line": third.start_line,
+                         "end_line": third.start_line}],
+        }],
+    })
+    seen: list[int] = []
+
+    def fake_create(cfg, messages, meter=None, **_kw):
+        seen.append(1)
+        if meter is not None:
+            meter.add({"prompt_tokens": 6000, "completion_tokens": 300})
+        return payload
+
+    monkeypatch.setattr(probe, "_create", fake_create)
+    monkeypatch.setattr(probe, "_read_excerpts",
+                        lambda job, reads: ("【正文】某一段", [("", 1, 5)]))
+    job = _meter_job(tmp_path, limits=replace(default_limits(), max_tokens_probe=8000))
+    items, _reason = probe.explore(job, idx)
+    assert seen == [1], "第一枪打完就超了，第二枪不该打"
+    # **绝不能返回空**：第一枪已经花掉了，它产出的题是合法产出。
+    # 因为「读了一段正文」反而全丢，那会让「省钱」变成「白花钱」。
+    assert items, "第一枪的产出不许因为省钱被丢掉"
+
+
+def test_probe_cap_zero_is_off(idx, tmp_path, monkeypatch) -> None:
+    """默认不限时，两枪照打。"""
+    seen: list[int] = []
+
+    def fake_create(cfg, messages, meter=None, **_kw):
+        seen.append(1)
+        if meter is not None:
+            meter.add({"prompt_tokens": 900000, "completion_tokens": 90000})
+        return json.dumps({
+            "need_read": [{"start_line": 5, "end_line": 8}] if len(seen) == 1 else [],
+            "questions": [],
+        })
+
+    monkeypatch.setattr(probe, "_create", fake_create)
+    monkeypatch.setattr(probe, "_read_excerpts",
+                        lambda job, reads: ("【正文】某一段", [("", 1, 5)]))
+    probe.explore(_meter_job(tmp_path), idx)
+    assert len(seen) == 2, "cap=0 时烧多少都不拦"

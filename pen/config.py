@@ -101,6 +101,19 @@ PROBE_PARSE_CAP = 3
 # 给它一个名字只是为了让它不再是一个匿名的 1。
 PROBE_OPEN_PER_RUN = 1
 
+# ── token 上限（v0.10.6）──────────────────────────────────────
+# **全部默认 0 = 不限**，要读者自己填才生效。0 不是保守，是回归保证：
+# 不填任何东西时 meter.over() 恒返回 False，四条代码路径的行为与 v0.10.5
+# 逐字节一致。
+#
+# 分类不分总：不会因为后台深挖超支，把读者正在读的那轮主对话也掐了。
+#
+# ⚠️ 主对话那个**不是硬上限**：到线之后师傅还会用手上的材料出一次答案，
+# 那一枪不受限——不打它就等于把已经花掉的钱全扔了。设置页文案必须直说。
+MAX_TOKENS_CHAT = 0
+MAX_TOKENS_PROBE = 0
+MAX_TOKENS_CROSS_BOOK = 0
+
 
 def probe_enabled(env_file: Path | None = None) -> bool:
     raw = (os.environ.get(ENV_PROBE) or parse_dotenv(env_file).get(ENV_PROBE) or "").strip().lower()
@@ -159,6 +172,10 @@ class RuntimeLimits:
     probe_parse_cap: int
     # 一次里最多几条 open 题。诚实策略，不上设置页。
     probe_open_per_run: int
+    # 三个 token 上限。0 = 不限。
+    max_tokens_chat: int
+    max_tokens_probe: int
+    max_tokens_cross_book: int
 
 
 def default_limits() -> RuntimeLimits:
@@ -185,6 +202,9 @@ def default_limits() -> RuntimeLimits:
         probe_keep_per_run=PROBE_KEEP_PER_RUN,
         probe_parse_cap=PROBE_PARSE_CAP,
         probe_open_per_run=PROBE_OPEN_PER_RUN,
+        max_tokens_chat=MAX_TOKENS_CHAT,
+        max_tokens_probe=MAX_TOKENS_PROBE,
+        max_tokens_cross_book=MAX_TOKENS_CROSS_BOOK,
     )
 
 
@@ -207,6 +227,10 @@ LIMIT_RANGE: dict[str, tuple[float, float]] = {
     "probe_keep_per_run": (1, 5),
     "probe_parse_cap": (1, 10),
     "probe_open_per_run": (0, 3),
+    # 0 = 不限；下限给到 1000 以下没意义（一次 system prompt 就 5.7k token）
+    "max_tokens_chat": (0, 4_000_000),
+    "max_tokens_probe": (0, 1_000_000),
+    "max_tokens_cross_book": (0, 4_000_000),
 }
 
 

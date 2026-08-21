@@ -724,3 +724,196 @@ def test_tool_rounds_are_deliberately_not_carried_across_approval() -> None:
     src = inspect.getsource(tutor.resume_chat)
     assert "cross_book_chars" in src, "跨书预算要继承"
     assert "轮数" in src, "为什么不继承轮数，理由必须写在代码里"
+
+
+# ── v0.10.6 三个 token 上限 ────────────────────────────────────
+
+
+def _capped_script(monkeypatch, book: Path, tool_rounds: int = 2) -> list[dict[str, Any]]:
+    """一个更忠实的假 client：**不给 tools 时一定回文本**。
+
+    用固定队列会让这批测试对「第几枪收口」过敏——收口那一枪如果恰好领到
+    队列里的工具调用消息，content 就是空的，读者拿到的是 error 而不是答案。
+    真实模型在不带 tools 的那一枪永远吐正文，照着这个来。
+    """
+    seen: list[dict[str, Any]] = []
+    left = [tool_rounds]
+
+    class _Completions:
+        def create(self, **kwargs: Any) -> Any:
+            seen.append(kwargs)
+            if "tools" in kwargs and left[0] > 0:
+                left[0] -= 1
+                msg = _Msg(tool_calls=[
+                    _Tc(f"c{left[0]}", "read_file",
+                        {"path": str(book), "offset": 1, "limit": 20})
+                ])
+            else:
+                msg = _Msg(content="看过了，讲一段。" * 20)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=msg)],
+                usage=SimpleNamespace(prompt_tokens=8, completion_tokens=3),
+            )
+
+    monkeypatch.setattr(
+        openai, "OpenAI",
+        lambda **_kw: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())),
+    )
+    return seen
+
+
+def test_turn_cap_zero_is_byte_for_byte_identical(monkeypatch, tmp_path: Path) -> None:
+    """默认 0 = 不限时，**发给供应商的字节必须完全一样**。
+
+    只断言「可见事件相同」是不够的——那证明不了我们没多打一枪、没改 prompt。
+    这里比的是 create() 收到的 kwargs 序列。
+    """
+    from dataclasses import replace
+
+    from pen.config import default_limits
+
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n唯一段。\n", encoding="utf-8")
+
+    def run(limits) -> tuple[list, list]:
+        seen = _capped_script(monkeypatch, book)
+        sess = PenSession(session_id="z" * 32, handbook_id="demo")
+        evs = list(stream_chat(sess, book, "packet", llm=_cfg(), extra_roots=[tmp_path],
+                               allow_env_fallback=False, limits=limits))
+        return seen, evs
+
+    seen_a, ev_a = run(None)
+    seen_b, ev_b = run(replace(default_limits(), max_tokens_chat=0))
+    assert seen_a == seen_b, "发给供应商的 kwargs 序列必须逐字节相同"
+    assert ev_a == ev_b, "可见事件也必须一样"
+    assert len(seen_a) == 3, "两轮工具 + 一枪收尾，一枪不多一枪不少"
+
+
+def test_turn_cap_breaks_to_a_real_answer_not_an_error(monkeypatch, tmp_path: Path) -> None:
+    """撞线之后读者必须拿到**一个真答案**。
+
+    直接返回的话，此刻 messages 末尾是一条纯 tool_calls 消息、content 是空的
+    ——读者花了钱一个字没拿到。硬报错则会诱发模型换个参数重试，反而更贵。
+    """
+    from dataclasses import replace
+
+    from pen.config import default_limits
+    from pen.tutor import FORCE_ANSWER, FORCE_ANSWER_BUDGET
+
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n唯一段。\n", encoding="utf-8")
+    # 备足 5 轮工具，看它会不会在第 2 轮之后自己停下来
+    seen = _capped_script(monkeypatch, book, tool_rounds=5)
+    sess = PenSession(session_id="y" * 32, handbook_id="demo")
+    # 假 client 每枪 prompt=8/completion=3；cap=20 时第三轮顶部撞线
+    evs = list(stream_chat(sess, book, "packet", llm=_cfg(), extra_roots=[tmp_path],
+                           allow_env_fallback=False,
+                           limits=replace(default_limits(), max_tokens_chat=20)))
+    assert evs[-1]["type"] == "done", "要正常收场，不是 error"
+    assert not any(e["type"] == "error" for e in evs)
+    texts = [str(m.get("content") or "") for m in sess.messages if m.get("role") == "user"]
+    assert any(FORCE_ANSWER_BUDGET in t for t in texts), "收口话术要说是预算到线"
+    assert not any(FORCE_ANSWER in t for t in texts), (
+        "不能说「工具次数用完了」——次数根本没用完，那是对模型撒谎"
+    )
+    assert "tools" not in seen[-1], "收口那一枪不带 tools，否则它还会接着翻"
+    with_tools = [k for k in seen if "tools" in k]
+    assert len(with_tools) == 2, (
+        f"脚本备了 5 轮工具、轮数上限是 100，却该被预算停在 2 轮，实际 {len(with_tools)}"
+    )
+
+
+def test_turn_cap_reserves_headroom_for_the_closing_shot(monkeypatch, tmp_path: Path) -> None:
+    """卡在线上和留余量会停在**不同的轮次**。这条钉住留余量那一半。
+
+    不留余量的话上限根本不是上限：累计花销是二次增长的，而收口枪的大小
+    只和 messages 有多长有关，和上限之间没有任何关系。
+    """
+    from dataclasses import replace
+
+    from pen.config import default_limits
+
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n唯一段。\n", encoding="utf-8")
+    # 每枪 11 token（8+3），余量取上一枪的 prompt_tokens=8。
+    # cap=30：卡线要到 33 才停（第 3 轮后）；留余量在 22+8=30 就停（第 2 轮后）。
+    seen = _capped_script(monkeypatch, book)
+    sess = PenSession(session_id="h" * 32, handbook_id="demo")
+    list(stream_chat(sess, book, "packet", llm=_cfg(), extra_roots=[tmp_path],
+                     allow_env_fallback=False,
+                     limits=replace(default_limits(), max_tokens_chat=30)))
+    with_tools = [k for k in seen if "tools" in k]
+    assert len(with_tools) == 2, (
+        f"留余量该在第 2 枪之后收口，实际带 tools 打了 {len(with_tools)} 枪"
+        "（等于 3 就说明余量没生效）"
+    )
+
+
+def test_turn_cap_never_blocks_the_very_first_shot(monkeypatch, tmp_path: Path) -> None:
+    """填错一个小数字，最坏是退化成单轮直答，不是把插件变砖。
+
+    公式自带这个性质：第 0 轮 turn_spend 和 prompt_tokens 都是 0，
+    `0 + 0 >= cap` 对任何 cap > 0 都是 False。不用写特例。
+    """
+    from dataclasses import replace
+
+    from pen.config import default_limits
+
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n唯一段。\n", encoding="utf-8")
+    seen = _capped_script(monkeypatch, book)
+    sess = PenSession(session_id="i" * 32, handbook_id="demo")
+    evs = list(stream_chat(sess, book, "packet", llm=_cfg(), extra_roots=[tmp_path],
+                           allow_env_fallback=False,
+                           limits=replace(default_limits(), max_tokens_chat=1)))
+    assert len(seen) >= 1, "cap=1 也必须打得出第一枪"
+    assert evs[-1]["type"] == "done", "而且要有答案，不是 error"
+    assert "tools" in seen[0] and "tools" not in seen[-1]
+
+
+def test_cross_book_token_gate_is_a_third_gate_not_a_replacement(tmp_path: Path) -> None:
+    """token 闸回答的是前两道回答不了的问题：「这一轮已经烧到 X 了，别再开新书」。
+
+    它只能是后置的——读的时候根本不知道那段文本值多少 token。所以字符闸和
+    次数闸都不能被它替换掉。
+    """
+    from dataclasses import replace
+
+    from pen.agent.tools_impl import handle_read_file
+    from pen.config import default_limits
+
+    cur = tmp_path / "cur.md"
+    cur.write_text("# 当前这本\n", encoding="utf-8")
+    other = tmp_path / "other.md"
+    other.write_text("\n".join(f"别的书第 {i} 行" for i in range(1, 200)), encoding="utf-8")
+
+    base = {"original_path": cur, "extra_roots": [tmp_path]}
+    lim = replace(default_limits(), max_tokens_cross_book=5000)
+
+    # 本轮还没烧多少 → 照常读
+    ok_ctx = {**base, "limits": lim, "turn_tokens": 100}
+    assert "预算快到线" not in handle_read_file(
+        {"path": str(other), "offset": 1, "limit": 5}, ok_ctx)["text"]
+
+    # 本轮已经烧过头 → 拦住，而字符和次数都远没到线
+    hot_ctx = {**base, "limits": lim, "turn_tokens": 9000}
+    got = handle_read_file({"path": str(other), "offset": 1, "limit": 5}, hot_ctx)
+    assert got["ok"] is True, "超预算不能报错"
+    assert "预算快到线" in got["text"]
+    assert hot_ctx.get("cross_book_chars") is None, "被第三道闸拦住时不该计入字符预算"
+    # 两道闸给模型**两句不同的话**，看 trace 就知道是哪道触发的
+    assert "额度用完" not in got["text"]
+
+
+def test_cross_book_token_gate_is_off_by_default(tmp_path: Path) -> None:
+    """cap=0 时 over() 恒为 False，前两道闸一个字节都不变。"""
+    from pen.agent.tools_impl import handle_read_file
+
+    cur = tmp_path / "cur.md"
+    cur.write_text("# 当前这本\n", encoding="utf-8")
+    other = tmp_path / "other.md"
+    other.write_text("\n".join(f"别的书第 {i} 行" for i in range(1, 200)), encoding="utf-8")
+    ctx = {"original_path": cur, "extra_roots": [tmp_path], "turn_tokens": 10**9}
+    got = handle_read_file({"path": str(other), "offset": 1, "limit": 5}, ctx)
+    assert "预算快到线" not in got["text"], "默认不限时，烧再多也不该被这道闸拦"
+    assert ctx["cross_book_reads"] == 1

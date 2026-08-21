@@ -30,6 +30,13 @@ ASKED_CHARS = 700
 # 静默砍掉最后几本——读者的书架上凭空少两本书，还看不出为什么。
 # 按 8 本 × 2 行 × 200 字符的最坏情况给足。
 SHELF_CHARS = 3200
+# 预算到线时的收口话术。**不能复用 FORCE_ANSWER**——那句说的是「工具次数
+# 用完了」，而次数根本没用完，是钱到线了，对模型撒谎。措辞对齐跨书那道闸
+# 的现成先例，让两道闸给模型的心智模型一致。
+FORCE_ANSWER_BUDGET = (
+    "这一轮的翻阅额度用完了。用邻域和你已经读到的内容直接回答读者，"
+    "并且说清楚你只读了哪几段、还有哪些没看。不要再调用任何工具，也不要凭书名猜。"
+)
 FORCE_ANSWER = (
     "工具次数用完了。根据邻域和你已经读到的内容，直接用自然语言回答读者。"
     "不要再调用任何工具。"
@@ -362,7 +369,27 @@ def _agent_loop(
             "chat": dict(session.spend.get(metermod.KIND_CHAT) or metermod.blank()),
         }
 
+    capped = False
     for _step in range(limits_of(ctx).max_tool_rounds):
+        # 每轮上限的 pre-check。**余量取 usage["prompt_tokens"]**——它就是
+        # 「此刻喂进去的上下文」，代码本来就在测这个数，也是收口那一枪 prompt
+        # 的最好现成估计。不留余量的话上限根本不是上限：累计花销是二次增长的
+        # （每轮重发整段 messages），而收口枪的大小只和 messages 有多长有关，
+        # 和上限之间没有任何关系。实测填 30k 会花到约 75k，留余量后降到约 43k。
+        #
+        # _step == 0 时 turn_spend 和 prompt_tokens 都是 0，`0 + 0 >= cap` 对
+        # 任何 cap > 0 都是 False——**上限永远不会让第一枪打不出去**，
+        # 填错一个小数字最坏是退化成单轮直答，不是把插件变砖。公式自带这个
+        # 性质，不用写特例。
+        #
+        # 读的是 session.turn_spend 而不是闭包 meter，所以跨审批暂停仍然成立。
+        if metermod.over(
+            metermod.total(session.turn_spend),
+            limits_of(ctx).max_tokens_chat,
+            headroom=usage["prompt_tokens"],
+        ):
+            capped = True
+            break
         yield {"type": "status", "phase": "thinking", "text": "师傅在想…"}
         try:
             # 不要叫 msg：会遮蔽模块级的 i18n msg()，下面那条空正文文案就调不到了
@@ -384,11 +411,15 @@ def _agent_loop(
             yield from _finish_text(session, raw, usage, user_text=str(ctx.get("user_text") or ""))
             return
         yield {"type": "status", "phase": "reading", "text": "在翻手册…"}
+        # 跨书那第三道闸要看「这一轮已经烧了多少」，每轮刷新一次。
+        ctx["turn_tokens"] = metermod.total(session.turn_spend)
         paused = yield from _run_tool_batch(session, ctx, list(reply.tool_calls))
         if paused:
             return
 
-    session.messages.append({"role": "user", "content": FORCE_ANSWER})
+    session.messages.append(
+        {"role": "user", "content": FORCE_ANSWER_BUDGET if capped else FORCE_ANSWER}
+    )
     yield {"type": "status", "phase": "thinking", "text": "师傅在想…"}
     try:
         reply = _create(with_tools=False)

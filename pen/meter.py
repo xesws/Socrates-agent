@@ -153,6 +153,20 @@ def coerce_book(raw: Any) -> dict[str, dict[str, int]]:
     return book
 
 
+def over(spent: int, cap: int, *, headroom: int = 0) -> bool:
+    """超没超。
+
+    **`cap > 0` 这一半就是「0 = 不限」的全部实现，别改成别的判据**——
+    它是「默认档逐字节一致」这条承诺的唯一实现点。
+
+    headroom 是「还要留出多少给收口那一枪」。不留余量的话上限根本不是上限：
+    本仓实测一句「另一本讲什么」触发 21 次 read_file、末轮 prompt 27k token，
+    而累计花销是**二次增长**的（每轮把整段 messages 重发）。卡在线上时，
+    收口那一枪的大小和上限之间没有任何关系——它只和 messages 有多长有关。
+    """
+    return cap > 0 and (spent + max(0, headroom)) >= cap
+
+
 @dataclass
 class Meter:
     """一次「活动」的累加器：一轮主对话 / 一次深挖 / 一次写回。

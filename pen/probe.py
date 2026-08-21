@@ -26,7 +26,7 @@ from typing import Any, Sequence
 from pen import config
 from pen.config import LLMConfig
 from pen.index import HandbookIndex
-from pen.meter import KIND_PROBE, Meter
+from pen.meter import KIND_PROBE, Meter, over
 from pen.probe_store import DeepQuestion
 from pen.questions import clean_candidates, normalize_qkey, similarity
 
@@ -900,7 +900,18 @@ def explore(
 ) -> tuple[list[DeepQuestion], str]:
     """跑一次探索。返回 (问题, 原因)。最多两次调用，最多两段读取。"""
     m = meter if meter is not None else Meter(kind=KIND_PROBE)
+    cap = job.limits.max_tokens_probe
     system = build_system(idx, job.lang, job.limits)
+    # ① 第一枪之前。**不能写成 over(0, cap)**：spent 和 headroom 都是 0，
+    #    那个判据对任何 cap > 0 都是假，等于一行死代码（写过一版，被测试抓到）。
+    #    这里要判的是「cap 比一次探索的最小开销还小」——实测 system 本身就有
+    #    5.7k token。填了个 1000 的读者该看到「一次都没探」，而不是
+    #    「探了一次照样花 6000」。深挖是后台花销，没有「必须先给读者一个答案」
+    #    那种义务，所以这里和主对话不一样，该拦就拦。
+    #    估算用字符数除 2：这条 prompt 以中文为主，实测约 1 token / 1.4 字，
+    #    除 2 是**偏低**的估计——宁可少拦，不要把一个正常的额度误判成不够。
+    if over(0, cap, headroom=len(system) // 2):
+        return [], "token-budget"
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": build_user_message(job)},
@@ -913,6 +924,17 @@ def explore(
         excerpt, spans = _read_excerpts(job, data["need_read"])
         if excerpt:
             messages[-1] = {"role": "user", "content": build_user_message(job, excerpt)}
+            # ② 第二枪之前。第二枪的输入 ≈ 第一枪 + excerpt，
+            #    用第一枪的输入量当下界估余量。
+            if over(m.spent, cap, headroom=m.last_in):
+                # **绝不能返回空**：第一枪已经花掉了，它产出的 questions 是
+                # 合法产出，不该因为「读了一段正文」反而全丢——那会让「省钱」
+                # 变成「白花钱」。
+                # 但 excerpt/spans 必须传空：那几条题是模型**看到正文之前**
+                # 写的，里面任何跨书行号都是编的，走 validate_slots 的
+                # 「没读过就写行号 = 编」那条正好筛掉。
+                items = _harvest(data["questions"], job, idx, "", ())
+                return items, ("" if items else "token-budget")
             raw = _create(job.cfg, messages, m, limits=job.limits)
             data = parse_probe_json(raw, limits=job.limits)
     items = _harvest(data["questions"], job, idx, excerpt, spans)

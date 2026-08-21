@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from pen.meter import over
 from pen.readtool import read_file_report
 from pen import config
 from pen.sandbox import SandboxError, assert_write_target, resolve_read_target
@@ -81,6 +82,22 @@ def handle_read_file(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
         # 那是导入期冻结，设置页改完这台 sidecar 要重启才认，
         # 而同一个进程可能还伺候着另一个 vault。
         lim = limits_of(ctx)
+        # 第三道闸（v0.10.6）：本轮**累计 token** 到线就不再开新书。
+        # 和上面两道不是一回事：字符/次数量的是「这次读了多少」，这道量的是
+        # 「这一轮已经烧了多少」——跨书正文进了 session.messages 之后每轮重发，
+        # 真实代价是「字符数 × 剩余轮数」，前两道闸看不见这个复利。
+        # 它只能是后置的：读的时候根本不知道那段文本值多少 token。
+        # cap=0（默认）时 over() 恒为 False，下面两道闸一个字节都不变。
+        if over(int(ctx.get("turn_tokens") or 0), lim.max_tokens_cross_book):
+            return {
+                "ok": True,
+                "text": (
+                    "本轮的 token 预算快到线了，别再翻别的教材。用已经读到的内容作答，"
+                    "并且告诉读者你只读了哪几段、还有哪些没看。"
+                ),
+                "resolved": str(report["resolved"]),
+                "detail": raw_path,
+            }
         if spent >= lim.cross_book_chars or reads >= lim.cross_book_reads:
             return {
                 "ok": True,
