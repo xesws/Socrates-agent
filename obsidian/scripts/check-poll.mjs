@@ -18,7 +18,7 @@ const out = await build({
 const mod = await import(
   "data:text/javascript;base64," + Buffer.from(out.outputFiles[0].text).toString("base64")
 );
-const { pollDeep, mergeDeep, keepDeep, MAX_VISIBLE_DEEP, DEEP_POLL_BUDGET_MS } = mod;
+const { pollDeep, mergeDeep, keepDeep, dropAsked, MAX_VISIBLE_DEEP, DEEP_POLL_BUDGET_MS } = mod;
 
 const checks = [];
 const check = (name, pass) => checks.push([name, Boolean(pass)]);
@@ -149,6 +149,22 @@ check(
 check(
   "keepDeep 也守上限",
   keepDeep([q("一？"), q("二？"), q("三？")]).length === MAX_VISIBLE_DEEP,
+);
+
+// v0.12.1 点过的深题当场消失
+check(
+  "点过的那条当场摘掉",
+  dropAsked([q("甲？"), q("乙？")], "甲？").length === 1,
+);
+check(
+  "摘的是点中的那条，不是随便一条",
+  dropAsked([q("甲？"), q("乙？")], "甲？")[0].text === "乙？",
+);
+check("没点中就一条都不动", dropAsked([q("甲？")], "别的话").length === 1);
+check("空文本不动（点固定芯片走的是这条）", dropAsked([q("甲？")], "").length === 1);
+check(
+  "摘掉之后 keepDeep 不会把它捞回来",
+  keepDeep(dropAsked([q("甲？"), q("乙？")], "甲？")).every((c) => c.text !== "甲？"),
 );
 
 let bad = 0;

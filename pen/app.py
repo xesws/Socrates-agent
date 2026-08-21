@@ -407,8 +407,10 @@ def _public_session(sess) -> dict[str, Any]:
     out = sess.to_public()
     try:
         led = probe_store.load(sess.session_id)
+        # 只恢复 shown。clicked 是**读者已经问过**的题——恢复回来等于
+        # 关一次面板它就复活，成了复读机。
         deep = [q.to_chip() for q in sorted(led.pool, key=lambda x: x.seq)
-                if q.state in ("shown", "clicked")]
+                if q.state == "shown"]
         # to_public() 里 probe 那格恒为 0，在这儿补上。这是「重开侧栏之后
         # 第三格不归零」的唯一真相来源。
         out["spend"][metermod.KIND_PROBE] = dict(led.spend)
@@ -571,6 +573,28 @@ def _maybe_probe(sess, body: "ChatBody", anchor: dict[str, Any], path: Path, lan
         return False
 
 
+def _ripe_deep(sess, anchor: dict[str, Any]) -> dict[str, Any]:
+    """池子里这一轮该抛出去的题。搭 done 的便车，零额外往返。
+
+    形状和 /deep 端点一致（dyn_chips / deep_cursor），前端两条路共用一套合并。
+    读盘失败不能带崩一轮对话——深题没了是遗憾，回复没了是事故。
+    """
+    try:
+        box = probe_store.inbox(
+            sess.session_id,
+            since=0,
+            atom=diagnosemod.atom_key(anchor) if anchor else "",
+            level=str(anchor.get("level") or ""),
+            now_round=sess.turns,
+        )
+    except Exception:
+        return {}
+    items = box.get("items") or []
+    if not items:
+        return {}
+    return {"deep_items": items, "deep_cursor": box.get("cursor", 0)}
+
+
 @app.get("/v1/sessions/{session_id}/deep")
 def deep_inbox(
     session_id: str,
@@ -724,6 +748,15 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
                         **ev,
                         "deep_running": _maybe_probe(sess, body, anchor, path, lang),
                         "spend": _merged_spend(sess),
+                        # 每轮都把池子里成熟的题捎出来。**这是 v0.8.1 就设计过
+                        # 却一直没实现的那条路**，不补上就是个死锁：
+                        # inbox() 是唯一会投递、也是唯一会跑 TTL 过期的地方，
+                        # 而它只被 /deep 端点调，那个端点又只在 deep_running
+                        # 为真时才被轮询。于是池子攒够 PROBE_PENDING_CAP 条之后
+                        # should_probe 永久返回 backlog-full → 不起探索 →
+                        # 不轮询 → 不投递也不过期 → 深挖静默停摆，读者只能新开会话。
+                        # 走这条路还顺带解决「点过一条之后下一条当轮就顶上来」。
+                        **_ripe_deep(sess, anchor),
                     }
                 elif ev.get("type") == "error":
                     ok = False

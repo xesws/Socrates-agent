@@ -1330,3 +1330,127 @@ def test_usage_endpoint_never_takes_the_session_lock(monkeypatch, tmp_path) -> N
         finally:
             lock.release()
     assert got.status_code == 200
+
+
+# ── v0.12.1 点过的深题要消失，队列要往前走 ──────────────────────
+
+
+def _seed_pool(sid: str, hid: str, n: int, state: str = "pending") -> None:
+    """攒一池子**老**题：born_round=0、timing=later。
+
+    这是死锁真实发生的形状——题在池子里躺了几轮没抛出去。
+    拿 timing=now + atom="a" 造种子是测不到的：atom 永远匹配不上真实锚点，
+    而 now 那条的另一半放行条件是「就是这一轮生的」，也不成立。
+    """
+    from pen import probe_store
+    from pen.probe_store import DeepQuestion
+
+    led = probe_store.load(sid, hid)
+    for i in range(n):
+        led.seq += 1
+        led.pool.append(DeepQuestion(
+            id=f"q{i}", text=f"第 {i} 个攒着的问题，它到底在讲哪一层？",
+            seq=led.seq, state=state, born_round=0, atom="a", timing="later"))
+    probe_store.save(led)
+
+
+def test_a_full_queue_no_longer_deadlocks_the_whole_feature(monkeypatch, tmp_path) -> None:
+    """**这是最严重的一条。**
+
+    inbox() 是唯一会投递、也是唯一会跑 TTL 过期的地方，而它只被 /deep 端点调，
+    那个端点又只在 deep_running 为真时才被前端轮询。于是池子攒够
+    PROBE_PENDING_CAP 条之后：should_probe 永久返回 backlog-full → 不起探索 →
+    不轮询 → 不投递也不过期 → **深挖静默停摆，读者只能新开会话。**
+
+    修法是补上 v0.8.1 设计过却一直没实现的那条路：每轮 done 都把池子里成熟的
+    题捎出来，不依赖探索跑不跑。
+    """
+    from pen import probe
+
+    _isolate_pen(tmp_path, monkeypatch)
+
+    def fake_stream(sess, path, packet, llm=None, extra_roots=None,
+                    allow_env_fallback=True, lang="zh", **_kw):
+        sess.last_assistant = "讲了一大段。" * 30
+        sess.has_substantive = True
+        yield {"type": "done", "usage": {"context_tokens": 1, "completion_tokens": 1,
+                                         "prompt_tokens": 1},
+               "dynamic_chips": [], "has_substantive": True}
+
+    monkeypatch.setattr("pen.app.stream_chat", fake_stream)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        _seed_pool(sid, "swe-agent-v2", config.PROBE_PENDING_CAP)
+        sess = STORE.get(sid)
+        sess.last_anchor = {"level": "Level 0", "start_line": 1, "end_line": 1}
+        # 题在池子里躺了几轮：later 那条要等够两轮才成熟
+        sess.turns = 5
+
+        # 池子满了，探索这一轮确实起不来——闸门本身没错
+        go, why = probe.should_probe(
+            enabled=True, ok=True, chip="socratic", pending=False,
+            reply="讲了一大段。" * 30, anchor=sess.last_anchor, probe_calls=0,
+            pending_pool=config.PROBE_PENDING_CAP, has_llm=True)
+        assert (go, why) == (False, "backlog-full")
+
+        resp = client.post("/v1/chat", json=_chat_body(sid, _q1_line()))
+        done = next(
+            json.loads(ln[6:]) for ln in resp.text.splitlines()
+            if ln.startswith("data: ") and json.loads(ln[6:]).get("type") == "done"
+        )
+    assert done.get("deep_running") is False, "探索确实没起——这是前提，不是 bug"
+    assert done.get("deep_items"), (
+        "探索没起，但池子里的题必须照样发出来——否则 backlog-full 就是个死结"
+    )
+
+
+def test_done_pops_the_queue_every_turn(monkeypatch, tmp_path) -> None:
+    """点过一条之后，下一条要当轮顶上来，不用等下一次探索。"""
+    _isolate_pen(tmp_path, monkeypatch)
+
+    def fake_stream(sess, path, packet, llm=None, extra_roots=None,
+                    allow_env_fallback=True, lang="zh", **_kw):
+        sess.last_assistant = "讲了一大段。" * 30
+        sess.has_substantive = True
+        yield {"type": "done", "usage": {"context_tokens": 1, "completion_tokens": 1,
+                                         "prompt_tokens": 1},
+               "dynamic_chips": [], "has_substantive": True}
+
+    monkeypatch.setattr("pen.app.stream_chat", fake_stream)
+    monkeypatch.setattr("pen.app.probemod.spawn", lambda job, pid: None)
+    seen: list[str] = []
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        _seed_pool(sid, "swe-agent-v2", 3)
+        sess = STORE.get(sid)
+        sess.last_anchor = {"level": "Level 0", "start_line": 1, "end_line": 1}
+        sess.turns = 5
+        for _ in range(3):
+            resp = client.post("/v1/chat", json=_chat_body(sid, _q1_line()))
+            done = next(
+                json.loads(ln[6:]) for ln in resp.text.splitlines()
+                if ln.startswith("data: ") and json.loads(ln[6:]).get("type") == "done"
+            )
+            seen += [c["text"] for c in done.get("deep_items") or []]
+    fresh = [t for i, t in enumerate(seen) if t not in seen[:i]]
+    assert len(fresh) >= 2, f"三轮下来只抛出 {len(fresh)} 条不同的题：{seen}"
+
+
+def test_a_clicked_question_never_comes_back_on_reload(monkeypatch, tmp_path) -> None:
+    """clicked 是**读者已经问过**的题。恢复回来等于关一次面板它就复活。"""
+    from pen import probe_store
+
+    _isolate_pen(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        _seed_pool(sid, "swe-agent-v2", 2, state="shown")
+        led = probe_store.load(sid)
+        asked = led.pool[0].text
+        got = client.get(f"/v1/sessions/{sid}").json()
+        assert any(c["text"] == asked for c in got["dyn_chips"]), "没问过的要在"
+
+        assert probe_store.mark_clicked(sid, asked) is not None
+        again = client.get(f"/v1/sessions/{sid}").json()
+    texts = [c["text"] for c in again["dyn_chips"]]
+    assert asked not in texts, "问过的题不能在重开面板之后复活"
+    assert len(texts) == 1, "另一条没问过的还得留着"

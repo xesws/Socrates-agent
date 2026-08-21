@@ -428,6 +428,20 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
         "fragments_reassemble",
     ),
     (
+        "v0.12.1 队列满了不许把整个功能锁死",
+        "pen/app.py",
+        "                        **_ripe_deep(sess, anchor),",
+        "                        **{},",
+        "full_queue_no_longer_deadlocks or done_pops_the_queue",
+    ),
+    (
+        "v0.12.1 问过的题不许在重开面板后复活",
+        "pen/app.py",
+        '                if q.state == "shown"]',
+        '                if q.state in ("shown", "clicked")]',
+        "clicked_question_never_comes_back",
+    ),
+    (
         "书架的闸与 read_file 的闸同源",
         "pen/tutor.py",
         "    return [REPO_ROOT, *(extra_roots or [])]",

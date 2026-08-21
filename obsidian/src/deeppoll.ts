@@ -74,6 +74,18 @@ export async function pollDeep(deps: PollDeps): Promise<void> {
 /** 同时可见几条深题。多了就成噪音。 */
 export const MAX_VISIBLE_DEEP = 2;
 
+/**
+ * 摘掉读者正要问的那一条。
+ *
+ * 抽成纯函数是为了能在 node 里直测——`keepDeep` 只认 `kind === "deep"`，
+ * 会把刚点过的那条原样留下，于是读者对着一个自己刚问过的问题看。
+ * 这是本地就知道的事实，不用等服务端回话。
+ */
+export function dropAsked(cur: DynChip[], text: string): DynChip[] {
+  if (!text) return cur;
+  return cur.filter((c) => c.text !== text);
+}
+
 /** 换轮时保留下来的深题。 */
 export function keepDeep(cur: DynChip[]): DynChip[] {
   return cur.filter((c) => c.kind === "deep").slice(-MAX_VISIBLE_DEEP);

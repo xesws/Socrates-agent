@@ -21,7 +21,7 @@ import type {
   TokenRow,
 } from "../types";
 import { chipHint, chipLabel, phaseText, t } from "../i18n";
-import { keepDeep, mergeDeep, pollDeep } from "../deeppoll";
+import { dropAsked, keepDeep, mergeDeep, pollDeep } from "../deeppoll";
 import { measureMonoAdvance, renderSplash, type SplashLevel } from "./splash";
 import { AVATAR } from "../logo";
 
@@ -413,6 +413,14 @@ export class PenView extends ItemView {
     // 只换掉实时层那两条。深题是单独花一次调用挖出来的，服务端已经
     // 标成 shown、游标也推过去了，整体覆盖等于点一次就再也找不回来。
     this.dyn = [...keepDeep(this.dyn), ...readDynChips(ev)];
+    // done 每轮都捎着池子里成熟的题——这条路不依赖探索跑不跑，
+    // 所以点过一条之后下一条当轮就顶上来。
+    const ripe = (ev.deep_items || []) as DynChip[];
+    if (ripe.length) {
+      this.dyn = mergeDeep(this.dyn, ripe);
+      this.deepCursor = Math.max(this.deepCursor, Number(ev.deep_cursor) || 0);
+      this.deepArrived = true;
+    }
     this.substantive = Boolean(ev.has_substantive);
     // 后台在挖。轮询自己会因为 running 变空而停，不用管它。
     // approve 那条线不下发这个键，于是这里是个空操作。
@@ -863,6 +871,11 @@ export class PenView extends ItemView {
       new Notice(t().noticeUseSelectionFirst);
       return;
     }
+    // 正要问的这条深题，当场从列表里摘掉。**不能等服务端回话**：
+    // 收尾时 keepDeep 只认 kind==="deep"，会把刚点过的那条原样留下，
+    // 于是它一直挂在那儿，读者对着一个自己刚问过的问题看——跟复读机没区别。
+    // 读者点下去的那一刻它就该消失，那是本地就知道的事实。
+    this.dyn = dropAsked(this.dyn, userText);
     this.busy = true;
     this.err = "";
     this.usage = null;
