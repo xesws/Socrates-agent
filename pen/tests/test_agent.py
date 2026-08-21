@@ -729,7 +729,9 @@ def test_tool_rounds_are_deliberately_not_carried_across_approval() -> None:
 # ── v0.10.6 三个 token 上限 ────────────────────────────────────
 
 
-def _capped_script(monkeypatch, book: Path, tool_rounds: int = 2) -> list[dict[str, Any]]:
+def _capped_script(
+    monkeypatch, book: Path, tool_rounds: int = 2, per_shot: tuple[int, int] = (8, 3)
+) -> list[dict[str, Any]]:
     """一个更忠实的假 client：**不给 tools 时一定回文本**。
 
     用固定队列会让这批测试对「第几枪收口」过敏——收口那一枪如果恰好领到
@@ -752,7 +754,9 @@ def _capped_script(monkeypatch, book: Path, tool_rounds: int = 2) -> list[dict[s
                 msg = _Msg(content="看过了，讲一段。" * 20)
             return SimpleNamespace(
                 choices=[SimpleNamespace(message=msg)],
-                usage=SimpleNamespace(prompt_tokens=8, completion_tokens=3),
+                usage=SimpleNamespace(
+                    prompt_tokens=per_shot[0], completion_tokens=per_shot[1]
+                ),
             )
 
     monkeypatch.setattr(
@@ -917,3 +921,171 @@ def test_cross_book_token_gate_is_off_by_default(tmp_path: Path) -> None:
     got = handle_read_file({"path": str(other), "offset": 1, "limit": 5}, ctx)
     assert "预算快到线" not in got["text"], "默认不限时，烧再多也不该被这道闸拦"
     assert ctx["cross_book_reads"] == 1
+
+
+# ── v0.10.8 上限的三个真 bug ───────────────────────────────────
+
+
+def test_turn_cap_resets_every_turn(monkeypatch, tmp_path: Path) -> None:
+    """**这是 v0.10.6 漏掉的那条。**
+
+    turn_spend 只累加不清零的话，名为「每轮上限」的旋钮实际是「整场一次性
+    预算」：用完之后每一轮都直接进收口枪，师傅**永远不再翻手册**，而且
+    turn_spend 落盘，重启 sidecar 也救不回来。
+
+    v0.10.6 的五条上限测试**全部只跑一轮**——凡是「每轮重置」型的状态，
+    那个测试形状按定义看不见。
+    """
+    from dataclasses import replace
+
+    from pen.config import default_limits
+
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n唯一段。\n", encoding="utf-8")
+    sess = PenSession(session_id="t" * 32, handbook_id="demo")
+    # 每枪 1100，cap 5000 → 一轮里第 4 枪顶部撞线。**每枪的量必须真能撞到
+    # cap**，否则这条测试是空转的（第一版就是：每枪 11 token 撞不到 5000，
+    # 把重置删掉照样绿）。
+    lim = replace(default_limits(), max_tokens_chat=5000)
+    rounds = []
+    for i in range(4):
+        seen = _capped_script(monkeypatch, book, tool_rounds=9, per_shot=(1000, 100))
+        list(stream_chat(sess, book, f"第 {i} 轮", llm=_cfg(), extra_roots=[tmp_path],
+                         allow_env_fallback=False, limits=lim))
+        rounds.append(len([k for k in seen if "tools" in k]))
+    assert rounds[0] > 0, "第一轮就该能翻书"
+    assert all(r == rounds[0] for r in rounds), (
+        f"每一轮的翻书枪数该一样（预算每轮重置），实际 {rounds}"
+        "——全 0 就说明 turn_spend 没清零，师傅从第二轮起再也不翻书了"
+    )
+
+
+def test_the_reset_does_not_leak_into_the_approval_pause(monkeypatch, tmp_path: Path) -> None:
+    """清零只能在 stream_chat。放进 _agent_loop 或 resume_chat 就等于
+    审批让预算翻倍——v0.10.3 刚修过反向的同一件事。"""
+    cur = tmp_path / "cur.md"
+    cur.write_text("# 当前这本\n\n第二段。\n", encoding="utf-8")
+    _patch_script(
+        monkeypatch,
+        [
+            _Msg(tool_calls=[_Tc("r1", "read_file", {"path": str(cur), "offset": 1, "limit": 20})]),
+            _Msg(tool_calls=[_Tc("e1", "edit_file", {"path": str(cur),
+                                                     "old_string": "第二段。",
+                                                     "new_string": "改过。"})]),
+        ],
+    )
+    sess = PenSession(session_id="k" * 32, handbook_id="demo")
+    list(stream_chat(sess, cur, "packet", llm=_cfg(), extra_roots=[tmp_path],
+                     allow_env_fallback=False))
+    before = dict(sess.turn_spend)
+    assert sess.pending is not None
+    _patch_script(monkeypatch, [_Msg(content="改完了。" * 30)])
+    list(resume_chat(sess, cur, allow=True, pending_id=sess.pending["id"],
+                     llm=_cfg(), extra_roots=[tmp_path], allow_env_fallback=False))
+    assert sess.turn_spend["calls"] > before["calls"], "续跑那一枪要加在同一轮上"
+    assert sess.turn_spend["in_tokens"] > before["in_tokens"], "不能被清零重来"
+
+
+def test_the_batch_is_not_executed_once_the_budget_is_gone(monkeypatch, tmp_path: Path) -> None:
+    """模型常常一枪吐一整批（实测 7 个 read_file，也见过 21 个）。
+    整批执行完再收口，收口枪面对的是多了整批正文的 messages——
+    实测超出从约 1.5 倍变成 2.18 倍。撞线就不执行这一批。"""
+    from dataclasses import replace
+
+    from pen.config import default_limits
+
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n" + "很长的一段正文。" * 200 + "\n", encoding="utf-8")
+    reads: list[str] = []
+    real_dispatch = None
+
+    class _Completions:
+        def __init__(self) -> None:
+            self.n = 0
+
+        def create(self, **kwargs: Any) -> Any:
+            self.n += 1
+            if "tools" in kwargs:
+                # 一枪吐 5 个 read_file
+                tcs = [
+                    _Tc(f"c{i}", "read_file", {"path": str(book), "offset": 1, "limit": 100})
+                    for i in range(5)
+                ]
+                msg = _Msg(tool_calls=tcs)
+            else:
+                msg = _Msg(content="用手上的东西答一段。" * 20)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=msg)],
+                usage=SimpleNamespace(prompt_tokens=4000, completion_tokens=500),
+            )
+
+    monkeypatch.setattr(
+        openai, "OpenAI",
+        lambda **_kw: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())),
+    )
+    sess = PenSession(session_id="q" * 32, handbook_id="demo")
+    evs = list(stream_chat(sess, book, "packet", llm=_cfg(), extra_roots=[tmp_path],
+                           allow_env_fallback=False,
+                           limits=replace(default_limits(), max_tokens_chat=6000)))
+    assert evs[-1]["type"] == "done", "仍要给读者一个真答案"
+    tool_evs = [e for e in evs if e["type"] == "tool"]
+    assert not tool_evs, f"撞线之后这一批不该执行，却跑了 {len(tool_evs)} 个"
+    # 但协议必须合法：每个 tool_call 都要有配对的 tool 结果
+    ids = {
+        tc["id"]
+        for m in sess.messages
+        if m.get("role") == "assistant"
+        for tc in (m.get("tool_calls") or [])
+    }
+    answered = {m.get("tool_call_id") for m in sess.messages if m.get("role") == "tool"}
+    assert ids and ids <= answered, (
+        "每个 tool_call 都必须有配对的 tool 结果，少一条供应商直接 400"
+    )
+    assert any(
+        "没有执行" in str(m.get("content") or "")
+        for m in sess.messages
+        if m.get("role") == "tool"
+    ), "合成结果要告诉模型为什么没读到"
+
+
+def test_the_loop_top_check_only_bites_on_a_resumed_turn(monkeypatch, tmp_path: Path) -> None:
+    """循环顶部那道判在一次 stream_chat 之内是**冗余**的：工具执行既不改
+    turn_spend 也不改 usage，所以本轮顶部和上一轮批次前的输入完全一样。
+
+    它真正起作用的只有审批续跑——那时 turn_spend 从暂停前带过来，而 usage
+    刚重置成 0。所以它不留余量是想清楚的，不是漏了。
+    """
+    from dataclasses import replace
+
+    from pen.config import default_limits
+
+    cur = tmp_path / "cur.md"
+    cur.write_text("# 当前这本\n\n第二段。\n", encoding="utf-8")
+    _capped_script(monkeypatch, cur, tool_rounds=1, per_shot=(3000, 200))
+    sess = PenSession(session_id="L" * 32, handbook_id="demo")
+    # 先花掉一大笔，然后手工造一个 pending，模拟「审批暂停在预算已经超了之后」
+    list(stream_chat(sess, cur, "packet", llm=_cfg(), extra_roots=[tmp_path],
+                     allow_env_fallback=False))
+    assert sess.turn_spend["in_tokens"] > 0
+    sess.pending = {
+        "id": "pid-resume", "name": "edit_file", "args": {},
+        "tool_call_id": "tc-x", "rest": [],
+        "original_path": str(cur.expanduser().resolve()),
+        "cross_book_chars": 0, "cross_book_reads": 0,
+    }
+    sess.messages.append(
+        {"role": "assistant",
+         "tool_calls": [{"id": "tc-x", "type": "function",
+                         "function": {"name": "edit_file", "arguments": "{}"}}]}
+    )
+    spent_before = sess.turn_spend["in_tokens"] + sess.turn_spend["out_tokens"]
+
+    seen = _capped_script(monkeypatch, cur, tool_rounds=5, per_shot=(3000, 200))
+    list(resume_chat(sess, cur, allow=False, pending_id="pid-resume",
+                     llm=_cfg(), extra_roots=[tmp_path], allow_env_fallback=False,
+                     limits=replace(default_limits(), max_tokens_chat=spent_before)))
+    assert not [k for k in seen if "tools" in k], (
+        "续跑时预算已经超了，顶部那道判就该拦住，一枪带 tools 的都不该打"
+    )
+    assert seen, "但仍要打收口那一枪，给读者一个答案"
+    assert "tools" not in seen[-1]

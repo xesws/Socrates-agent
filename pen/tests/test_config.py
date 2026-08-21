@@ -236,3 +236,13 @@ def test_every_limit_is_actually_read_somewhere() -> None:
     )
     for f in fields(config.RuntimeLimits):
         assert f.name in src, f"RuntimeLimits.{f.name} 全仓没人读——要么接上，要么删掉"
+
+
+def test_merge_limits_survives_an_arbitrary_precision_integer() -> None:
+    """JSON 允许任意精度整数，float(10**400) 抛的是 OverflowError——
+    不挡的话读者拿到「对话中途出了意外错误」，正是请求体用 dict 而不是
+    子模型时承诺要避免的那个形状。插件自己发不出，手写 curl 能。"""
+    base = config.default_limits()
+    assert config.merge_limits({"max_tool_rounds": 10**400}) == base
+    assert config.merge_limits({"cross_book_chars": -(10**400)}) == base
+    assert config.merge_limits({"probe_timeout_s": 10**309}) == base

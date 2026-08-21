@@ -1507,3 +1507,37 @@ def test_probe_cap_zero_is_off(idx, tmp_path, monkeypatch) -> None:
                         lambda job, reads: ("【正文】某一段", [("", 1, 5)]))
     probe.explore(_meter_job(tmp_path), idx)
     assert len(seen) == 2, "cap=0 时烧多少都不拦"
+
+
+def test_the_slot_is_returned_on_every_exception_path(idx, tmp_path, monkeypatch) -> None:
+    """并发位漏一个的后果是**功能永久静默停摆**：`_take_slot` 从此失败 →
+    `release(refund=True)` 退掉配额 → 而 `_maybe_probe` 已经报了
+    deep_running:true → 前端轮到 running:[] 就停 → 读者一个提示都看不到，
+    深挖再也不来，直到重启 sidecar。
+
+    换掉 BoundedSemaphore 之后，「归还」不再是结构性保证而是一行 finally。
+    审查实测：把 except 分支的归还删掉，392 条测试一条都不红。这条补上。
+    """
+    from pen import libraries, probe_store
+
+    sid = "slot" + "0" * 28
+
+    def boom(*a, **k):
+        raise RuntimeError("炸在探索里")
+
+    monkeypatch.setattr(probe, "_inflight", 0)
+    monkeypatch.setattr(probe, "explore", boom)
+    for i in range(3):
+        pid = probe_store.try_claim(f"{sid}{i}", "probe-fx", 0)
+        probe.run_probe(_meter_job(tmp_path, session_id=f"{sid}{i}", shelf="（有）"), pid)
+    assert probe._inflight_count() == 0, "异常路径也必须把位子还回去"
+
+    # 载入索引就炸（连 Meter 都还没用上）
+    monkeypatch.setattr(libraries, "load_index", boom)
+    pid = probe_store.try_claim(f"{sid}x", "probe-fx", 0)
+    probe.run_probe(_meter_job(tmp_path, session_id=f"{sid}x", shelf="（有）"), pid)
+    assert probe._inflight_count() == 0, "更早的异常也一样"
+
+    # 位子真的还能用——证明上面数的 0 不是因为压根没抢到
+    assert probe._take_slot(1)
+    probe._drop_slot()

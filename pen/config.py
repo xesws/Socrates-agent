@@ -255,7 +255,10 @@ def merge_limits(raw: Mapping[str, Any] | None) -> RuntimeLimits:
             continue
         try:
             val = float(got)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError 不能漏：JSON 允许任意精度整数，float(10**400) 抛的
+            # 就是它。漏了的话读者拿到的是「对话中途出了意外错误」——正是
+            # 请求体用 dict 而不是子模型时承诺要避免的那个形状。
             continue
         if val != val or val in (float("inf"), float("-inf")):
             continue

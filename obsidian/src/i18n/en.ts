@@ -31,7 +31,7 @@ const LIMIT_TEXT_EN: Record<string, [string, string]> = {
   ],
   max_tokens_chat: [
     "Token cap per turn",
-    "0 = no cap. This budgets the **tool loop**: once it's hit, the tutor still writes one answer from what it already has, and that shot is not capped — so actual spend runs a little over.",
+    "0 = no cap. This budgets the **tool loop**: once it's hit, the tutor still writes one answer from what it already has, and that shot is not capped. Actual spend therefore runs over the number you set — by how much depends on how much was read this turn, not by any fixed ratio.",
   ],
   max_tokens_probe: ["Token cap per background dig", "0 = no cap. Set it below the cost of one dig and no dig runs at all."],
   max_tokens_cross_book: [

@@ -318,6 +318,48 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
         "third_gate_not_a_replacement",
     ),
     (
+        "v0.10.8 每轮上限必须每轮清零（不清就是整场一次性预算）",
+        "pen/tutor.py",
+        "    session.turn_spend = metermod.blank()",
+        "    pass",
+        "resets_every_turn",
+    ),
+    (
+        "v0.10.8 撞线之后那一批工具不许执行",
+        "pen/tutor.py",
+        # 锚点要带上后面那行注释：循环顶部那道判长得一模一样，
+        # 只截 if 那几行会同时命中两处。
+        """        if metermod.over(
+            metermod.total(session.turn_spend),
+            limits_of(ctx).max_tokens_chat,
+            headroom=usage["prompt_tokens"],
+        ):
+            # **协议要求每个 tool_call 都有配对的 tool 结果""",
+        "        if False:\n            # 协议要求每个 tool_call 都有配对的 tool 结果",
+        "batch_is_not_executed",
+    ),
+    (
+        "v0.10.8 并发位在异常路径上也要还回去",
+        "pen/probe.py",
+        "    finally:\n        _drop_slot()",
+        "    finally:\n        pass",
+        "returned_on_every_exception",
+    ),
+    (
+        "v0.10.8 夹紧不许被任意精度整数打成异常",
+        "pen/config.py",
+        "        except (TypeError, ValueError, OverflowError):",
+        "        except (TypeError, ValueError):",
+        "arbitrary_precision",
+    ),
+    (
+        "v0.10.8 续跑时预算已超就别再开工具枪",
+        "pen/tutor.py",
+        "        if metermod.over(metermod.total(session.turn_spend), limits_of(ctx).max_tokens_chat):",
+        "        if False:",
+        "loop_top_check_only_bites",
+    ),
+    (
         "书架的闸与 read_file 的闸同源",
         "pen/tutor.py",
         "    return [REPO_ROOT, *(extra_roots or [])]",

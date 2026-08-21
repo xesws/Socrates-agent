@@ -312,6 +312,14 @@ def stream_chat(
         return
 
     session.messages.append({"role": "user", "content": user_packet})
+    # 新的一轮，本轮账清零。**只能在这里清，绝不能放进 _agent_loop 或
+    # resume_chat**——那是同一轮的后半段，清了就等于审批让预算翻倍，
+    # 而 v0.10.3 刚修过反向的同一件事。
+    #
+    # 不清的后果实测过：max_tokens_chat 会从「每轮上限」退化成「整场一次性
+    # 预算」，用完之后每一轮都直接进收口枪，师傅**永远不再翻手册**；
+    # turn_spend 还落盘，重启 sidecar 也救不回来，只能新开会话。
+    session.turn_spend = metermod.blank()
 
     ctx = _tool_ctx(session, original_path, read_roots(extra_roots), limits)
     ctx["user_text"] = user_text
@@ -371,23 +379,19 @@ def _agent_loop(
 
     capped = False
     for _step in range(limits_of(ctx).max_tool_rounds):
-        # 每轮上限的 pre-check。**余量取 usage["prompt_tokens"]**——它就是
-        # 「此刻喂进去的上下文」，代码本来就在测这个数，也是收口那一枪 prompt
-        # 的最好现成估计。不留余量的话上限根本不是上限：累计花销是二次增长的
-        # （每轮重发整段 messages），而收口枪的大小只和 messages 有多长有关，
-        # 和上限之间没有任何关系。实测填 30k 会花到约 75k，留余量后降到约 43k。
+        # 进这一枪之前判一次。**这里不留余量，是想清楚的，不是漏了**：
+        # 下面那道「执行批次之前」的判用的是同一组输入（工具执行既不改
+        # turn_spend 也不改 usage），所以本轮 k 的顶部和上一轮 k-1 的批次前
+        # 完全等价——余量写在这里是一个永远不会先触发的死表达式。
         #
-        # _step == 0 时 turn_spend 和 prompt_tokens 都是 0，`0 + 0 >= cap` 对
-        # 任何 cap > 0 都是 False——**上限永远不会让第一枪打不出去**，
-        # 填错一个小数字最坏是退化成单轮直答，不是把插件变砖。公式自带这个
-        # 性质，不用写特例。
+        # 它真正起作用的只有一种情况：**审批续跑**。那时 turn_spend 是从
+        # 暂停前带过来的，而 usage 刚重置成 0（没有上一枪可估），
+        # 判据就该是裸的「已经花超了就别再开工具枪」。
         #
-        # 读的是 session.turn_spend 而不是闭包 meter，所以跨审批暂停仍然成立。
-        if metermod.over(
-            metermod.total(session.turn_spend),
-            limits_of(ctx).max_tokens_chat,
-            headroom=usage["prompt_tokens"],
-        ):
+        # stream_chat 的第 0 轮 turn_spend 是 0，`0 >= cap` 对任何 cap > 0
+        # 都是 False——**上限永远不会让第一枪打不出去**，填错一个小数字最坏
+        # 是退化成单轮直答，不是把插件变砖。
+        if metermod.over(metermod.total(session.turn_spend), limits_of(ctx).max_tokens_chat):
             capped = True
             break
         yield {"type": "status", "phase": "thinking", "text": "师傅在想…"}
@@ -410,6 +414,28 @@ def _agent_loop(
                 return
             yield from _finish_text(session, raw, usage, user_text=str(ctx.get("user_text") or ""))
             return
+        # 执行这一批之前再判一次。循环顶部那道判在**这一枪之前**，此刻它的
+        # 花销已经落袋——而模型常常一枪吐一整批（实测一次 7 个 read_file，
+        # 也见过 21 个）。整批执行完再收口的话，收口枪面对的是多了整批正文的
+        # messages，实测超出从约 1.5 倍变成 2.18 倍。撞线就不执行这一批。
+        if metermod.over(
+            metermod.total(session.turn_spend),
+            limits_of(ctx).max_tokens_chat,
+            headroom=usage["prompt_tokens"],
+        ):
+            # **协议要求每个 tool_call 都有配对的 tool 结果，少一条供应商直接
+            # 400。** 所以不执行也要给这一批每个调用补一条合成结果——顺带把
+            # 「为什么没读到」告诉模型，它收口时才说得清自己没看哪几段。
+            for tc in reply.tool_calls:
+                session.messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": "本轮的翻阅额度用完了，这次没有执行。",
+                    }
+                )
+            capped = True
+            break
         yield {"type": "status", "phase": "reading", "text": "在翻手册…"}
         # 跨书那第三道闸要看「这一轮已经烧了多少」，每轮刷新一次。
         ctx["turn_tokens"] = metermod.total(session.turn_spend)
@@ -597,6 +623,10 @@ def resume_chat(
     # 完全一致，不需要迁移。
     ctx["cross_book_chars"] = int(pending.get("cross_book_chars") or 0)
     ctx["cross_book_reads"] = int(pending.get("cross_book_reads") or 0)
+    # 跨书那第三道闸读的是 turn_tokens。不种回去的话，续跑里那批 rest 调用
+    # 看到的是 None → over(0, cap) 恒假 → 整道闸在审批之后失效一整批。
+    # 它和上面两行是同一处语义的两半：那两行管「续多少」，这一行管「续什么」。
+    ctx["turn_tokens"] = metermod.total(session.turn_spend)
     # 翻书轮数**故意不跟着恢复**，别当漏网之鱼修掉：
     # 跨书预算是「这一轮总共能花多少钱」，审批不该让它翻倍；轮数是「别让一次
     # 不受打断的循环跑飞」，而读者点那一下就是真实的断路器。跟着清零的话，
