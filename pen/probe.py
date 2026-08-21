@@ -639,6 +639,10 @@ def should_probe(
     probe_calls: int,
     pending_pool: int,
     has_llm: bool,
+    # 轮次冷却用。三个都有默认值，所以下面那张参数化的理由表一个字符都不用改：
+    # now_round=0 / last=-99 → 差 99 轮，任何 N 都放行。
+    now_round: int = 0,
+    last_probe_round: int = -99,
     limits: config.RuntimeLimits | None = None,
 ) -> tuple[bool, str]:
     """触发闸门。纯同步、零成本，在 done 那一刻判。
@@ -669,6 +673,13 @@ def should_probe(
     # 开篇的「全景图：七块积木」恰恰是全书最适合搭桥的地方。
     if level in ("封面", "附录") or not level:
         return False, "cover-or-appendix"
+    # 轮次冷却。**`lim.probe_every_n_rounds and` 这个短路不能省**：
+    # 一轮出错时 app.py 的 finally 不给 sess.turns 加一，于是「上一轮失败 +
+    # 这一轮成功」会出现 now_round == last_probe_round。写成裸的 `<= 0` 时
+    # N=0 也会在这种会话里开始拦——那就不是「和今天一样」了，而且极难复现。
+    # 排在配额前面：「探得太密」比「配额用完」更具体，读者该先听到这一条。
+    if lim.probe_every_n_rounds and now_round - last_probe_round <= lim.probe_every_n_rounds:
+        return False, "cooldown"
     if probe_calls >= lim.probe_max_per_session:
         return False, "budget"
     if pending_pool >= lim.probe_pending_cap:

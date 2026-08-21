@@ -236,6 +236,24 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
         "one_cross_book_budget",
     ),
     (
+        "v0.10.4 冷却的短路不能省（N=0 必须等于今天）",
+        "pen/probe.py",
+        "    if lim.probe_every_n_rounds and now_round - last_probe_round <= lim.probe_every_n_rounds:",
+        "    if now_round - last_probe_round <= lim.probe_every_n_rounds:",
+        "cooldown_zero",
+    ),
+    (
+        "v0.10.4 第 0 轮不能被读成「从没探过」",
+        "pen/probe_store.py",
+        """            last_probe_round=(
+                int(raw["last_probe_round"])
+                if isinstance(raw.get("last_probe_round"), (int, float))
+                else -99
+            ),""",
+        '            last_probe_round=int(raw.get("last_probe_round") or -99),',
+        "round_zero or cooldown_is_wired",
+    ),
+    (
         "书架的闸与 read_file 的闸同源",
         "pen/tutor.py",
         "    return [REPO_ROOT, *(extra_roots or [])]",

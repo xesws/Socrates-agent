@@ -156,7 +156,14 @@ class SessionLedger:
             handbook_id=str(raw.get("handbook_id") or ""),
             seq=int(raw.get("seq") or 0),
             probe_calls=int(raw.get("probe_calls") or 0),
-            last_probe_round=int(raw.get("last_probe_round") or -99),
+            # `x or -99` 在 x == 0 时会得 -99——第 0 轮（也就是一场对话的第一轮）
+            # 探过之后，落盘再读回来就变成「从没探过」。字段是死的时候无害，
+            # v0.10.4 开始冷却要读它，就成了「第一轮之后冷却失效一次」。
+            last_probe_round=(
+                int(raw["last_probe_round"])
+                if isinstance(raw.get("last_probe_round"), (int, float))
+                else -99
+            ),
             pool=pool,
             spend=meter.coerce(raw.get("spend")),
             running_timeout=_num(raw.get("running_timeout")),

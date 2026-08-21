@@ -1146,3 +1146,41 @@ def test_old_client_without_limits_still_works(monkeypatch) -> None:
     from pen.config import default_limits
 
     assert seen["limits"] == default_limits()
+
+
+def test_cooldown_is_wired_from_the_ledger_to_the_gate(monkeypatch, tmp_path) -> None:
+    """冷却要真的接上：app 得把 sess.turns 和账本里的 last_probe_round
+    一起递给闸门。不接的话闸门代码在跑而参数恒为默认，等于没有。"""
+    from pen import probe_store
+
+    _isolate_pen(tmp_path, monkeypatch)
+    seen: dict = {}
+
+    def fake_stream(sess, path, packet, llm=None, extra_roots=None,
+                    allow_env_fallback=True, lang="zh", **_kw):
+        sess.last_assistant = "讲了一大段。" * 30
+        sess.has_substantive = True
+        yield {"type": "done", "usage": {"context_tokens": 1, "completion_tokens": 1,
+                                         "prompt_tokens": 1},
+               "dynamic_chips": [], "has_substantive": True}
+
+    monkeypatch.setattr("pen.app.stream_chat", fake_stream)
+    monkeypatch.setattr("pen.app.probemod.spawn", lambda job, pid: seen.update(job=job))
+
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        # 假装刚刚探过（账本上留下 last_probe_round）
+        pid = probe_store.try_claim(sid, "swe-agent-v2", 0)
+        probe_store.release(sid, pid, refund=True)
+        assert probe_store.load(sid).last_probe_round == 0
+
+        body = _chat_body(sid, _q1_line(), api_key="sk-x",
+                          limits={"probe_every_n_rounds": 5})
+        resp = client.post("/v1/chat", json=body)
+        assert resp.status_code == 200
+        assert "job" not in seen, "隔得不够，这一轮不该起深挖"
+
+        seen.clear()
+        body2 = _chat_body(sid, _q1_line(), api_key="sk-x")  # 不设冷却
+        client.post("/v1/chat", json=body2)
+    assert "job" in seen, "不设冷却时照常探——证明拦住上一次的是冷却，不是别的"

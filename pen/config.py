@@ -85,6 +85,9 @@ PROBE_MAX_PER_WINDOW = 40
 PROBE_CONCURRENCY = 2
 # 手里还有这么多没抛出去的好问题时就别再探了——省的不是频率，是浪费。
 PROBE_PENDING_CAP = 3
+# 两次深挖之间至少隔几轮。**0 = 每轮实质回复都探**，就是读者当初选的行为。
+# 默认 0，所以不改设置的读者一点感觉都没有。
+PROBE_EVERY_N_ROUNDS = 0
 
 
 def probe_enabled(env_file: Path | None = None) -> bool:
@@ -136,6 +139,8 @@ class RuntimeLimits:
     probe_timeout_s: float
     probe_min_reply_chars: int
     probe_concurrency: int
+    # 两次深挖之间至少隔几轮。0 = 每轮都探（今天的行为）。
+    probe_every_n_rounds: int
 
 
 def default_limits() -> RuntimeLimits:
@@ -158,6 +163,7 @@ def default_limits() -> RuntimeLimits:
         probe_timeout_s=PROBE_TIMEOUT,
         probe_min_reply_chars=PROBE_MIN_REPLY_CHARS,
         probe_concurrency=PROBE_CONCURRENCY,
+        probe_every_n_rounds=PROBE_EVERY_N_ROUNDS,
     )
 
 
@@ -176,6 +182,7 @@ LIMIT_RANGE: dict[str, tuple[float, float]] = {
     "probe_timeout_s": (30.0, 300.0),
     "probe_min_reply_chars": (0, 2000),
     "probe_concurrency": (1, 8),  # 0 = 永不探，同 pending_cap 的理由
+    "probe_every_n_rounds": (0, 20),  # 0 = 每轮都探 = 今天
 }
 
 

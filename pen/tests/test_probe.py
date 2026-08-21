@@ -1244,3 +1244,62 @@ def test_run_probe_records_the_spend_in_the_ledger(idx, tmp_path, monkeypatch) -
     led = probe_store.load(sid)
     assert led.spend["in_tokens"] == 4321, "run_probe 没把账交给 add_questions"
     assert not led.running, "坑位要放掉"
+
+
+# ── v0.10.4 深挖频率 ───────────────────────────────────────────
+
+
+def test_cooldown_zero_is_exactly_todays_behaviour() -> None:
+    """默认 0 = 每轮实质回复都探，就是读者当初选的那个行为。
+    本版对不改设置的读者必须零影响。"""
+    for now, last in ((0, -99), (3, 3), (5, 4), (1, 1), (0, 0)):
+        assert should_probe(**_BASE, now_round=now, last_probe_round=last)[0], (
+            f"N=0 时 now={now} last={last} 也该放行"
+        )
+
+
+def test_cooldown_zero_survives_a_repeated_round_number() -> None:
+    """一轮出错时 app.py 的 finally 不给 sess.turns 加一，于是「上一轮失败 +
+    这一轮成功」会出现 now_round == last_probe_round。
+
+    把 `lim.probe_every_n_rounds and` 那个短路去掉，裸的 `<= 0` 就会在这种
+    会话里开始拦——那就不是「和今天一样」了，而且极难复现。
+    """
+    assert should_probe(**_BASE, now_round=3, last_probe_round=3)[0]
+    assert should_probe(**_BASE, now_round=3, last_probe_round=4)[0], "轮号倒挂也不该拦"
+
+
+def test_cooldown_blocks_and_names_itself() -> None:
+    from dataclasses import replace
+
+    from pen.config import default_limits
+
+    lim = replace(default_limits(), probe_every_n_rounds=2)
+    assert should_probe(**_BASE, now_round=4, last_probe_round=3, limits=lim) == (
+        False, "cooldown",
+    )
+    assert should_probe(**_BASE, now_round=5, last_probe_round=3, limits=lim) == (
+        False, "cooldown",
+    )
+    assert should_probe(**_BASE, now_round=6, last_probe_round=3, limits=lim)[0], "隔够 3 轮就放行"
+
+
+def test_cooldown_is_reported_before_the_quota_reason() -> None:
+    """「探得太密」比「配额用完」更具体，读者该先听到这一条。"""
+    from dataclasses import replace
+
+    from pen.config import default_limits
+
+    lim = replace(default_limits(), probe_every_n_rounds=5, probe_max_per_session=0)
+    got = should_probe(**_BASE, now_round=1, last_probe_round=0, limits=lim)
+    assert got == (False, "cooldown"), f"配额也满了，但先报冷却，实际 {got}"
+
+
+def test_last_probe_round_is_no_longer_a_dead_field(idx) -> None:
+    """这个字段以前只写不读，白存了很久。冷却就落在它上面。"""
+    from pen import probe_store
+
+    sid = "cool" + "0" * 28
+    pid = probe_store.try_claim(sid, "probe-fx", 7)
+    assert pid
+    assert probe_store.load(sid).last_probe_round == 7

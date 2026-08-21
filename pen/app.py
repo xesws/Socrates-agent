@@ -513,6 +513,9 @@ def _maybe_probe(sess, body: "ChatBody", anchor: dict[str, Any], path: Path, lan
             probe_calls=led.probe_calls,
             pending_pool=led.pending_count(),
             has_llm=cfg is not None,
+            # last_probe_round 在账本上白存了很久（只写不读）——冷却就落在它上面。
+            now_round=sess.turns,
+            last_probe_round=led.last_probe_round,
             limits=lim,
         )
         if not go or cfg is None:

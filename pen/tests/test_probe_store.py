@@ -401,3 +401,22 @@ def test_budget_report_falls_back_when_there_is_no_snapshot() -> None:
     rep = probe_store.budget("never-probed")
     assert rep["max"] == config.PROBE_MAX_PER_SESSION
     assert rep["window_max"] == config.PROBE_MAX_PER_WINDOW
+
+
+def test_round_zero_round_trips_and_is_not_read_back_as_never() -> None:
+    """`int(raw.get("last_probe_round") or -99)` 在值是 0 时会得 -99——
+    第 0 轮（一场对话的第一轮）探过之后，落盘再读回来变成「从没探过」。
+
+    这个字段死着的时候无害，v0.10.4 开始冷却要读它，就成了
+    「第一轮之后冷却失效一次」。
+    """
+    pid = probe_store.try_claim("round0", "h", 0)
+    assert pid
+    assert probe_store.load("round0").last_probe_round == 0, "第 0 轮不能被读成 -99"
+    probe_store.release("round0", pid)
+    assert probe_store.load("round0").last_probe_round == 0
+
+    led = probe_store.SessionLedger.from_dict({"session_id": "x"})
+    assert led.last_probe_round == -99, "真的没有这个键时才回落 -99"
+    led2 = probe_store.SessionLedger.from_dict({"session_id": "x", "last_probe_round": "垃圾"})
+    assert led2.last_probe_round == -99, "脏数据也回落"
