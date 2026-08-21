@@ -1010,3 +1010,139 @@ def test_session_get_restores_spend_after_reopening_the_panel(tmp_path, monkeypa
         got = client.get(f"/v1/sessions/{sid}").json()
     assert got["spend"]["probe"]["in_tokens"] == 1234
     assert got["spend"]["chat"]["in_tokens"] == 0
+
+
+# ── v0.10.1 参数透传 ────────────────────────────────────────────
+
+
+def _chat_body(sid: str, line: int, **over) -> dict:
+    body = {
+        "session_id": sid, "selected_text": "shell 和 Bash",
+        "start_line": line, "end_line": line, "chip": "socratic", "user_text": "",
+    }
+    body.update(over)
+    return body
+
+
+def _q1_line() -> int:
+    text = DEFAULT_HANDBOOK.read_text(encoding="utf-8").splitlines()
+    return next(i for i, ln in enumerate(text, 1) if ln.startswith("**Q1. shell 和 Bash"))
+
+
+def test_chat_forwards_limits_to_stream_chat(monkeypatch) -> None:
+    """透传是活的。没有这条，「默认值 = 现状」和「现有测试全绿」可以同时成立
+    而整条管道是空的。"""
+    seen: dict = {}
+
+    def fake_stream(sess, path, packet, llm=None, extra_roots=None,
+                    allow_env_fallback=True, lang="zh", **kw):
+        seen["limits"] = kw.get("limits")
+        yield {"type": "done", "usage": {"context_tokens": 1, "completion_tokens": 1,
+                                         "prompt_tokens": 1},
+               "dynamic_chips": [], "has_substantive": False}
+
+    monkeypatch.setattr("pen.app.stream_chat", fake_stream)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        client.post("/v1/chat", json=_chat_body(
+            sid, _q1_line(), limits={"max_tool_rounds": 7, "cross_book_reads": 3}))
+    got = seen["limits"]
+    assert got is not None, "limits 根本没传到 stream_chat"
+    assert (got.max_tool_rounds, got.cross_book_reads) == (7, 3)
+    assert got.probe_max_per_window == 40, "没填的那些必须还是默认"
+
+
+def test_approve_forwards_limits_too(monkeypatch) -> None:
+    """一轮跨两个请求。approve 不带 limits 的话，批准之后的后半轮
+    就变成一场没有上限的对话。"""
+    seen: dict = {}
+
+    def fake_resume(sess, path, *, allow, pending_id, llm=None, extra_roots=None,
+                    allow_env_fallback=True, lang="zh", **kw):
+        seen["limits"] = kw.get("limits")
+        yield {"type": "done", "usage": {"context_tokens": 1, "completion_tokens": 1,
+                                         "prompt_tokens": 1},
+               "dynamic_chips": [], "has_substantive": False}
+
+    monkeypatch.setattr("pen.app.resume_chat", fake_resume)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        sess = STORE.get(sid)
+        sess.pending = {"id": "pid1", "name": "edit_file", "args": {},
+                        "original_path": str(DEFAULT_HANDBOOK)}
+        client.post("/v1/chat/approve", json={
+            "session_id": sid, "pending_id": "pid1", "allow": False,
+            "limits": {"max_tool_rounds": 5},
+        })
+    assert seen["limits"] is not None and seen["limits"].max_tool_rounds == 5
+
+
+def test_probe_job_freezes_the_request_limits(monkeypatch, tmp_path) -> None:
+    """probe 在守护线程里跑，请求早结束了——限流值必须在 done 那一刻
+    当场冻进 job，理由和 cfg 一样。"""
+    _isolate_pen(tmp_path, monkeypatch)
+    seen: dict = {}
+
+    def fake_stream(sess, path, packet, llm=None, extra_roots=None,
+                    allow_env_fallback=True, lang="zh", **_kw):
+        sess.last_assistant = "讲了一大段。" * 30
+        sess.has_substantive = True
+        yield {"type": "done", "usage": {"context_tokens": 1, "completion_tokens": 1,
+                                         "prompt_tokens": 1},
+               "dynamic_chips": [], "has_substantive": True}
+
+    monkeypatch.setattr("pen.app.stream_chat", fake_stream)
+    monkeypatch.setattr("pen.app.probemod.spawn", lambda job, pid: seen.update(job=job))
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        client.post("/v1/chat", json=_chat_body(
+            sid, _q1_line(), api_key="sk-x",
+            limits={"probe_max_per_window": 7, "probe_read_lines": 33}))
+    job = seen.get("job")
+    assert job is not None, "深挖根本没起——这条测试就白写了"
+    assert job.limits.probe_max_per_window == 7
+    assert job.limits.probe_read_lines == 33
+    assert job.limits.max_tool_rounds == 100, "没填的还是默认"
+
+
+def test_a_bogus_limits_payload_is_clamped_not_a_422(monkeypatch) -> None:
+    """设置页填错一个字符，读者该看到夹紧后的正常回复，不是一个红色 422。
+    这就是请求体用 dict 而不是子模型的原因。"""
+    seen: dict = {}
+
+    def fake_stream(sess, path, packet, llm=None, extra_roots=None,
+                    allow_env_fallback=True, lang="zh", **kw):
+        seen["limits"] = kw.get("limits")
+        yield {"type": "done", "usage": {"context_tokens": 1, "completion_tokens": 1,
+                                         "prompt_tokens": 1},
+               "dynamic_chips": [], "has_substantive": False}
+
+    monkeypatch.setattr("pen.app.stream_chat", fake_stream)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        resp = client.post("/v1/chat", json=_chat_body(
+            sid, _q1_line(), limits={"max_tool_rounds": "一百", "probe_concurrency": 99999}))
+    assert resp.status_code == 200, "填错不该 422"
+    assert seen["limits"].max_tool_rounds == 100, "看不懂的当没给"
+    assert seen["limits"].probe_concurrency == 8, "超范围的夹紧"
+
+
+def test_old_client_without_limits_still_works(monkeypatch) -> None:
+    """旧插件、web/ 那个客户端、curl 都不带 limits 字段。"""
+    seen: dict = {}
+
+    def fake_stream(sess, path, packet, llm=None, extra_roots=None,
+                    allow_env_fallback=True, lang="zh", **kw):
+        seen["limits"] = kw.get("limits")
+        yield {"type": "done", "usage": {"context_tokens": 1, "completion_tokens": 1,
+                                         "prompt_tokens": 1},
+               "dynamic_chips": [], "has_substantive": False}
+
+    monkeypatch.setattr("pen.app.stream_chat", fake_stream)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        resp = client.post("/v1/chat", json=_chat_body(sid, _q1_line()))
+    assert resp.status_code == 200
+    from pen.config import default_limits
+
+    assert seen["limits"] == default_limits()

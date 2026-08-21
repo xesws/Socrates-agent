@@ -74,6 +74,14 @@ class LlmOverrideBody(BaseModel):
     base_url: str | None = None
     model: str | None = None
     thinking: str | None = None
+    # 嵌套一个对象，不平铺十几个键：平铺会让 ChatBody 变成二十来个字段。
+    # 类型写 dict[str, Any] 而不是子模型，是为了**永远不会 422**——设置页填了
+    # 个字符串，读者该看到夹紧后的正常回复，不是一个红色 422。
+    # merge_limits 只夹紧不报错，看不懂的当没给。
+    limits: dict[str, Any] | None = None
+
+    def merged_limits(self) -> configmod.RuntimeLimits:
+        return configmod.merge_limits(self.limits)
 
     def merged(self) -> LLMConfig | None:
         return merge_llm(
@@ -490,6 +498,7 @@ def _maybe_probe(sess, body: "ChatBody", anchor: dict[str, Any], path: Path, lan
     那会绕过 merge_llm 的跨主机钥匙保护。
     """
     try:
+        lim = body.merged_limits()
         led = probe_store.load(sess.session_id, sess.handbook_id)
         cfg = body.merged()
         if cfg is None and not (body.base_url or "").strip():
@@ -504,10 +513,11 @@ def _maybe_probe(sess, body: "ChatBody", anchor: dict[str, Any], path: Path, lan
             probe_calls=led.probe_calls,
             pending_pool=led.pending_count(),
             has_llm=cfg is not None,
+            limits=lim,
         )
         if not go or cfg is None:
             return False
-        pid = probe_store.try_claim(sess.session_id, sess.handbook_id, sess.turns)
+        pid = probe_store.try_claim(sess.session_id, sess.handbook_id, sess.turns, lim)
         if pid is None:
             return False
     except Exception:
@@ -528,6 +538,7 @@ def _maybe_probe(sess, body: "ChatBody", anchor: dict[str, Any], path: Path, lan
             born_round=sess.turns,
             lang=lang,
             cfg=cfg,
+            limits=lim,
             extra_roots=libraries.extra_roots_for(sess.handbook_id) or [],
             footprint=_footprint(sess.handbook_id),
             history=_history(sess),
@@ -689,6 +700,7 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
                 allow_env_fallback=not bool((body.base_url or "").strip()),
                 lang=lang,
                 user_text=body.user_text,
+                limits=body.merged_limits(),
             ):
                 if ev.get("type") == "done":
                     has_sub = bool(ev.get("has_substantive"))
@@ -770,6 +782,10 @@ def chat_approve(body: ApproveBody, lang: str = Depends(req_lang)) -> StreamingR
                 extra_roots=libraries.extra_roots_for(sess.handbook_id),
                 allow_env_fallback=not bool((body.base_url or "").strip()),
                 lang=lang,
+                # 一轮跨两个请求，approve 也得带——resume_chat 会走 _agent_loop，
+                # 那里读 max_tool_rounds 和跨书那两道闸。不带就等于批准之后
+                # 后半轮变成一场没有上限的对话。
+                limits=body.merged_limits(),
             ):
                 if ev.get("type") == "error":
                     ok = False

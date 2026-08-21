@@ -143,3 +143,96 @@ def test_merge_llm_different_host_with_request_key_uses_request_key(tmp_path: Pa
     assert cfg.api_key == "sk-from-page"
     assert cfg.base_url == "https://api.openai.com/v1"
     assert cfg.key_source == "settings"
+
+
+# ── v0.10.1 RuntimeLimits ───────────────────────────────────────
+
+
+def test_defaults_are_exactly_the_v0_9_0_numbers() -> None:
+    """上线当天必须和改造前逐字节一致。**这张表是唯一的证明。**
+
+    故意写死字面量而不是 `== config.MAX_TOOL_ROUNDS`：自指断言什么都证明不了。
+    改任何一个数都要在这里改一次，改的人会看见自己在改行为。
+    """
+    lim = config.default_limits()
+    assert lim.max_tool_rounds == 100
+    assert (lim.cross_book_chars, lim.cross_book_reads) == (24000, 8)
+    assert (lim.probe_max_per_session, lim.probe_max_per_window) == (8, 40)
+    assert lim.probe_pending_cap == 3
+    assert (lim.probe_max_reads, lim.probe_read_lines) == (2, 80)
+    assert lim.probe_timeout_s == 150.0
+    assert lim.probe_min_reply_chars == 80
+    assert lim.probe_concurrency == 2
+
+
+def test_absent_and_garbage_limits_all_fall_back_to_defaults() -> None:
+    """填错一个字符不该把这一轮打挂，也不该把预算静默归零。"""
+    base = config.default_limits()
+    assert config.merge_limits(None) == base
+    assert config.merge_limits({}) == base
+    assert config.merge_limits({"没这个字段": 1}) == base
+    assert config.merge_limits({"max_tool_rounds": "abc"}) == base
+    assert config.merge_limits({"max_tool_rounds": None}) == base
+    assert config.merge_limits({"max_tool_rounds": float("nan")}) == base
+    assert config.merge_limits({"max_tool_rounds": float("inf")}) == base
+
+
+def test_a_json_true_must_not_become_a_limit_of_one() -> None:
+    """isinstance(True, int) 是真、float(True) == 1.0。不显式挡 bool 的话，
+    JSON 里一个 true 会静默把上限设成 1——比报错难查得多。"""
+    assert config.merge_limits({"max_tool_rounds": True}) == config.default_limits()
+    assert config.merge_limits({"probe_concurrency": False}) == config.default_limits()
+
+
+def test_limits_are_clamped_not_rejected() -> None:
+    got = config.merge_limits({"max_tool_rounds": 99999, "probe_concurrency": 0})
+    assert got.max_tool_rounds == 200, "夹到上限"
+    assert got.probe_concurrency == 1, "0 会让深挖永远起不来，那叫关掉，用总开关"
+    assert config.merge_limits({"max_tool_rounds": -5}).max_tool_rounds == 1
+
+
+def test_partial_limits_keep_the_rest_at_default() -> None:
+    got = config.merge_limits({"max_tool_rounds": 7})
+    assert got.max_tool_rounds == 7
+    assert got.cross_book_chars == config.default_limits().cross_book_chars
+
+
+def test_float_field_stays_float_and_int_field_stays_int() -> None:
+    got = config.merge_limits({"probe_timeout_s": 90, "probe_max_reads": 3.7})
+    assert isinstance(got.probe_timeout_s, float) and got.probe_timeout_s == 90.0
+    assert isinstance(got.probe_max_reads, int) and got.probe_max_reads == 3
+
+
+def test_default_limits_reads_the_module_attribute_every_time(monkeypatch) -> None:
+    """不能做成模块级单例。`monkeypatch.setattr(config, "PROBE_MAX_PER_WINDOW", 3)`
+    是本仓唯一一处限流常量的测试打法，它能生效正是靠属性访问。
+    冻成单例 = 在修 probe 那个信号量的同时新开一个一模一样的坑。"""
+    monkeypatch.setattr(config, "PROBE_MAX_PER_WINDOW", 3)
+    assert config.default_limits().probe_max_per_window == 3
+
+
+def test_every_limit_range_key_matches_a_field() -> None:
+    from dataclasses import fields
+
+    names = {f.name for f in fields(config.RuntimeLimits)}
+    assert set(config.LIMIT_RANGE) == names, "夹紧表和字段表必须一一对应"
+
+
+def test_every_limit_is_actually_read_somewhere() -> None:
+    """本仓的老规矩（config.py 里那段「摆一个常量而代码不读它，改的人会以为
+    改了有用」）。在这里做成机械检查——新加字段却忘了接线的话，这条会红。
+
+    这比注释强的地方在于：把一个还没有消费方的旋钮放上设置页，比留一个
+    没人读的常量更糟——常量至少读者看不见。
+    """
+    from dataclasses import fields
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    src = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in root.rglob("*.py")
+        if p.name != "config.py" and "tests" not in p.parts
+    )
+    for f in fields(config.RuntimeLimits):
+        assert f.name in src, f"RuntimeLimits.{f.name} 全仓没人读——要么接上，要么删掉"

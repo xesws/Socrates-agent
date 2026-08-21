@@ -251,14 +251,20 @@ def quota_status(handbook_id: str) -> dict[str, Any]:
     }
 
 
-def try_claim(session_id: str, handbook_id: str, now_round: int) -> str | None:
+def try_claim(
+    session_id: str,
+    handbook_id: str,
+    now_round: int,
+    limits: config.RuntimeLimits | None = None,
+) -> str | None:
     """占坑。同一会话同时只允许一个 probe 在跑——抢不到就跳过，不排队：
     排队意味着上下文已经过期了还要再花一次钱。"""
+    lim = limits or config.default_limits()
     with _LOCK:
         led = load(session_id, handbook_id)
         if led.running:
             return None
-        if handbook_id and quota_count(handbook_id) >= config.PROBE_MAX_PER_WINDOW:
+        if handbook_id and quota_count(handbook_id) >= lim.probe_max_per_window:
             return None
         pid = uuid.uuid4().hex[:12]
         led.running = [pid]

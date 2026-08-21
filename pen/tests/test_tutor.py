@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -387,7 +388,7 @@ def test_case_typo_in_handbook_path_is_not_charged_as_cross_book(tmp_path) -> No
 
 def test_cross_book_budget_also_caps_the_number_of_reads(tmp_path) -> None:
     """光封字节封不住轮数：模型每次只读一行，字节预算永远用不完，
-    而 MAX_TOOL_ROUNDS=50 一次不少，每轮 prompt 还要把整段 messages 重发一遍。"""
+    而翻书轮数上限（默认 100）一次不少，每轮 prompt 还要把整段 messages 重发一遍。"""
     from pen.agent.tools_impl import handle_read_file
     from pen.config import CROSS_BOOK_CHARS, CROSS_BOOK_READS
 
@@ -405,3 +406,123 @@ def test_cross_book_budget_also_caps_the_number_of_reads(tmp_path) -> None:
             break
     assert stopped == CROSS_BOOK_READS + 1, f"次数闸没生效，第 {stopped} 次才停"
     assert ctx["cross_book_chars"] < CROSS_BOOK_CHARS, "前提：每次只读一行，字节预算根本用不完"
+
+
+# ── v0.10.1 闸值从 ctx 来 ───────────────────────────────────────
+
+
+def test_cross_book_limit_comes_from_ctx_not_the_module(tmp_path) -> None:
+    """闸值必须是**这一次请求**认下来的那个，不是进程默认。
+
+    sidecar 是多会话共享进程：读死模块常量 = A 库的设置串到 B 库的会话上，
+    而且设置页改完要重启才认。
+    """
+    from dataclasses import replace
+
+    from pen.agent.tools_impl import handle_read_file
+    from pen.config import default_limits
+
+    cur = tmp_path / "cur.md"
+    cur.write_text("# 当前这本\n", encoding="utf-8")
+    other = tmp_path / "other.md"
+    other.write_text("\n".join(f"别的书第 {i} 行" for i in range(1, 200)), encoding="utf-8")
+
+    ctx = {
+        "original_path": cur,
+        "extra_roots": [tmp_path],
+        "limits": replace(default_limits(), cross_book_reads=1),
+    }
+    first = handle_read_file({"path": str(other), "offset": 1, "limit": 5}, ctx)
+    assert "额度用完" not in first["text"], "第一次该放过去"
+    second = handle_read_file({"path": str(other), "offset": 6, "limit": 5}, ctx)
+    assert second["ok"] is True, "超了也不报错"
+    assert "额度用完" in second["text"], "把上限调成 1 之后第二次就该收敛"
+
+
+def test_ctx_without_limits_falls_back_to_config_not_to_zero(tmp_path) -> None:
+    """回落 0 会让所有手工拼 ctx 的调用方从「第 9 次停」静默变成「第 1 次停」。
+    那种回归看起来像模型突然变笨了，没人会怀疑到闸上。"""
+    from pen.agent.tools_impl import handle_read_file, limits_of
+    from pen.config import default_limits
+
+    assert limits_of({}) == default_limits()
+    assert limits_of({"limits": "垃圾"}) == default_limits()
+
+    cur = tmp_path / "cur.md"
+    cur.write_text("# 当前这本\n", encoding="utf-8")
+    other = tmp_path / "other.md"
+    other.write_text("\n".join(f"别的书第 {i} 行" for i in range(1, 200)), encoding="utf-8")
+    ctx = {"original_path": cur, "extra_roots": [tmp_path]}  # 没有 limits 键
+    got = handle_read_file({"path": str(other), "offset": 1, "limit": 5}, ctx)
+    assert "额度用完" not in got["text"], "没给 limits 时第一次必须照常读得到"
+
+
+def test_max_tool_rounds_has_exactly_one_definition() -> None:
+    """搬家之后 tutor 不留别名。留一个 `MAX_TOOL_ROUNDS = config.MAX_TOOL_ROUNDS`
+    就是第二个定义点，下次有人改这个而不是那个，两边就分家了——
+    本仓「两处各算一遍必然漂移」踩过三次。"""
+    from pen import tutor
+
+    assert not hasattr(tutor, "MAX_TOOL_ROUNDS"), "tutor 里不该再有这个名字"
+
+
+def test_tool_rounds_limit_is_honoured(monkeypatch, tmp_path) -> None:
+    """把轮数调小，工具循环就该早收口——而且收口那一枪**不带 tools**。"""
+    from dataclasses import replace
+
+    import openai
+    from pen.config import LLMConfig, default_limits
+    from pen.session import PenSession
+    from pen.tutor import stream_chat
+
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n唯一段。\n", encoding="utf-8")
+    seen: list[dict] = []
+
+    class _Completions:
+        def create(self, **kwargs):
+            seen.append(kwargs)
+            from types import SimpleNamespace
+
+            if "tools" in kwargs:
+                tc = SimpleNamespace(
+                    id="c1", type="function",
+                    function=SimpleNamespace(
+                        name="read_file",
+                        arguments=json.dumps({"path": str(book), "offset": 1, "limit": 5}),
+                    ),
+                )
+                m = SimpleNamespace(
+                    content=None, tool_calls=[tc],
+                    model_dump=lambda exclude_none=True: {
+                        "role": "assistant",
+                        "tool_calls": [{"id": "c1", "type": "function",
+                                        "function": {"name": "read_file",
+                                                     "arguments": tc.function.arguments}}],
+                    },
+                )
+            else:
+                m = SimpleNamespace(
+                    content="收口了。" * 30, tool_calls=None,
+                    model_dump=lambda exclude_none=True: {"role": "assistant",
+                                                          "content": "收口了。" * 30},
+                )
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=m)],
+                usage=SimpleNamespace(prompt_tokens=8, completion_tokens=3),
+            )
+
+    monkeypatch.setattr(
+        openai, "OpenAI",
+        lambda **_kw: type("C", (), {"chat": SimpleNamespace(completions=_Completions())})(),
+    )
+    sess = PenSession(session_id="r" * 32, handbook_id="demo")
+    list(stream_chat(
+        sess, book, "packet",
+        llm=LLMConfig("http://x", "sk", "m", "t", "off"),
+        extra_roots=[tmp_path], allow_env_fallback=False,
+        limits=replace(default_limits(), max_tool_rounds=3),
+    ))
+    with_tools = [k for k in seen if "tools" in k]
+    assert len(with_tools) == 3, f"轮数上限设成 3，带 tools 的调用应恰好 3 次，实际 {len(with_tools)}"
+    assert "tools" not in seen[-1], "收口那一枪不能带 tools，否则它还会接着翻"

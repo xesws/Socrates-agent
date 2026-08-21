@@ -6,9 +6,23 @@ from pathlib import Path
 from typing import Any
 
 from pen.readtool import read_file_report
-from pen.config import CROSS_BOOK_CHARS, CROSS_BOOK_READS
+from pen import config
 from pen.sandbox import SandboxError, assert_write_target, resolve_read_target
 from pen import libraries, snapshots
+
+
+def limits_of(ctx: dict[str, Any]) -> config.RuntimeLimits:
+    """ctx 里认下来的上限。**取不到时回落 config 现值，绝不回落 0。**
+
+    回落 0 会让所有手工拼 ctx 的调用方（测试里就是这么拼的）从「第 9 次停」
+    静默变成「第 1 次停」——那种回归看起来像模型突然变笨了，没人会怀疑到闸上。
+
+    这是本文件读上限的**唯一入口**。别在别处再 `ctx.get("limits")` 一次：
+    书架的闸 vs read_file 的闸、两处各拼一遍根、两处各筛一遍书，
+    本仓已经踩过三次同一个坑。
+    """
+    got = ctx.get("limits")
+    return got if isinstance(got, config.RuntimeLimits) else config.default_limits()
 
 
 def _occurrences(text: str, needle: str) -> int:
@@ -63,7 +77,11 @@ def handle_read_file(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
     if report["ok"] and _is_cross_book(original, str(report["resolved"])):
         spent = int(ctx.get("cross_book_chars") or 0)
         reads = int(ctx.get("cross_book_reads") or 0)
-        if spent >= CROSS_BOOK_CHARS or reads >= CROSS_BOOK_READS:
+        # 闸值从 ctx 取。**别写回 `from pen.config import CROSS_BOOK_CHARS`**：
+        # 那是导入期冻结，设置页改完这台 sidecar 要重启才认，
+        # 而同一个进程可能还伺候着另一个 vault。
+        lim = limits_of(ctx)
+        if spent >= lim.cross_book_chars or reads >= lim.cross_book_reads:
             return {
                 "ok": True,
                 "text": (

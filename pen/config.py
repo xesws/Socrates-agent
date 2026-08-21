@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
+from collections.abc import Mapping
+from typing import Any
 from urllib.parse import urlparse
 
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent
@@ -28,6 +30,12 @@ CROSS_BOOK_CHARS = 24000
 # 实测跑满 50 轮时总 prompt 仍有 240 万字符。次数是第二道闸，两道任一触顶就收敛。
 CROSS_BOOK_READS = 8
 NEIGHBORHOOD_CHARS = 4000
+# 师傅回答一轮里最多翻多少次工具。**从 tutor.py 搬过来的，那边不留别名**——
+# 留一个 `MAX_TOOL_ROUNDS = config.MAX_TOOL_ROUNDS` 就是第二个定义点，
+# 下次有人改 tutor 那个而不是这个，两边就分家了。
+# 读者要的就是宽：接上书架之后，一个跨教材的问题本来就要多翻几次才答得像样。
+# 成本那头由 CROSS_BOOK_CHARS / CROSS_BOOK_READS 两道闸兜着。
+MAX_TOOL_ROUNDS = 100
 SNAPSHOT_KEEP = 20
 
 ENV_BASE_URL = "OPENAI_BASE_URL"
@@ -91,6 +99,116 @@ class LLMConfig:
     model: str
     key_source: str
     thinking: str = "off"
+
+
+@dataclass(frozen=True)
+class RuntimeLimits:
+    """一次请求认下来的全部上限。构造完不再变——后台探索线程拿的是它的引用。
+
+    **为什么必须每请求透传，不能用全局可变槽**：sidecar 是多会话共享进程，
+    设置页在 Obsidian 端，同一台 sidecar 可能同时伺候两个 vault。写全局槽 =
+    A 库的设置串到 B 库的会话上，而且改设置的那一刻正在跑的会话会中途换闸。
+
+    主对话线和 probe 线**共用这一个类，不拆两个**。前缀分区：
+      probe_*  只有探索那条线读
+      其余     只有主对话那条线读
+    拆开的代价是两张 clamp 表 / 两个 merge / 两个请求体字段 / 两组词表键，
+    收益只有「probe 线程手里少几个它不读的 int」。本仓「两个闸不同源」踩过三次。
+
+    **没有字段默认值**，只能经 default_limits() 构造，或
+    `dataclasses.replace(default_limits(), x=…)`。这样每个数字在全仓只出现
+    一次（上面那些模块常量），default_limits() 是唯一的映射表。
+
+    **只装已经有活消费方的旋钮。** 还没人读的字段一个都不加——那正是本文件
+    上面写过的禁令（「摆一个常量而代码不读它，改的人会以为改了有用」）的
+    翻版，而且做成界面上能填的旋钮比常量更糟。
+    test_config.test_every_limit_is_actually_read_somewhere 机械地守着这条。
+    """
+
+    max_tool_rounds: int
+    cross_book_chars: int
+    cross_book_reads: int
+    probe_max_per_session: int
+    probe_max_per_window: int
+    probe_pending_cap: int
+    probe_max_reads: int
+    probe_read_lines: int
+    probe_timeout_s: float
+    probe_min_reply_chars: int
+    probe_concurrency: int
+
+
+def default_limits() -> RuntimeLimits:
+    """进程默认。**每次调用现读模块属性，不做模块级单例。**
+
+    理由：`monkeypatch.setattr(config, "PROBE_MAX_PER_WINDOW", 3)` 是本仓
+    唯一一处限流常量的测试打法，它能生效正是因为消费方走属性访问。
+    做成 `DEFAULT_LIMITS = RuntimeLimits(...)` 就是把晚绑定又冻回导入期——
+    等于在修 probe.py 那个信号量的同时新开一个一模一样的坑。
+    """
+    return RuntimeLimits(
+        max_tool_rounds=MAX_TOOL_ROUNDS,
+        cross_book_chars=CROSS_BOOK_CHARS,
+        cross_book_reads=CROSS_BOOK_READS,
+        probe_max_per_session=PROBE_MAX_PER_SESSION,
+        probe_max_per_window=PROBE_MAX_PER_WINDOW,
+        probe_pending_cap=PROBE_PENDING_CAP,
+        probe_max_reads=PROBE_MAX_READS,
+        probe_read_lines=PROBE_READ_LINES,
+        probe_timeout_s=PROBE_TIMEOUT,
+        probe_min_reply_chars=PROBE_MIN_REPLY_CHARS,
+        probe_concurrency=PROBE_CONCURRENCY,
+    )
+
+
+# 字段 → (下限, 上限)。**只夹紧，不报错**：一个设置项绝不能把读者这一轮
+# 对话弄挂。下限不是 0 的那几个都写了理由——0 在那里是「看起来像 bug 的关闭方式」。
+LIMIT_RANGE: dict[str, tuple[float, float]] = {
+    "max_tool_rounds": (1, 200),
+    "cross_book_chars": (0, 400_000),  # 0 = 一本别的书都不翻，是合法选择
+    "cross_book_reads": (0, 100),  # 同上
+    "probe_max_per_session": (0, 200),  # 0 = 本场不探
+    "probe_max_per_window": (0, 1000),  # 0 = 本小时不探
+    # 0 会永久阻塞（pending_pool >= 0 恒真），那叫关掉，请用总开关
+    "probe_pending_cap": (1, 50),
+    "probe_max_reads": (0, 8),
+    "probe_read_lines": (10, 400),  # 一行的摘录没有信息量
+    "probe_timeout_s": (30.0, 300.0),
+    "probe_min_reply_chars": (0, 2000),
+    "probe_concurrency": (1, 8),  # 0 = 永不探，同 pending_cap 的理由
+}
+
+
+def merge_limits(raw: Mapping[str, Any] | None) -> RuntimeLimits:
+    """请求体的 limits → 本次生效的上限。
+
+    和 merge_llm 同一条路：请求体给了就用，没给的回落进程默认。差别在于
+    **看不懂的一律当没给**而不是当 0——设置页填错一个字符不该把这一轮打挂，
+    也不该把预算静默归零（那比报错更难查）。
+    """
+    base = default_limits()
+    if not raw:
+        return base
+    clean: dict[str, Any] = {}
+    for f in fields(RuntimeLimits):
+        if f.name not in raw:
+            continue
+        got = raw[f.name]
+        # bool 要先挡：isinstance(True, int) 为真、float(True) == 1.0，
+        # 一个 JSON 里的 true 会静默变成上限 1。
+        if got is None or isinstance(got, bool):
+            continue
+        try:
+            val = float(got)
+        except (TypeError, ValueError):
+            continue
+        if val != val or val in (float("inf"), float("-inf")):
+            continue
+        lo, hi = LIMIT_RANGE[f.name]
+        val = min(max(val, lo), hi)
+        cur = getattr(base, f.name)
+        clean[f.name] = float(val) if isinstance(cur, float) else int(val)
+    return replace(base, **clean)
 
 
 def apply_pen_home(env_file: Path | None = None) -> Path:

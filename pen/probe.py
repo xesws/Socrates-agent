@@ -5,7 +5,7 @@
 
 三条设计上的硬约束，改代码前先读：
 
-1. **永不给模型 tools。** MAX_TOOL_ROUNDS=100 且没有 token 预算也没有时长墙，
+1. **永不给模型 tools。** 翻书轮数上限（默认 100）没有 token 预算也没有时长墙，
    后台任务一旦能自主循环调工具，读者看不见它在烧钱。定向读正文由 Python 执行，
    最多两段，广度由代码封死。
 2. **故意不喂 neighborhood()。** 那 4000 字符里全是手册自带的入门题
@@ -30,7 +30,45 @@ from pen.meter import KIND_PROBE, Meter
 from pen.probe_store import DeepQuestion
 from pen.questions import clean_candidates, normalize_qkey, similarity
 
-_SEM = threading.BoundedSemaphore(config.PROBE_CONCURRENCY)
+# 并发闸。**不能用 BoundedSemaphore**：它的容量在构造那一刻就定死了，
+# 而这个值现在是设置页每请求传下来的。三条替代方案都更差：
+#   · 限额变了就重建信号量 → 在飞的线程 finally 里 release 的是**旧对象**，计数永久漂
+#   · Semaphore(BIG) + 外挂计数判定 → 两个状态源，等于自己造「两个闸不同源」
+#   · 每本书一个信号量 → 并发是**这台机器**的资源，不是每本书的；字典还会无界增长
+# 计数器 + Lock 在非阻塞路径上与 sem.acquire(blocking=False) 逐条等价，
+# 另外多一条好处：限额是**每次判定时**现读的，读者调小之后下一个 probe 立刻认，
+# 不影响已经在飞的那几个。
+#
+# 注意这是**进程级**的，不是 per-vault：A 库设 1、B 库设 4 时谁先起谁说了算。
+# 这是共享进程的固有属性，而且并发本来就是「这台机器同时跑几个后台调用」。
+# per-session / per-window 那两道闸是落盘的，天然按书隔离。
+_INFLIGHT_LOCK = threading.Lock()
+_inflight = 0
+
+
+def _take_slot(limit: int) -> bool:
+    """抢一个并发位。抢不到返回 False，**不排队**——排队意味着上下文已经
+    过期了还要再花一次钱（run_probe 原来那句注释，语义一字不变）。"""
+    global _inflight
+    with _INFLIGHT_LOCK:
+        if _inflight >= max(1, int(limit)):
+            return False
+        _inflight += 1
+        return True
+
+
+def _drop_slot() -> None:
+    global _inflight
+    with _INFLIGHT_LOCK:
+        # 不学 BoundedSemaphore 抛 ValueError：这里是守护线程，异常冒出去
+        # 没人看得见，只会把 finally 后面的清理也一起带掉。
+        _inflight = max(0, _inflight - 1)
+
+
+def _inflight_count() -> int:
+    """给测试看的。比让测试直接摸模块私有变量干净。"""
+    with _INFLIGHT_LOCK:
+        return _inflight
 
 # 教材每一关都有一节「第三拍 · 出身」专讲真实框架长什么样。
 # 这七处是「拿我们的做法去撞真实系统」这条轴的合法锚点白名单，
@@ -163,7 +201,7 @@ def strip_code_fences(text: str) -> str:
     return out.strip()
 
 
-def parse_probe_json(raw: str) -> dict[str, Any]:
+def parse_probe_json(raw: str, limits: config.RuntimeLimits | None = None) -> dict[str, Any]:
     """容错解析。模型爱把 JSON 包在围栏里，也爱在前面写一句废话。
     解析失败一律当空——后台任务的异常绝不能冒到读者路径上。"""
     if not raw:
@@ -186,7 +224,9 @@ def parse_probe_json(raw: str) -> dict[str, Any]:
     qs = data.get("questions")
     reads = data.get("need_read")
     return {
-        "need_read": [r for r in (reads or []) if isinstance(r, dict)][: config.PROBE_MAX_READS],
+        "need_read": [r for r in (reads or []) if isinstance(r, dict)][
+            : (limits or config.default_limits()).probe_max_reads
+        ],
         "questions": [q for q in (qs or []) if isinstance(q, dict)][:3],
     }
 
@@ -375,9 +415,16 @@ def validate_slots(
     return True, ""
 
 
-def anchor_source(item: dict[str, Any], original_path: Path, extra_roots: list[Path]) -> str:
+def anchor_source(
+    item: dict[str, Any],
+    original_path: Path,
+    extra_roots: list[Path],
+    limits: config.RuntimeLimits | None = None,
+) -> str:
     """把 anchors 指向的正文行取出来，给反引号校验当语料。读不到就空串。"""
     from pen.readtool import read_file_report
+
+    lim = limits or config.default_limits()
 
     out: list[str] = []
     for a in list(item.get("anchors") or [])[:2]:
@@ -390,7 +437,7 @@ def anchor_source(item: dict[str, Any], original_path: Path, extra_roots: list[P
             end = int(a.get("end_line") or start)
         except (TypeError, ValueError):
             continue
-        span = max(1, min(end - start + 1, config.PROBE_READ_LINES))
+        span = max(1, min(end - start + 1, lim.probe_read_lines))
         try:
             got = read_file_report(
                 original_path, str(original_path), offset=start, limit=span,
@@ -483,6 +530,12 @@ class ProbeJob:
     born_round: int
     lang: str
     cfg: LLMConfig
+    # 本次请求认下来的上限。**必须在 done 那一刻当场冻进来**，理由和 cfg 一样：
+    # 探索线程跑起来时请求早结束了，模块级全局在多 vault 下已经是别人的值。
+    # 用 default_factory 而不是必填：必填要改十几处测试构造点，
+    # 那就没法说「现有测试一个字符不改」。代价是 app 漏接线不会当场炸——
+    # 由 test_app 的透传测试 + 变异表那条兜住。
+    limits: config.RuntimeLimits = field(default_factory=config.default_limits)
     extra_roots: list[Path] = field(default_factory=list)
     footprint: str = ""
     asked: list[str] = field(default_factory=list)
@@ -586,6 +639,7 @@ def should_probe(
     probe_calls: int,
     pending_pool: int,
     has_llm: bool,
+    limits: config.RuntimeLimits | None = None,
 ) -> tuple[bool, str]:
     """触发闸门。纯同步、零成本，在 done 那一刻判。
 
@@ -606,7 +660,8 @@ def should_probe(
         return False, "not-a-learning-turn"
     # 注意是 <=：tutor._finish_text 里 has_substantive 的判据是 len(visible) > 80。
     # 写成 < 的话，正好 80 字那一轮两边判断相反。
-    if len(reply or "") <= config.PROBE_MIN_REPLY_CHARS:
+    lim = limits or config.default_limits()
+    if len(reply or "") <= lim.probe_min_reply_chars:
         return False, "reply-too-short"
     level = str((anchor or {}).get("level") or "")
     # 不照搬 diagnose.is_curriculum：它把「开篇」也排除，而真人的有机记录
@@ -614,14 +669,19 @@ def should_probe(
     # 开篇的「全景图：七块积木」恰恰是全书最适合搭桥的地方。
     if level in ("封面", "附录") or not level:
         return False, "cover-or-appendix"
-    if probe_calls >= config.PROBE_MAX_PER_SESSION:
+    if probe_calls >= lim.probe_max_per_session:
         return False, "budget"
-    if pending_pool >= config.PROBE_PENDING_CAP:
+    if pending_pool >= lim.probe_pending_cap:
         return False, "backlog-full"
     return True, ""
 
 
-def _create(cfg: LLMConfig, messages: list[dict[str, str]], meter: Meter | None = None) -> str:
+def _create(
+    cfg: LLMConfig,
+    messages: list[dict[str, str]],
+    meter: Meter | None = None,
+    limits: config.RuntimeLimits | None = None,
+) -> str:
     """探索这条线唯一的 LLM 出口。
 
     meter 是可选的**参数**而不是线程局部：线程局部会把「这几个 token 是谁的」
@@ -631,7 +691,8 @@ def _create(cfg: LLMConfig, messages: list[dict[str, str]], meter: Meter | None 
     """
     from openai import OpenAI
 
-    client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key, timeout=config.PROBE_TIMEOUT)
+    timeout = (limits or config.default_limits()).probe_timeout_s
+    client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key, timeout=timeout)
     resp = client.chat.completions.create(
         model=cfg.model,
         messages=messages,
@@ -756,7 +817,7 @@ def _read_excerpts(
     shelf: dict[str, Path] | None = None
     chunks = []
     spans: list[tuple[str, int, int]] = []
-    for r in list(reads)[: config.PROBE_MAX_READS]:
+    for r in list(reads)[: job.limits.probe_max_reads]:
         try:
             start = max(1, int(r.get("start_line") or 1))
         except (TypeError, ValueError):
@@ -774,12 +835,12 @@ def _read_excerpts(
             end = int(r.get("end_line") or 0)
         except (TypeError, ValueError):
             end = 0
-        span = end - start + 1 if end >= start else config.PROBE_READ_LINES
+        span = end - start + 1 if end >= start else job.limits.probe_read_lines
         out = read_file_report(
             job.original_path,
             str(target),
             offset=start,
-            limit=max(1, min(span, config.PROBE_READ_LINES)),
+            limit=max(1, min(span, job.limits.probe_read_lines)),
             extra_roots=job.extra_roots or [config.REPO_ROOT],
         )
         if out.get("ok"):
@@ -803,16 +864,16 @@ def explore(
         {"role": "system", "content": system},
         {"role": "user", "content": build_user_message(job)},
     ]
-    raw = _create(job.cfg, messages, m)
-    data = parse_probe_json(raw)
+    raw = _create(job.cfg, messages, m, limits=job.limits)
+    data = parse_probe_json(raw, limits=job.limits)
     excerpt = ""
     spans: list[tuple[str, int, int]] = []
     if data["need_read"]:
         excerpt, spans = _read_excerpts(job, data["need_read"])
         if excerpt:
             messages[-1] = {"role": "user", "content": build_user_message(job, excerpt)}
-            raw = _create(job.cfg, messages, m)
-            data = parse_probe_json(raw)
+            raw = _create(job.cfg, messages, m, limits=job.limits)
+            data = parse_probe_json(raw, limits=job.limits)
     items = _harvest(data["questions"], job, idx, excerpt, spans)
     return items, ("" if items else "no-candidate")
 
@@ -858,7 +919,7 @@ def _harvest(
         src = "\n".join(
             x for x in (
                 excerpt if has_cross else "",
-                anchor_source(raw, job.original_path, job.extra_roots),
+                anchor_source(raw, job.original_path, job.extra_roots, limits=job.limits),
             ) if x
         )
         ok, _why = validate_slots(
@@ -920,8 +981,7 @@ def run_probe(job: ProbeJob, probe_id: str) -> None:
     """后台线程的入口。异常绝不能冒出去——这条路径上没有人在等它。"""
     from pen import libraries, probe_store
 
-    acquired = _SEM.acquire(blocking=False)
-    if not acquired:
+    if not _take_slot(job.limits.probe_concurrency):
         # 抢不到就跳过，不排队：排队意味着上下文已经过期还要再花一次钱。
         # 一次调用都没打，配额要退。
         probe_store.release(job.session_id, probe_id, refund=True)
@@ -954,7 +1014,7 @@ def run_probe(job: ProbeJob, probe_id: str) -> None:
         except Exception:
             pass
     finally:
-        _SEM.release()
+        _drop_slot()
 
 
 def spawn(job: ProbeJob, probe_id: str) -> None:

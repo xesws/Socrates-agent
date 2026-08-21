@@ -1114,3 +1114,133 @@ def test_refund_path_carries_no_spend(idx) -> None:
     led = probe_store.load(sid)
     assert led.spend["calls"] == 0
     assert led.probe_calls == 0, "配额退了"
+
+
+# ── v0.10.1 并发闸：信号量 → 计数器 ────────────────────────────
+
+
+def test_take_slot_is_equivalent_to_a_nonblocking_semaphore(monkeypatch) -> None:
+    """计数器 + Lock 在非阻塞路径上必须和 BoundedSemaphore.acquire(False) 逐条等价。
+
+    换掉信号量是因为它的容量在**构造那一刻**就定死了，而这个值现在是设置页
+    每请求传下来的。「限额变了就重建信号量」不行：在飞的线程 finally 里
+    release 的是旧对象，计数永久漂。
+    """
+    monkeypatch.setattr(probe, "_inflight", 0)
+    assert probe._take_slot(2) and probe._take_slot(2)
+    assert not probe._take_slot(2), "满了就抢不到"
+    assert probe._inflight_count() == 2
+    probe._drop_slot()
+    assert probe._take_slot(2), "放掉一个就又能抢到"
+    probe._drop_slot()
+    probe._drop_slot()
+    assert probe._inflight_count() == 0
+
+
+def test_the_limit_is_read_at_each_attempt_not_frozen(monkeypatch) -> None:
+    """读者把并发调小，**下一个** probe 立刻认，已经在飞的那几个不受影响。
+    这是信号量给不了的。"""
+    monkeypatch.setattr(probe, "_inflight", 0)
+    assert probe._take_slot(4) and probe._take_slot(4) and probe._take_slot(4)
+    assert not probe._take_slot(2), "限额降到 2 之后，第四个抢不到"
+    for _ in range(3):
+        probe._drop_slot()
+
+
+def test_drop_slot_never_goes_negative(monkeypatch) -> None:
+    """不学 BoundedSemaphore 抛 ValueError：这里是守护线程，
+    异常冒出去没人看得见，只会把 finally 后面的清理一起带掉。"""
+    monkeypatch.setattr(probe, "_inflight", 0)
+    probe._drop_slot()
+    probe._drop_slot()
+    assert probe._inflight_count() == 0
+
+
+def test_take_slot_never_locks_everyone_out(monkeypatch) -> None:
+    """限额被夹到 >=1，但万一有人绕过 merge_limits 传了 0，
+    也不能让深挖永远起不来。"""
+    monkeypatch.setattr(probe, "_inflight", 0)
+    assert probe._take_slot(0), "0 也至少放一个进去，不然是永久静默失效"
+    probe._drop_slot()
+
+
+def test_probe_gate_limits_come_from_the_argument(idx) -> None:
+    """should_probe 的闸值必须来自传进来的 limits，不是模块常量。"""
+    from dataclasses import replace
+
+    from pen.config import default_limits
+
+    tight = replace(default_limits(), probe_max_per_session=1, probe_pending_cap=1)
+    assert should_probe(**{**_BASE, "probe_calls": 1}, limits=tight) == (False, "budget")
+    assert should_probe(**{**_BASE, "pending_pool": 1}, limits=tight) == (False, "backlog-full")
+    # 同样的入参在默认档下是放行的——证明变红的是 limits，不是别的东西
+    assert should_probe(**{**_BASE, "probe_calls": 1})[0]
+
+
+def test_probe_read_limits_come_from_the_job(idx, tmp_path) -> None:
+    """parse_probe_json 的截断上限跟着 job 走。"""
+    from dataclasses import replace
+
+    from pen.config import default_limits
+
+    raw = json.dumps({"need_read": [{"start_line": i} for i in range(9)], "questions": []})
+    one = parse_probe_json(raw, limits=replace(default_limits(), probe_max_reads=1))
+    assert len(one["need_read"]) == 1
+    assert len(parse_probe_json(raw)["need_read"]) == 2, "不给就还是默认的 2"
+
+
+def test_run_probe_honours_the_job_concurrency_limit(idx, tmp_path, monkeypatch) -> None:
+    """并发闸读的是**本次请求冻结进 job 的那个数**，不是进程默认。
+
+    走 run_probe 真路径，不是直接调 _take_slot——直接调的话，把
+    `_take_slot(job.limits.probe_concurrency)` 改成 `_take_slot(2)` 这个变异
+    照样绿，等于没测（变异检查抓到过一次）。
+    """
+    from dataclasses import replace
+
+    from pen import probe_store
+    from pen.config import default_limits
+
+    called: list[int] = []
+    monkeypatch.setattr(probe, "_create", lambda *a, **k: called.append(1) or "{}")
+    monkeypatch.setattr(probe, "_inflight", 0)
+
+    sid = "conc" + "0" * 28
+    job = _meter_job(tmp_path, session_id=sid, shelf="（有）",
+                     limits=replace(default_limits(), probe_concurrency=1))
+    # 手动占掉唯一那个位
+    assert probe._take_slot(1)
+    pid = probe_store.try_claim(sid, "probe-fx", 0)
+    probe.run_probe(job, pid)
+    assert called == [], "并发满了就该直接跳过，一次 LLM 都不打"
+    assert probe_store.load(sid).probe_calls == 0, "一次都没打，配额要退"
+    probe._drop_slot()
+
+    # 同一个 job，位子空出来之后就该跑起来——证明拦住它的是并发闸本身
+    pid2 = probe_store.try_claim(sid, "probe-fx", 0)
+    probe.run_probe(job, pid2)
+    assert called == [1]
+
+
+def test_run_probe_records_the_spend_in_the_ledger(idx, tmp_path, monkeypatch) -> None:
+    """走 run_probe 真路径，确认账真的被交到 add_questions 手上。
+
+    直接调 probe_store.add_questions(..., spend=…) 测不到这件事——
+    那正是 run_probe 里那一行可能被漏掉的地方。
+    """
+    from pen import probe_store
+
+    def fake_create(cfg, messages, meter=None, **_kw):
+        if meter is not None:
+            meter.add({"prompt_tokens": 4321, "completion_tokens": 120})
+        return json.dumps({"need_read": [], "questions": []})
+
+    monkeypatch.setattr(probe, "_create", fake_create)
+    monkeypatch.setattr(probe, "_inflight", 0)
+
+    sid = "runsp" + "0" * 27
+    pid = probe_store.try_claim(sid, "probe-fx", 0)
+    probe.run_probe(_meter_job(tmp_path, session_id=sid, shelf="（有）"), pid)
+    led = probe_store.load(sid)
+    assert led.spend["in_tokens"] == 4321, "run_probe 没把账交给 add_questions"
+    assert not led.running, "坑位要放掉"

@@ -10,19 +10,18 @@ from typing import Any
 
 from pen.i18n import msg
 from pen import meter as metermod
-from pen.config import LLMConfig, REPO_ROOT, resolve_llm
+from pen.config import LLMConfig, REPO_ROOT, RuntimeLimits, default_limits, resolve_llm
 from pen.index import HandbookIndex, neighborhood
 from pen.agent.permissions import decide, read_first_block
 from pen.agent.registry import dispatch, schemas
+from pen.agent.tools_impl import limits_of
 from pen.sandbox import resolve_read_target
 from pen.questions import clean_candidates
 from pen.session import PROMPT_EXAMPLE_LINES, FIXED_CHIPS, PenSession
 
-# 师傅回答一轮里最多翻多少次工具。读者要的就是宽：接上书架之后，一个跨教材
-# 的问题本来就要多翻几次才答得像样，卡在 50 会让它半途收手。
-# 成本那头由 CROSS_BOOK_CHARS / CROSS_BOOK_READS 两道闸兜着（读别的书累计
-# 24000 字符或 8 次就叫停），所以放宽的是「翻本册」的余量。
-MAX_TOOL_ROUNDS = 100
+# MAX_TOOL_ROUNDS 搬到了 config.py，**这里不留别名**：留一个
+# `MAX_TOOL_ROUNDS = config.MAX_TOOL_ROUNDS` 就是第二个定义点，
+# 下次有人改这个而不是那个，两边就分家了。读取一律走 limits_of(ctx)。
 # 全书目录注进 packet 的字符预算。实测那本 13083 行的手册全量 87 条只要 3647 字符。
 TOC_CHARS = 4500
 ASKED_CHARS = 700
@@ -259,6 +258,7 @@ def _tool_ctx(
     session: PenSession,
     original_path: Path,
     extra_roots: list[Path],
+    limits: RuntimeLimits | None = None,
 ) -> dict[str, Any]:
     return {
         "original_path": original_path,
@@ -267,6 +267,10 @@ def _tool_ctx(
         "user_text": "",
         "handbook_id": session.handbook_id,
         "read_ok": {Path(p).expanduser().resolve() for p in session.read_ok_paths},
+        # 本次请求认下来的上限。**必须在这里放，不能在两个调用点各拼一遍**
+        # ——read_roots() 那段注释讲的就是这个教训。
+        # tools_impl.limits_of() 是唯一的取值口。
+        "limits": limits or default_limits(),
     }
 
 
@@ -289,6 +293,7 @@ def stream_chat(
     allow_env_fallback: bool = True,
     lang: str = "zh",
     user_text: str = "",
+    limits: RuntimeLimits | None = None,
 ) -> Iterator[dict[str, Any]]:
     # 请求换了主机却没带 key 时 merge_llm 会返回 None；不能再 or resolve_llm() 把 .env 钥匙挪用过去。
     cfg = llm if llm is not None else (resolve_llm() if allow_env_fallback else None)
@@ -301,7 +306,7 @@ def stream_chat(
 
     session.messages.append({"role": "user", "content": user_packet})
 
-    ctx = _tool_ctx(session, original_path, read_roots(extra_roots))
+    ctx = _tool_ctx(session, original_path, read_roots(extra_roots), limits)
     ctx["user_text"] = user_text
     yield from _agent_loop(session, ctx, cfg, lang)
 
@@ -357,7 +362,7 @@ def _agent_loop(
             "chat": dict(session.spend.get(metermod.KIND_CHAT) or metermod.blank()),
         }
 
-    for _step in range(MAX_TOOL_ROUNDS):
+    for _step in range(limits_of(ctx).max_tool_rounds):
         yield {"type": "status", "phase": "thinking", "text": "师傅在想…"}
         try:
             # 不要叫 msg：会遮蔽模块级的 i18n msg()，下面那条空正文文案就调不到了
@@ -521,6 +526,7 @@ def resume_chat(
     extra_roots: list[Path] | None = None,
     allow_env_fallback: bool = True,
     lang: str = "zh",
+    limits: RuntimeLimits | None = None,
 ) -> Iterator[dict[str, Any]]:
     pending = session.pending
     if not pending or pending.get("id") != pending_id:
@@ -548,7 +554,7 @@ def resume_chat(
     # 走 read_roots()，别在这里再拼一遍：v0.8.8 修的就是「两处各算一遍必然漂移」，
     # 自己留第二处说不过去。今天两者等价，改的是「下一次漂移的入口」。
     extra_roots = read_roots(extra_roots)
-    ctx = _tool_ctx(session, original_path, extra_roots)
+    ctx = _tool_ctx(session, original_path, extra_roots, limits)
     name = str(pending.get("name") or "")
     args = dict(pending.get("args") or {})
     tcid = str(pending.get("tool_call_id") or "")

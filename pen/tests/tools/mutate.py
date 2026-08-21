@@ -30,7 +30,7 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
         """        src = "\\n".join(
             x for x in (
                 excerpt if has_cross else "",
-                anchor_source(raw, job.original_path, job.extra_roots),
+                anchor_source(raw, job.original_path, job.extra_roots, limits=job.limits),
             ) if x
         )""",
         "        src = excerpt or anchor_source(raw, job.original_path, job.extra_roots)",
@@ -131,15 +131,15 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
     (
         "D2 跨书读取字节预算",
         "pen/agent/tools_impl.py",
-        "        if spent >= CROSS_BOOK_CHARS or reads >= CROSS_BOOK_READS:",
-        "        if reads >= CROSS_BOOK_READS:",
+        "        if spent >= lim.cross_book_chars or reads >= lim.cross_book_reads:",
+        "        if reads >= lim.cross_book_reads:",
         "cross_book_budget",
     ),
     (
         "D2 跨书读取次数上限（字节封不住每次只读一行）",
         "pen/agent/tools_impl.py",
-        "        if spent >= CROSS_BOOK_CHARS or reads >= CROSS_BOOK_READS:",
-        "        if spent >= CROSS_BOOK_CHARS:",
+        "        if spent >= lim.cross_book_chars or reads >= lim.cross_book_reads:",
+        "        if spent >= lim.cross_book_chars:",
         "caps_the_number_of_reads",
     ),
     (
@@ -174,6 +174,41 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
         '''    claimed = str(a.get("level") or "").split("/")[0].strip()''',
         '''    claimed = str(a.get("level") or "").strip()''',
         "beat_appended",
+    ),
+    (
+        "v0.10.1 跨书闸值必须来自 ctx，不是进程默认",
+        "pen/agent/tools_impl.py",
+        "        lim = limits_of(ctx)",
+        "        lim = config.default_limits()",
+        "cross_book_limit_comes_from_ctx",
+    ),
+    (
+        "v0.10.1 并发数必须来自本次请求冻结的那份",
+        "pen/probe.py",
+        "    if not _take_slot(job.limits.probe_concurrency):",
+        "    if not _take_slot(2):",
+        "honours_the_job_concurrency",
+    ),
+    (
+        "v0.10.1 翻书轮数必须来自 ctx",
+        "pen/tutor.py",
+        "    for _step in range(limits_of(ctx).max_tool_rounds):",
+        "    for _step in range(100):",
+        "tool_rounds_limit_is_honoured",
+    ),
+    (
+        "v0.10.0 缓存命中要认 DeepSeek 那个别名",
+        "pen/meter.py",
+        '        cached = _num(_get(raw, "prompt_cache_hit_tokens"))',
+        "        cached = 0",
+        "deepseek_cache_alias",
+    ),
+    (
+        "v0.10.0 深挖的账落账本，不落会话",
+        "pen/probe.py",
+        "        probe_store.add_questions(job.session_id, probe_id, items, spend=m.to_dict())",
+        "        probe_store.add_questions(job.session_id, probe_id, items)",
+        "records_the_spend_in_the_ledger",
     ),
     (
         "书架的闸与 read_file 的闸同源",
