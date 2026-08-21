@@ -560,19 +560,25 @@ def _read_excerpts(job: ProbeJob, reads: Sequence[dict[str, Any]]) -> str:
                     shelf = _shelf_paths(job.original_path, _reading_roots(job))
                 except Exception:
                     shelf = {}
-            hit_name = want if want in shelf else None
-            if hit_name is None:
-                # 模糊匹配只认**唯一**命中。多于一条就放弃——「手册」「教材」这种词
-                # 谁都沾边，猜中哪本纯看 dict 顺序，猜错就是拿别的书冒充。
-                cands = [k for k in shelf if want in k or k in want]
-                hit_name = cands[0] if len(cands) == 1 else None
-            hit = shelf.get(hit_name) if hit_name else None
+            hit = shelf.get(want)
+            if hit is None:
+                # 模糊匹配只认**唯一**命中。「手册」「教材」这种词谁都沾边，
+                # 猜中哪本纯看 dict 顺序，猜错就是拿别的书冒充。
+                # 数的是**书**不是 key：_shelf_paths 给每本登记两个 key
+                # （正文 H1 和 meta.title），Obsidian 笔记带 YAML frontmatter 时
+                # H1 被推离第 1 行、build_index 退回文件名，两个 key 就不一样了——
+                # 同一本书占两条候选，按 key 数会误判成歧义，把简称全毙掉。
+                # 而 frontmatter 正是 vault 里第三方教材的默认形态。
+                cands = {shelf[k] for k in shelf if want in k or k in want}
+                hit = next(iter(cands)) if len(cands) == 1 else None
             if hit is None:
                 continue  # 点了一本书架上没有的，忽略而不是回退到当前这本
             target = hit
-            # 标签用命中那本的**真实书名**，不用模型写的 want：它写「教材」，
-            # 题面就会引用一本叫《教材》的书，书架上根本没有这本。
-            label = f"〔出自《{hit_name}》〕\n"
+            # 标签用**书架上印的那个名字**（_shelf_paths 先插正文 H1、后插 meta.title，
+            # 所以第一个指向它的 key 就是书架印的），不用模型写的 want：
+            # 它写「教材」，题面就会引用一本叫《教材》的书，书架上根本没有这本。
+            shown = next((k for k, v in shelf.items() if v == hit), want)
+            label = f"〔出自《{shown}》〕\n"
         # end_line 以前被忽略，一律读 80 行——模型要的「一段」和拿到的
         # 不一定是一回事。给了就按它要的算，仍受 PROBE_READ_LINES 封顶。
         try:

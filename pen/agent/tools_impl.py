@@ -26,8 +26,21 @@ def _occurrences(text: str, needle: str) -> int:
 
 
 def _is_cross_book(original: Path, resolved: str) -> bool:
+    """读的是不是当前手册以外的东西。
+
+    比 inode 而不是比路径字符串：APFS 默认大小写不敏感，模型把 handbook_path 的
+    大小写抄错（Handbook.md / handbook.md）读到的是**同一个文件**，
+    但 `resolve()` 不规范化大小写，字符串比较会判成跨书，白白吃掉预算。
+    实测在 macOS 上确实会撞到。samefile 需要两边都存在——读成功了才走到这里，
+    所以正常成立；万一 race 掉了就回落到路径比较。
+    """
     try:
-        return Path(resolved).expanduser().resolve() != original.expanduser().resolve()
+        got = Path(resolved).expanduser().resolve()
+        mine = original.expanduser().resolve()
+        try:
+            return not got.samefile(mine)
+        except OSError:
+            return got != mine
     except Exception:
         return False
 

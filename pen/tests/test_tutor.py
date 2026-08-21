@@ -351,3 +351,29 @@ def test_cross_book_budget_stops_the_翻书_loop_without_erroring(tmp_path) -> N
     # 单次 read_file 已被 MAX_OUTPUT 截到 5000，所以约等于 5 次满窗
     assert 2 <= stopped_at <= 12, f"预算档位不对：第 {stopped_at} 次才停"
     assert "没读到" in got["text"] or "只读了哪几段" in got["text"], "得告诉它怎么诚实收场"
+
+
+def test_case_typo_in_handbook_path_is_not_charged_as_cross_book(tmp_path) -> None:
+    """APFS 默认大小写不敏感：模型把 handbook_path 的大小写抄错，读到的是**同一个
+    文件**，但 resolve() 不规范化大小写，字符串比较会判成跨书、白吃预算。
+    比 inode 不比字符串。"""
+    from pen.agent.tools_impl import handle_read_file
+
+    book = tmp_path / "Handbook.md"
+    book.write_text("# 当前这本\n", encoding="utf-8")
+    typo = tmp_path / "handbook.md"
+    if not typo.exists():  # 大小写敏感的文件系统上这条不适用
+        import pytest
+
+        pytest.skip("文件系统区分大小写，撞不到这个坑")
+
+    ctx = {"original_path": book, "extra_roots": [tmp_path]}
+    got = handle_read_file({"path": str(typo)}, ctx)
+    assert got["ok"] and "当前这本" in got["text"]
+    assert ctx.get("cross_book_chars") is None, "读的是同一个文件，不该计跨书预算"
+
+    # 对照：真的别的文件要计
+    other = tmp_path / "other.md"
+    other.write_text("# 别的书\n", encoding="utf-8")
+    handle_read_file({"path": str(other)}, ctx)
+    assert ctx.get("cross_book_chars")

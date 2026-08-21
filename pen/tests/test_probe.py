@@ -659,7 +659,60 @@ def test_ambiguous_book_name_never_falls_back_to_the_current_handbook(tmp_path, 
 
     shelf = probe._shelf_paths(cur, [vault])
     assert "手搓测试手册" not in shelf, "当前这本还在书架反查表里"
-    # 「通关手册」同时沾两本 → 放弃，不靠 dict 顺序猜
-    cands = [k for k in shelf if "通关手册" in k or k in "通关手册"]
-    assert len(cands) == 2
+    # 「通关手册」同时沾**两本不同的书** → 放弃，不靠 dict 顺序猜
+    targets = {shelf[k] for k in shelf if "通关手册" in k or k in "通关手册"}
+    assert len(targets) == 2, "前提变了：这两本本来就该都沾边"
     assert shelf.get("通关手册") is None
+    got = probe._read_excerpts(
+        _job(cur), [{"book": "通关手册", "start_line": 1, "end_line": 2}]
+    )
+    assert got == "", f"歧义时不该猜一本读：{got!r}"
+
+
+def _job(cur: Path, extra=None):
+    from pen import config, probe
+
+    return probe.ProbeJob(
+        session_id="s", handbook_id="h", original_path=cur, anchor={}, atom="a",
+        chip="free", user_text="", reply="", born_round=1, lang="zh",
+        cfg=config.LLMConfig(base_url="", api_key="", model="m", key_source="t"),
+        extra_roots=extra if extra is not None else [],
+    )
+
+
+def test_one_book_with_two_keys_is_not_mistaken_for_two_books(tmp_path, monkeypatch) -> None:
+    """`_shelf_paths` 给每本书登记两个 key：正文 H1 和 meta.title。
+    Obsidian 笔记带 YAML frontmatter 时 H1 被推离第 1 行，build_index 退回文件名，
+    两个 key 就不一样了——同一本书占两条候选，按 **key** 数会误判成歧义，
+    把「Prompt」「工程手册」这种简称全毙掉。而 frontmatter 正是 vault 里
+    第三方教材的默认形态，不是边角料。"""
+    from pen import config, libraries, library_scan, probe
+
+    lib = tmp_path / ".pen" / "libraries"
+    lib.mkdir(parents=True)
+    monkeypatch.setattr(libraries, "LIBRARIES_DIR", lib)
+    library_scan._CACHE.clear()
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    cur = vault / "cur.md"
+    cur.write_text("# 手搓当前这本\n\n## 一\n", encoding="utf-8")
+    other = vault / "Prompt工程手册.md"
+    other.write_text(
+        "---\ntags: [教材]\ndate: 2026-08-20\n---\n\n# Prompt 工程手册\n\n## 第一章\n",
+        encoding="utf-8",
+    )
+    libraries.register(str(cur), "cur", extra_roots=[vault])
+    libraries.register(str(other), "pw", extra_roots=[vault])
+    monkeypatch.setattr(config, "handbook_allow_roots", lambda *a, **k: [vault])
+
+    shelf = probe._shelf_paths(cur, [vault])
+    keys = [k for k in shelf if "Prompt" in k or "工程" in k]
+    assert len(keys) == 2, f"前提变了，不再是一本书两个 key：{keys}"
+    assert len({shelf[k] for k in keys}) == 1, "两个 key 应指向同一个文件"
+
+    job = _job(cur, [vault])
+    for want in ("Prompt", "工程手册"):
+        got = probe._read_excerpts(job, [{"book": want, "start_line": 6, "end_line": 7}])
+        assert got, f"book={want!r} 落空了——同一本书被当成两本"
+        assert "《Prompt 工程手册》" in got, f"标签没印书架上那个名字：{got[:60]!r}"
