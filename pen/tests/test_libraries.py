@@ -323,3 +323,80 @@ def test_plugin_deployment_without_env_still_gets_a_shelf(tmp_path, monkeypatch)
         with_paths=True,
     )
     assert "手册乙" in got and str(other) in got, f"标准部署下书架是空的：{got!r}"
+
+
+def test_shelf_visibility_equals_read_file_reachability_both_ways(tmp_path, monkeypatch) -> None:
+    """「列得出」必须严格等于「读得到」，两个方向都要成立。
+
+    v0.8.7 修的是一边（书架印出读不到的路径），修完漂到另一边：
+    app.py 传 extra_roots_for(hid)，而 stream_chat 会往里加 REPO_ROOT，
+    于是仓库根里的教材师傅读得到、书架却不列。等式必须由同一个函数保证。"""
+    import re
+
+    from pen import config, library_scan, readtool
+    from pen.sandbox import reading_roots
+    from pen.tutor import read_roots
+
+    monkeypatch.setattr(config, "PEN_DIR", tmp_path / ".pen")
+    repo = tmp_path / "repo"
+    vault = tmp_path / "vault"
+    far = tmp_path / "elsewhere"
+    for d in (repo, vault, far):
+        d.mkdir()
+    monkeypatch.setattr(config, "REPO_ROOT", repo)
+    monkeypatch.setattr("pen.tutor.REPO_ROOT", repo)
+
+    cur = vault / "当前.md"
+    cur.write_text("# 当前这本\n", encoding="utf-8")
+    books = {
+        "repo": repo / "仓库里的.md",
+        "vault": vault / "库里的.md",
+        "far": far / "够不着的.md",
+    }
+    for name, b in books.items():
+        b.write_text(f"# {name} 教材\n\n## 第一章\n", encoding="utf-8")
+
+    extra = [vault]  # 本手册的 allow_root
+    roots = reading_roots(cur, read_roots(extra))
+    library_scan._CACHE.clear()
+    shelf = library_scan.shelf_digest(
+        cur, [str(b) for b in books.values()], allow_roots=roots, with_paths=True
+    )
+    listed = set(re.findall(r"path: (\S.*)", shelf))
+
+    for name, b in books.items():
+        ok = readtool.read_file_report(cur, str(b), 1, 1, extra_roots=read_roots(extra))["ok"]
+        shown = str(b) in listed
+        assert ok == shown, f"{name}: read_file ok={ok} 但书架列出={shown}"
+    # 具体到这组：仓库根和 vault 的都该在，第三个目录的不该在
+    assert str(books["repo"]) in listed and str(books["vault"]) in listed
+    assert str(books["far"]) not in listed
+
+
+def test_probe_reading_roots_keep_their_own_semantics(tmp_path, monkeypatch) -> None:
+    """两条线的根本来就该有两个答案，别为了「统一」把 probe 那支改坏：
+    tutor 是 [REPO_ROOT, *extra]，probe 是 `extra or [REPO_ROOT]`——
+    extra 非空时 probe **不含** REPO_ROOT。"""
+    from pen import config, probe
+    from pen.tutor import read_roots
+
+    monkeypatch.setattr(config, "REPO_ROOT", tmp_path / "repo")
+    monkeypatch.setattr("pen.tutor.REPO_ROOT", tmp_path / "repo")
+    (tmp_path / "repo").mkdir()
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    cur = vault / "b.md"
+    cur.write_text("# x\n", encoding="utf-8")
+
+    def job(extra):
+        return probe.ProbeJob(
+            session_id="s", handbook_id="h", original_path=cur, anchor={}, atom="a",
+            chip="free", user_text="", reply="", born_round=1, lang="zh",
+            cfg=config.LLMConfig(base_url="", api_key="", model="m", key_source="t"),
+            extra_roots=extra,
+        )
+
+    assert read_roots([vault]) == [(tmp_path / "repo"), vault]
+    assert probe._reading_roots(job([vault])) == [vault], "probe 那支不该含 REPO_ROOT"
+    assert probe._reading_roots(job([])) == [(tmp_path / "repo").resolve()]
+    assert read_roots(None) == [tmp_path / "repo"]

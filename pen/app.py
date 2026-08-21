@@ -30,7 +30,14 @@ from pen.i18n import localized, msg, norm_lang
 from pen.libraries import RegisterError
 from pen.sandbox import SandboxError, assert_handbook_path, parse_vault_root, reading_roots
 from pen.session import FIXED_CHIPS, STORE, chip_label
-from pen.tutor import ProviderError, build_user_packet, propose_fold_md, resume_chat, stream_chat
+from pen.tutor import (
+    ProviderError,
+    build_user_packet,
+    propose_fold_md,
+    read_roots,
+    resume_chat,
+    stream_chat,
+)
 
 SEARCH_REPLY = (
     "论文检索还没开。这是诚实挂起：P2 才有联网，"
@@ -598,7 +605,11 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
                 # 必须是 read_file 那把闸，不是全局 handbook_allow_roots()。
                 # 后者宽：当前手册是仓库根那本时它会印出 vault 里的书，
                 # 师傅照着读就撞在「不在本手册允许的根内」上，白跑一次工具。
-                allow_roots=reading_roots(path, libraries.extra_roots_for(sess.handbook_id)),
+                # 走 tutor.read_roots 而不是自己拼：stream_chat 会往里加 REPO_ROOT，
+                # 这里少加就漂到反面——仓库根里的教材师傅读得到、书架却不列。
+                allow_roots=reading_roots(
+                    path, read_roots(libraries.extra_roots_for(sess.handbook_id))
+                ),
                 with_paths=True,
             )
         except Exception:

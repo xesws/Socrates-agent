@@ -41,6 +41,20 @@ CHIP_INTENT = {
 }
 
 
+def read_roots(extra_roots: Sequence[Path] | None) -> list[Path]:
+    """stream_chat 交给 read_file 的根：仓库根**加上**本手册自己的 allow_root。
+
+    算书架可见性时必须调这个函数，不能在 app.py 里再拼一遍——v0.8.7 那个
+    「书架印出师傅读不到的路径」就是两处各算一遍漂移出来的，修完又漂到反面：
+    书架传的是 extra_roots_for(hid)（不含 REPO_ROOT），于是仓库根里的教材
+    师傅读得到、书架却不列。「列得出」和「读得到」必须由同一个函数保证。
+
+    注意 probe 那条线的语义**不一样**（`job.extra_roots or [REPO_ROOT]`——
+    extra 非空时不含 REPO_ROOT），它有自己的 probe._reading_roots()。
+    """
+    return [REPO_ROOT, *(extra_roots or [])]
+
+
 def _budget_lines(lines: Sequence[str], budget: int) -> str:
     """按字符预算收行，不按条数——书变厚时截的是尾巴，不是整段失控。"""
     out: list[str] = []
@@ -281,8 +295,7 @@ def stream_chat(
 
     session.messages.append({"role": "user", "content": user_packet})
 
-    extra_roots = [REPO_ROOT, *(extra_roots or [])]
-    ctx = _tool_ctx(session, original_path, extra_roots)
+    ctx = _tool_ctx(session, original_path, read_roots(extra_roots))
     ctx["user_text"] = user_text
     yield from _agent_loop(session, ctx, cfg, lang)
 
