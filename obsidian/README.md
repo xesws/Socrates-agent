@@ -23,9 +23,11 @@ API Key 存在本库 `data.json`：若整个库进了 Sync / git，钥匙会跟�
 
 ## 开发者验收
 
-1. 用编辑器打开 `../socrates-pen.code-workspace`
-2. Obsidian → Open folder as vault → 我们的测试库 `/Users/tangyiq/dev/socrates-pen-vault`
+不要在本目录 `npm run dev`。插件源码在 `../socrates-pen`。
+
+1. 用编辑器打开本仓的 `socrates-pen.code-workspace`（plugin 文件夹已指向 `../socrates-pen`）
+2. Obsidian → Open folder as vault → 测试库 `/Users/tangyiq/dev/socrates-pen-vault`
 3. 启用 **Socrates Pen** 和 **Hot Reload**
 4. 本机终端：`python -m pen --host 127.0.0.1 --port 8765`
-5. 本目录：`npm run dev`（产物直接写进测试库插件目录）
+5. 在 `../socrates-pen`：`export VAULT_PLUGIN_DIR=/Users/tangyiq/dev/socrates-pen-vault/.obsidian/plugins/socrates-pen` 然后 `npm run dev`
 6. 按上面「第一次用」第 4–5 步走一遍
