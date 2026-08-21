@@ -48,6 +48,12 @@ SNAPSHOT_KEEP = 20
 # 这时它就是「空」的（实测最新的空会话建于 6.9 分钟前）。留足一整天的余量。
 SESSION_KEEP_DAYS_EMPTY = 1
 SESSION_KEEP_DAYS_CHATTED = 7
+# 内存里同时留几场会话。`SessionStore` 此前**完全没有淘汰**——进程活多久涨多久，
+# 而 sidecar 是常驻的，读者一天划几百次词就是几百个 PenSession 挂在那儿。
+#
+# 32 是按实测最坏那场估的：19 条 messages / 59539 字符 ≈ 116 KB，32 场约 3 MB。
+# 淘汰只是把它从内存里放掉，磁盘上的快照一个字没动，下次 get() 现读回来。
+MAX_LIVE_SESSIONS = 32
 
 ENV_BASE_URL = "OPENAI_BASE_URL"
 ENV_API_KEY = "OPENAI_API_KEY"

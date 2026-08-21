@@ -560,6 +560,93 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
         """reusing_a_session_id_pushes_mtime""",
     ),
     (
+        """v0.12.5 内存里的会话必须有上限""",
+        """pen/session.py""",
+        """            self._evict()
+        save_session(sess)  # 落盘不持锁""",
+        """        save_session(sess)  # 落盘不持锁""",
+        """memory_is_bounded or locks_shrink""",
+    ),
+    (
+        """v0.12.5 正在跑的那场绝不许被挤出去""",
+        """pen/session.py""",
+        """            lock = self._locks.get(sid)
+            if lock is not None and lock.locked():
+                continue  # 正在跑，跳过""",
+        """            pass""",
+        """running_session_is_never_evicted or over_the_cap""",
+    ),
+    (
+        """v0.12.5 锁一放就该能被收回去（豁免只是暂时的）""",
+        """pen/session.py""",
+        """            if lock is not None and lock.locked():
+                continue  # 正在跑，跳过""",
+        """            if lock is not None:
+                continue""",
+        """evictable_again""",
+    ),
+    (
+        """v0.12.5 抢到锁的那一刻要把实例钉回表里""",
+        """pen/session.py""",
+        """            self._items[sid] = sess
+            self._items.move_to_end(sid)
+            return lock""",
+        """            return lock""",
+        """pins_the_instance_back""",
+    ),
+    (
+        """v0.12.5 LRU 不是 FIFO：碰过的要往后挪""",
+        """pen/session.py""",
+        """            hit = self._items.get(session_id)
+            if hit is not None:
+                self._items.move_to_end(session_id)
+                return hit""",
+        """            hit = self._items.get(session_id)
+            if hit is not None:
+                return hit""",
+        """moves_it_out_of_the_firing_line""",
+    ),
+    (
+        """v0.12.5 冷启动并发只许有一个实例""",
+        """pen/session.py""",
+        """            cur = self._items.get(session_id)
+            if cur is not None:
+                self._items.move_to_end(session_id)
+                return cur""",
+        """            pass""",
+        """racing_on_a_cold_session""",
+    ),
+    (
+        """v0.12.5 孤儿锁也要收""",
+        """pen/session.py""",
+        """        for sid in [s for s in self._locks if s not in self._items]:
+            if not self._locks[sid].locked():
+                self._locks.pop(sid, None)""",
+        """        pass""",
+        """lock_with_no_session_behind_it""",
+    ),
+    (
+        """v0.12.5 淘汰不许动磁盘""",
+        """pen/session.py""",
+        """            self._items.pop(sid, None)
+            self._locks.pop(sid, None)""",
+        """            self._items.pop(sid, None)
+            self._locks.pop(sid, None)
+            _session_path(sid).unlink(missing_ok=True)""",
+        """eviction_does_not_touch_the_disk""",
+    ),
+    (
+        """v0.12.5 抢锁必须和淘汰互斥""",
+        """pen/app.py""",
+        """    lock = STORE.try_lock(sess)
+    if lock is None:""",
+        """    lock = STORE.lock_for(sess.session_id)
+    if not lock.acquire(blocking=False):
+        lock = None
+    if lock is None:""",
+        """endpoint_helper_goes_through_try_lock""",
+    ),
+    (
         "书架的闸与 read_file 的闸同源",
         "pen/tutor.py",
         "    return [REPO_ROOT, *(extra_roots or [])]",

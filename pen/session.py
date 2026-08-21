@@ -7,6 +7,7 @@ import os
 import re
 import threading
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -259,10 +260,26 @@ def save_session(sess: PenSession) -> Path:
 
 
 class SessionStore:
+    """内存里的会话表，按 LRU 淘汰。
+
+    此前**完全没有淘汰**：`_items` 和 `_locks` 都是纯 append 的普通 dict，
+    sidecar 是常驻进程，读者一天划几百次词就是几百个 `PenSession`（外加
+    几百把 `Lock`）永远挂在那儿。
+
+    **`_items` 的读写此前也完全裸奔**——`_lock_meta` 只护 `_locks`。单次
+    getitem/setitem 在 GIL 下是原子的，所以以前不炸；但淘汰是「查长度 → 挑最旧
+    → pop」这种 read-modify-write，不整体加锁会踩空 `KeyError`。所以这一版起
+    `_meta` 同时护两个字典。
+
+    磁盘上的快照一个字没动：淘汰只是把它从内存里放掉，下次 `get()` 现读回来。
+    """
+
     def __init__(self) -> None:
-        self._items: dict[str, PenSession] = {}
+        # OrderedDict 而不是 dict：要的是 move_to_end。最左边 = 最久没碰过。
+        self._items: OrderedDict[str, PenSession] = OrderedDict()
         self._locks: dict[str, threading.Lock] = {}
-        self._lock_meta = threading.Lock()
+        # 名字保持 _lock_meta：现在它护的是**两个**字典，不只是 _locks。
+        self._lock_meta = threading.RLock()
 
     def lock_for(self, session_id: str) -> threading.Lock:
         with self._lock_meta:
@@ -270,26 +287,100 @@ class SessionStore:
             if lock is None:
                 lock = threading.Lock()
                 self._locks[session_id] = lock
+            if session_id in self._items:
+                self._items.move_to_end(session_id)
             return lock
+
+    def try_lock(self, sess: PenSession) -> threading.Lock | None:
+        """抢这一场的锁（非阻塞），顺便把它钉回表里。抢不到返回 None。
+
+        为什么必须是**一个**方法而不是 `lock_for()` 再 `acquire(False)`：
+        那两步之间有一条缝，淘汰正好挤进来就会把 `_locks[sid]` 换掉，于是两个
+        线程各拿一把不同的锁同时进临界区，各自 `save()` 一个从磁盘重建的实例，
+        后写的赢——表现就是「一整轮对话凭空消失」。
+        acquire 发生在 `_meta` 之内，淘汰也要 `_meta`，缝就没了。
+
+        为什么参数是 `PenSession` 而不是 `session_id`：`_evict()` 从最旧往最新
+        扫，在跑的那些会被跳过——**在跑的多于上限时，连刚 `get()` 出来的那条
+        都会被扫到**。所以抢到锁的这一刻必须把手里这个实例按回 `_items`，
+        否则别的请求 `get()` 会从磁盘重建出第二个实例。
+        钉回去之后它就是「locked」，`_evict()` 再也不会碰它。
+        """
+        sid = sess.session_id
+        with self._lock_meta:
+            lock = self._locks.get(sid)
+            if lock is None:
+                lock = threading.Lock()
+                self._locks[sid] = lock
+            if not lock.acquire(blocking=False):
+                return None
+            self._items[sid] = sess
+            self._items.move_to_end(sid)
+            return lock
+
+    def _evict(self) -> None:
+        """把最久没碰过的放掉。**调用方必须已持有 `_meta`。**
+
+        **绝不碰 `lock.locked()` 为真的那场**——宁可暂时超上限。
+        `/v1/chat`、`/approve`、`/propose` 三处都是先 `STORE.get()` 拿到 `sess`
+        引用，再长时间持锁改它。把 `_items[sid]` 踢掉之后，别的请求
+        `STORE.get(sid)` 会从磁盘**重建出第二个实例**，而收尾的
+        `STORE.save(sess)` 又拿第一个实例覆盖回去——「对话中途重开侧栏，
+        上一条回复消失」就是这么来的。
+        """
+        cap = max(1, int(config.MAX_LIVE_SESSIONS))
+        if len(self._items) <= cap:
+            return
+        for sid in list(self._items):
+            if len(self._items) <= cap:
+                break
+            lock = self._locks.get(sid)
+            if lock is not None and lock.locked():
+                continue  # 正在跑，跳过
+            self._items.pop(sid, None)
+            self._locks.pop(sid, None)
+        # 顺手收孤儿锁：`_items` 里没有、也没人持着的。只在超限时扫——
+        # 平时两个字典一一对应，每次都扫是白花钱。
+        for sid in [s for s in self._locks if s not in self._items]:
+            if not self._locks[sid].locked():
+                self._locks.pop(sid, None)
 
     def create(self, handbook_id: str, lang: str = "zh") -> PenSession:
         sid = uuid.uuid4().hex
         sess = PenSession(session_id=sid, handbook_id=handbook_id, lang=lang)
-        self._items[sid] = sess
-        save_session(sess)
+        with self._lock_meta:
+            self._items[sid] = sess
+            self._evict()
+        save_session(sess)  # 落盘不持锁
         return sess
 
     def get(self, session_id: str) -> PenSession:
-        if session_id in self._items:
-            return self._items[session_id]
+        with self._lock_meta:
+            hit = self._items.get(session_id)
+            if hit is not None:
+                self._items.move_to_end(session_id)
+                return hit
+        # 读盘不持锁：`_meta` 是每个请求都要过的窄门，别把磁盘 I/O 关在里面。
         loaded = load_session(session_id)
         if loaded is None:
             raise KeyError(session_id)
-        self._items[session_id] = loaded
+        with self._lock_meta:
+            # 双检。读盘那会儿别人可能已经放进来了，**必须返回先到的那个**：
+            # 同一个 sid 有两个实例的话，两条请求各改各的，收尾的 save 互相覆盖。
+            # （这条竞态在加淘汰之前就存在，顺手关掉。）
+            cur = self._items.get(session_id)
+            if cur is not None:
+                self._items.move_to_end(session_id)
+                return cur
+            self._items[session_id] = loaded
+            self._evict()
         return loaded
 
     def save(self, sess: PenSession) -> None:
-        self._items[sess.session_id] = sess
+        with self._lock_meta:
+            self._items[sess.session_id] = sess
+            self._items.move_to_end(sess.session_id)
+            self._evict()
         save_session(sess)
 
 

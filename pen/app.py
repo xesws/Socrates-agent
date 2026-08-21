@@ -54,7 +54,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.12.4", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.12.5", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -172,9 +172,13 @@ def _sse(ev: dict[str, Any]) -> str:
     return f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
 
 
-def _try_lock_session(session_id: str, lang: str = "zh"):
-    lock = STORE.lock_for(session_id)
-    if not lock.acquire(blocking=False):
+def _try_lock_session(sess, lang: str = "zh"):
+    # 走 STORE.try_lock 而不是 lock_for + acquire：那两步之间有一条缝，
+    # 内存淘汰正好挤进来就会把 _locks[sid] 换掉，两个线程各拿一把不同的锁
+    # 同时进临界区。抢锁必须和淘汰互斥，所以它整个发生在 store 的 _meta 里。
+    # 传的是整个 sess 不是 sid：抢到锁的同时要把这个实例钉回 _items，见 try_lock。
+    lock = STORE.try_lock(sess)
+    if lock is None:
         raise HTTPException(409, msg("session.busy", lang))
     return lock
 
@@ -674,7 +678,7 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
             )
 
         return StreamingResponse(search_gen(), media_type="text/event-stream")
-    lock = _try_lock_session(sess.session_id, lang)
+    lock = _try_lock_session(sess, lang)
     try:
         if sess.pending:
             raise HTTPException(400, msg("approval.pending", lang))
@@ -827,7 +831,7 @@ def chat_approve(body: ApproveBody, lang: str = Depends(req_lang)) -> StreamingR
         sess = STORE.get(body.session_id)
     except KeyError as exc:
         raise HTTPException(404, msg("session.unknown", lang)) from exc
-    lock = _try_lock_session(sess.session_id, lang)
+    lock = _try_lock_session(sess, lang)
     try:
         if not sess.pending or sess.pending.get("id") != body.pending_id:
             raise HTTPException(400, msg("approval.none", lang))
@@ -897,7 +901,7 @@ def propose(body: ProposeBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
     # 这个端点会写 session.spend（写回那一格的账），所以必须持会话锁——
     # propose_fold_md 的注释写着「请求线程独占」，不持锁那个前提就不成立，
     # 而这里曾经是全仓唯一不持锁却写 session 的路径。
-    lock = _try_lock_session(sess.session_id, lang)
+    lock = _try_lock_session(sess, lang)
     try:
         fold = propose_fold_md(
             sess,
