@@ -9,7 +9,7 @@ import {
   WorkspaceLeaf,
 } from "obsidian";
 import type SocratesPenPlugin from "../main";
-import { makeApi, streamApprove, streamChat } from "../api";
+import { isGone, makeApi, streamApprove, streamChat } from "../api";
 import { handbookIdFromPath, vaultRoot, type EditorPick } from "../selection";
 import type {
   ChatMessage,
@@ -870,7 +870,34 @@ export class PenView extends ItemView {
     await this.paintLog();
   }
 
-  private async send(chip: string, userText: string): Promise<void> {
+  /**
+   * 会话在服务端没了（超过保留期被清理）之后，就地换一场新的。
+   *
+   * 不做这件事的话，读者的失败模式是**「输入框能打字，一发就报错，
+   * 不知道该干什么」**——再点还是同一个死 sid，全仓只有「用当前选区」和
+   * 「新开会话」两个按钮会 createSession，读者未必想得到要去点它们。
+   *
+   * 重绑 `bindNote` 是关键的第二步：只 adopt 不重绑，下次划同一篇笔记
+   * 又会捞回那个死 sid，同一个坑再踩一次。
+   */
+  private async reviveSession(): Promise<boolean> {
+    if (!this.handbookId) return false;
+    try {
+      const sess = await this.api().createSession(this.handbookId);
+      this.adopt(sess);
+      if (this.capturedPath) {
+        await this.plugin.bindNote(this.capturedPath, {
+          handbook_id: this.handbookId,
+          session_id: sess.session_id,
+        });
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async send(chip: string, userText: string, revived = false): Promise<void> {
     if (chip === "search") return;
     if (this.pending) {
       new Notice(t().noticeResolveApproval);
@@ -899,6 +926,7 @@ export class PenView extends ItemView {
     this.paintBar();
     await this.paintLog("force");
     let acc = "";
+    let gone = false;
     try {
       await streamChat(
         this.plugin.settings.sidecarUrl,
@@ -967,7 +995,10 @@ export class PenView extends ItemView {
         this.plugin.settings,
       );
     } catch (e) {
-      this.err = e instanceof Error ? e.message : String(e);
+      // 会话过了保留期被清理掉了。**只重来一次**（revived 那个参数），
+      // 不然新会话再撞 404 就成了无限套娃。
+      if (isGone(e) && !revived) gone = true;
+      else this.err = e instanceof Error ? e.message : String(e);
     } finally {
       if (!this.pending) {
         this.busy = false;
@@ -976,6 +1007,19 @@ export class PenView extends ItemView {
       this.paintBar();
       await this.paintLog();
     }
+    if (!gone) return;
+    if (!(await this.reviveSession())) {
+      this.err = t().errSessionArchivedHard;
+      this.paintBar();
+      await this.paintLog();
+      return;
+    }
+    // 原样重发。读者不用重新打字——他刚才那句在 adopt() 里被新会话的空历史
+    // 覆盖掉了，这里补发回去，界面上看起来就是「问了一次」。
+    await this.send(chip, userText, true);
+    // 重发本身出错的话（换了新会话还是失败），保留那条真错，别用归档提示盖掉。
+    if (!this.err) this.err = t().errSessionArchived;
+    this.paintBar();
   }
 
   private async doApprove(allow: boolean): Promise<void> {
@@ -995,6 +1039,7 @@ export class PenView extends ItemView {
       }
     }
     let acc = "";
+    let gone = false;
     const last = this.msgs[this.msgs.length - 1];
     if (last?.role === "assistant") acc = last.text;
     try {
@@ -1056,8 +1101,13 @@ export class PenView extends ItemView {
         this.plugin.settings,
       );
     } catch (e) {
-      this.err = e instanceof Error ? e.message : String(e);
+      // 会话过了保留期被清理掉了。这里**不重发**——pending_id 是那场死会话的，
+      // 换一场新的也认不出它。原文没被改动（写回发生在服务端那一枪里），
+      // 所以把审批状态清掉、开一场新的、把话说明白就是全部该做的事。
+      if (isGone(e)) gone = true;
+      else this.err = e instanceof Error ? e.message : String(e);
     } finally {
+      if (gone) this.pending = null;
       this.approving = false;
       if (!this.pending) {
         this.busy = false;
@@ -1066,6 +1116,12 @@ export class PenView extends ItemView {
       this.paintBar();
       await this.paintLog("force");
     }
+    if (!gone) return;
+    this.err = (await this.reviveSession())
+      ? t().errApprovalArchived
+      : t().errSessionArchivedHard;
+    this.paintBar();
+    await this.paintLog("force");
   }
 
   private async saveOpenNote(rel: string): Promise<void> {

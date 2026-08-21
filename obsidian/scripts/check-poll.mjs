@@ -8,8 +8,16 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
+// 入口是一段现编的门面，把 deeppoll 和 ApiError 打进**同一个** bundle。
+// 分两次 build 的话会得到两个不同的 ApiError 类，`instanceof` 恒假——
+// 那样这份看门狗测的又是一个和产物无关的幻觉（上一版正是如此，见下）。
 const out = await build({
-  entryPoints: [resolve(here, "../src/deeppoll.ts")],
+  stdin: {
+    contents:
+      'export * from "./src/deeppoll.ts";\nexport { ApiError } from "./src/apierror.ts";\n',
+    resolveDir: resolve(here, ".."),
+    loader: "ts",
+  },
   bundle: true,
   write: false,
   format: "esm",
@@ -18,7 +26,8 @@ const out = await build({
 const mod = await import(
   "data:text/javascript;base64," + Buffer.from(out.outputFiles[0].text).toString("base64")
 );
-const { pollDeep, mergeDeep, keepDeep, dropAsked, MAX_VISIBLE_DEEP, DEEP_POLL_BUDGET_MS } = mod;
+const { pollDeep, mergeDeep, keepDeep, dropAsked, MAX_VISIBLE_DEEP, DEEP_POLL_BUDGET_MS, ApiError } =
+  mod;
 
 const checks = [];
 const check = (name, pass) => checks.push([name, Boolean(pass)]);
@@ -67,11 +76,29 @@ h = harness(async () => ({ items: [], cursor: 0, running: ["p"] }), { ticks: 12 
 await h.run();
 check("服务端一直 running 时到点自停", h.st.calls === 12);
 
+// v0.12.4：抛的必须是**产物真会抛的那种错**。上一版这里造的是
+// `new Error("HTTP 404 unknown session")`，而 api.ts 抛的 detail 是本地化文案
+// （「会话不存在」），一个 "404" 字样都没有——看门狗和实现各自绿着，
+// 中间那条终止条件其实是死的。
 h = harness(async () => {
-  throw new Error("HTTP 404 unknown session");
+  throw new ApiError(404, "会话不存在");
 });
 await h.run();
 check("404 立刻停（会话没了）", h.st.calls === 1);
+
+// 反向：本地化文案里没有 "404"，靠字符串匹配的写法在这条上会红。
+h = harness(async () => {
+  throw new ApiError(404, "unknown session");
+});
+await h.run();
+check("404 判的是状态码不是文案", h.st.calls === 1);
+
+// 500 不是「没了」，该走重试那条路。
+h = harness(async () => {
+  throw new ApiError(500, "internal");
+});
+await h.run();
+check("500 不当成会话没了，照常重试到放弃", h.st.calls === 3);
 
 h = harness(async () => {
   throw new Error("ECONNREFUSED");

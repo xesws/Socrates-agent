@@ -463,6 +463,103 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
         "isolated_pen_dir_is_not_pre_created",
     ),
     (
+        """v0.12.4 空会话与聊过的会话必须分两档""",
+        """pen/retention.py""",
+        """    days = (
+        config.SESSION_KEEP_DAYS_EMPTY
+        if _is_empty(data)
+        else config.SESSION_KEEP_DAYS_CHATTED
+    )""",
+        """    days = config.SESSION_KEEP_DAYS_CHATTED""",
+        """empty_session_older_than_a_day_is_swept""",
+    ),
+    (
+        """v0.12.4 聊过的会话不许按空的那档删""",
+        """pen/retention.py""",
+        """    days = (
+        config.SESSION_KEEP_DAYS_EMPTY
+        if _is_empty(data)
+        else config.SESSION_KEEP_DAYS_CHATTED
+    )""",
+        """    days = config.SESSION_KEEP_DAYS_EMPTY""",
+        """chatted_session""",
+    ),
+    (
+        """v0.12.4 挂着审批的会话永不删""",
+        """pen/retention.py""",
+        """    if _has_pending(data):
+        return float("inf")""",
+        """    pass""",
+        """pending""",
+    ),
+    (
+        """v0.12.4 glob 不许命中别人正在写的临时文件""",
+        """pen/retention.py""",
+        """files = sorted(sessionmod.sessions_dir().glob("*.json"))""",
+        """files = sorted(sessionmod.sessions_dir().glob("*.json*"))""",
+        """temp_file_is_not_globbed""",
+    ),
+    (
+        """v0.12.4 读不出来的按长的那档留""",
+        """pen/retention.py""",
+        """    except (OSError, json.JSONDecodeError, ValueError):
+        return config.SESSION_KEEP_DAYS_CHATTED * _DAY""",
+        """    except (OSError, json.JSONDecodeError, ValueError):
+        return config.SESSION_KEEP_DAYS_EMPTY * _DAY""",
+        """unparseable""",
+    ),
+    (
+        """v0.12.4 深挖账本跟着会话一起删""",
+        """pen/retention.py""",
+        """(probe_store.probes_dir() / f"{sid}.json").unlink(missing_ok=True)""",
+        """pass""",
+        """probe_ledger_is_deleted""",
+    ),
+    (
+        """v0.12.4 每小时配额不许被连坐""",
+        """pen/retention.py""",
+        """(probe_store.probes_dir() / f"{sid}.json").unlink(missing_ok=True)""",
+        """probe_store._quota_path("demo").unlink(missing_ok=True)""",
+        """hourly_quota_is_never_touched""",
+    ),
+    (
+        """v0.12.4 启动时要真扫一遍""",
+        """pen/app.py""",
+        """    retention.purge_expired_sessions()
+    yield""",
+        """    yield""",
+        """lifespan_sweeps_on_startup""",
+    ),
+    (
+        """v0.12.4 插件 onload 那一枪要真清理""",
+        """pen/app.py""",
+        """    return retention.purge_expired_sessions()
+
+
+@app.get("/v1/handbooks")""",
+        """    return {"scanned": 0, "removed": 0}
+
+
+@app.get("/v1/handbooks")""",
+        """maintenance_endpoint""",
+    ),
+    (
+        """v0.12.4 读一次会话就要把 mtime 推到现在""",
+        """pen/app.py""",
+        """    retention.touch(session_id)
+    return _public_session(sess)""",
+        """    return _public_session(sess)""",
+        """get_session_pushes_mtime""",
+    ),
+    (
+        """v0.12.4 划词复用同一场也算碰过""",
+        """pen/app.py""",
+        """                retention.touch(sess.session_id)
+""",
+        """""",
+        """reusing_a_session_id_pushes_mtime""",
+    ),
+    (
         "书架的闸与 read_file 的闸同源",
         "pen/tutor.py",
         "    return [REPO_ROOT, *(extra_roots or [])]",

@@ -109,6 +109,12 @@ export const zh = {
   errUnreachable: (detail: string): string =>
     `连不上 sidecar（CORS / 没启动 / 端口不对）：${detail}`,
   errNoSelection: "没读到选区。在笔记里划一段再点「用当前选区」。",
+  // v0.12.4：会话按时间清理之后，读者手里那个 sid 可能已经不在了。
+  // 不给这两句的话，读者的失败模式是「输入框能打字，一发就报错，
+  // 不知道该干什么」——再点还是同一个死 sid。
+  errSessionArchived: "这场对话超过保留期，已归档。已经给你开了新的一场，刚才那句已经重新问出去了。",
+  errSessionArchivedHard: "这场对话超过保留期，已归档，而且新会话没开起来（sidecar 连不上？）。",
+  errApprovalArchived: "这次编辑等太久，所在的会话已过保留期归档了。原文没有被改动。已经给你开了新的一场，重新问一次就行。",
 
   // ── 用量与花销 ──
   // 前两格是**此刻窗口占用**（诊断用），第三格才是**累计花销**。
@@ -224,7 +230,10 @@ export const zh = {
   setSecUsage: "花销",
   setUsageLoading: "正在读账…",
   setUsageDown: "连不上 sidecar，读不到账。",
-  setUsageNote: "从 v0.10.0 起算。状态行上那个数是「这一场」，这里是「一共」。只数 token，不折算成钱。",
+  // v0.12.4 起会话按时间清理，这个数是**现存会话**的合计，会往下掉——
+  // 不写明的话读者会以为账丢了。
+  setUsageNote:
+    "从 v0.10.0 起算。状态行上那个数是「这一场」，这里是「一共」。只数 token，不折算成钱。只统计还在保留期内的会话（空会话留 1 天、聊过的留 7 天），所以这个数会随着旧会话被清理而下降。",
   setUsageTotal: (tok: number, sessions: number): string =>
     `一共 ${n(tok)} token，来自 ${n(sessions)} 场对话`,
   setUsageBreak: (chat: number, probe: number, fold: number): string =>

@@ -1,5 +1,5 @@
 import { Notice, Plugin, setTooltip, type Command, type WorkspaceLeaf } from "obsidian";
-import { makeApi } from "./api";
+import { makeApi, purgeExpired } from "./api";
 import {
   coerceLimits,
   coerceThinking,
@@ -31,6 +31,14 @@ export default class SocratesPenPlugin extends Plugin {
     await this.loadSettings();
     // 必须在注册 ribbon 和命令之前：它们的文案在注册那一刻就定下来了
     setLang(resolveLang(this.settings.lang));
+    // 「每次启动插件的时候都要自动清理一下」的插件那一半。
+    //
+    // 为什么不能只靠 sidecar 的 lifespan：**插件不拉起 sidecar**。它可能已经在
+    // 后台跑了好几天，读者重启 Obsidian 时它的 lifespan 早就跑完了。
+    //
+    // fire-and-forget，而且吞掉所有错：sidecar 没起、端口填错、跨域——
+    // 一样都不该让插件加载失败，也不该弹一个读者此刻做不了任何事的通知。
+    void purgeExpired(this.settings.sidecarUrl).catch(() => {});
     this.registerView(VIEW_TYPE_PEN, (leaf) => new PenView(leaf, this));
     this.addSettingTab(new PenSettingTab(this.app, this));
     this.registerDomEvent(document, "selectionchange", () => this.cachePick());

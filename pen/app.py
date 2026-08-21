@@ -23,7 +23,7 @@ from pen.outline import file_outline
 from pen import libraries, snapshots
 from pen import diagnose as diagnosemod
 from pen import proposals as proposalsmod
-from pen import probe as probemod, probe_store, trajectory
+from pen import probe as probemod, probe_store, retention, trajectory
 from pen import config as configmod
 from pen import meter as metermod
 from pen.config import DEFAULT_HANDBOOK_ID, LLMConfig, llm_public_status, merge_llm
@@ -48,10 +48,13 @@ SEARCH_REPLY = (
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     libraries.ensure_default()
+    # 起进程就扫一遍过期会话。uvicorn 那边 reload=False，所以这里只跑一次。
+    # purge 保证不抛——目录不存在、文件被并发删都不该让 sidecar 起不来。
+    retention.purge_expired_sessions()
     yield
 
 
-app = FastAPI(title="Socratic Pen", version="0.8.6", lifespan=lifespan)
+app = FastAPI(title="Socratic Pen", version="0.12.4", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -311,6 +314,20 @@ def health() -> dict[str, Any]:
     return {"status": "ok", "llm": llm_public_status()}
 
 
+@app.post("/v1/maintenance/purge")
+def maintenance_purge() -> dict[str, Any]:
+    """插件 onload 打这一枪。读者说的是「每次启动插件的时候都要自动清理一下」。
+
+    为什么不能只靠 lifespan：**插件不拉起 sidecar**（`obsidian/src/` 里
+    `child_process` 零命中）。sidecar 可能已经在后台跑了好几天，读者重启
+    Obsidian 时它的 lifespan 早就跑完了。这个端点是那句话唯一的落点。
+
+    幂等、便宜（实测扫 3389 个文件 0.09 秒）、永不抛。插件那边 fire-and-forget，
+    sidecar 没起就静默失败。
+    """
+    return retention.purge_expired_sessions()
+
+
 @app.get("/v1/handbooks")
 def list_handbooks() -> dict[str, Any]:
     libraries.ensure_default()
@@ -429,6 +446,9 @@ def create_session(body: SessionBody, lang: str = Depends(req_lang)) -> dict[str
         try:
             sess = STORE.get(body.session_id)
             if sess.handbook_id == body.handbook_id:
+                # 命中复用也算「碰过」。这条路径不 save，不推 mtime 的话，
+                # 读者天天开面板却不发消息的会话会在第 7 天被静默删掉。
+                retention.touch(sess.session_id)
                 return _public_session(sess)
         except KeyError:
             pass
@@ -442,6 +462,7 @@ def get_session(session_id: str, lang: str = Depends(req_lang)) -> dict[str, Any
         sess = STORE.get(session_id)
     except KeyError as exc:
         raise HTTPException(404, msg("session.unknown", lang)) from exc
+    retention.touch(session_id)
     return _public_session(sess)
 
 

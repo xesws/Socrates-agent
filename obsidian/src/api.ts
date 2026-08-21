@@ -1,3 +1,4 @@
+import { ApiError } from "./apierror";
 import { currentLang } from "./i18n";
 import type { PenSettings } from "./settings";
 import { limitsPayload, llmPayload } from "./settings";
@@ -9,6 +10,8 @@ import type {
   SnapshotStatus,
   UsageTotal,
 } from "./types";
+
+export { ApiError, isGone } from "./apierror";
 
 function joinUrl(base: string, path: string): string {
   return `${base.replace(/\/$/, "")}${path}`;
@@ -33,7 +36,9 @@ async function j<T>(base: string, path: string, init?: RequestInit): Promise<T> 
     } catch {
       /* keep */
     }
-    throw new Error(detail);
+    // 带上状态码。detail 是**本地化**的服务端文案，调用方靠它区分不了
+    // 「会话没了」和「别的 4xx」——那正是 deeppoll 那条死掉的 404 判据的病根。
+    throw new ApiError(res.status, detail);
   }
   return res.json() as Promise<T>;
 }
@@ -41,6 +46,13 @@ async function j<T>(base: string, path: string, init?: RequestInit): Promise<T> 
 /** 跨会话累计。设置页那块统计用它——不走 makeApi 是因为设置页拿不到 view。 */
 export async function usageTotal(baseUrl: string): Promise<UsageTotal> {
   return j<UsageTotal>(baseUrl, "/v1/usage");
+}
+
+/** 插件启动时打一枪，让 sidecar 清掉过期会话。fire-and-forget。 */
+export async function purgeExpired(baseUrl: string): Promise<void> {
+  await j<{ scanned: number; removed: number }>(baseUrl, "/v1/maintenance/purge", {
+    method: "POST",
+  });
 }
 
 export function makeApi(baseUrl: string) {
@@ -143,7 +155,7 @@ async function readSse(
     } catch {
       /* ignore */
     }
-    throw new Error(detail);
+    throw new ApiError(res.status, detail);
   }
   const reader = res.body.getReader();
   const dec = new TextDecoder();

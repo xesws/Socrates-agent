@@ -1,3 +1,4 @@
+import { isGone } from "./apierror";
 import type { DeepInbox, DynChip } from "./types";
 
 /**
@@ -63,8 +64,11 @@ export async function pollDeep(deps: PollDeps): Promise<void> {
       // 所以不需要把「重启了」和「本来就没有」分开处理。
       if (!box.running?.length) return;
     } catch (e) {
-      // 会话没了就别再敲；连不上则重试几次
-      if (String((e as Error)?.message || "").includes("404")) return;
+      // 会话没了就别再敲；连不上则重试几次。
+      // 原来判的是 `message.includes("404")`，而 api.ts 抛的 detail 是**本地化
+      // 文案**（「会话不存在」），永远不含 "404"——这条终止条件早就是死的，
+      // 一直靠 fails >= 3 兜着。会话清理会让这条路径被频繁触发，改成查状态码。
+      if (isGone(e)) return;
       if (++fails >= DEEP_POLL_MAX_FAILS) return;
     }
   }

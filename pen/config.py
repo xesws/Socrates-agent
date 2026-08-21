@@ -37,6 +37,17 @@ NEIGHBORHOOD_CHARS = 4000
 # 成本那头由 CROSS_BOOK_CHARS / CROSS_BOOK_READS 两道闸兜着。
 MAX_TOOL_ROUNDS = 100
 SNAPSHOT_KEEP = 20
+# 会话文件的保留期。实测读者的 .pen/sessions/ 攒到了 3389 个文件 / 10.4 MB，
+# 其中 3371 个是**空的**（只有 system prompt）——每划一次词就建一场，
+# 大部分没等到第一句话就被下一次划词换掉了。
+#
+# 分两档是因为**纯 7 天规则一个都删不掉**：那 3371 个空会话最老的也才几天，
+# `-mtime +7` 零命中。空的那档才是真正管用的那把扫帚。
+#
+# 空的留 1 天而不是 1 小时：读者刚打开一篇新笔记 → 建会话 → 还没提问，
+# 这时它就是「空」的（实测最新的空会话建于 6.9 分钟前）。留足一整天的余量。
+SESSION_KEEP_DAYS_EMPTY = 1
+SESSION_KEEP_DAYS_CHATTED = 7
 
 ENV_BASE_URL = "OPENAI_BASE_URL"
 ENV_API_KEY = "OPENAI_API_KEY"

@@ -85,6 +85,12 @@ export const en: Dict = {
     `Can't reach the sidecar (CORS / not running / wrong port): ${detail}`,
   errNoSelection:
     "Didn't catch a selection. Highlight a passage in the note, then hit “Use selection”.",
+  errSessionArchived:
+    "This conversation passed its retention window and was archived. A fresh one is open and your last question was re-sent.",
+  errSessionArchivedHard:
+    "This conversation passed its retention window and was archived, and a fresh one couldn't be opened (sidecar down?).",
+  errApprovalArchived:
+    "That edit sat too long — its conversation passed the retention window and was archived. The note was not modified. A fresh conversation is open; just ask again.",
 
   usage: (ctx, out) => `context ${k(ctx)} · reply ${k(out)}`,
   spendTurn: (tok) => `turn ${k(tok)}`,
@@ -194,7 +200,7 @@ export const en: Dict = {
   setUsageLoading: "Reading the ledger…",
   setUsageDown: "Can't reach the sidecar, no ledger to read.",
   setUsageNote:
-    "Counted from v0.10.0 onward. The number in the status bar is «this session»; this one is «all of it». Tokens only — not converted to money.",
+    "Counted from v0.10.0 onward. The number in the status bar is «this session»; this one is «all of it». Tokens only — not converted to money. Only sessions still inside the retention window are counted (empty ones last 1 day, ones you actually talked in last 7), so this number goes down as old sessions are swept.",
   setUsageTotal: (tok, sessions) => `${n(tok)} tokens across ${n(sessions)} conversations`,
   setUsageBreak: (chat, probe, fold) =>
     `tutor ${n(chat)} · deep dig ${n(probe)} · write-back ${n(fold)}`,
