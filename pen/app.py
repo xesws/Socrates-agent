@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from pen import gitops
+from pen import library_scan
 from pen import insert as insertmod
 from pen.outline import file_outline
 from pen import libraries, snapshots
@@ -27,7 +28,7 @@ from pen import config as configmod
 from pen.config import DEFAULT_HANDBOOK_ID, LLMConfig, llm_public_status, merge_llm
 from pen.i18n import localized, msg, norm_lang
 from pen.libraries import RegisterError
-from pen.sandbox import SandboxError, assert_handbook_path, parse_vault_root
+from pen.sandbox import SandboxError, assert_handbook_path, parse_vault_root, reading_roots
 from pen.session import FIXED_CHIPS, STORE, chip_label
 from pen.tutor import ProviderError, build_user_packet, propose_fold_md, resume_chat, stream_chat
 
@@ -586,6 +587,22 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
                 intent_extra = probemod.open_intent(lang)
         except Exception:
             pass
+        # 书架。v0.8.1 把「跨教材」整个挂在 probe 上，实时这条线一个字都没有——
+        # 读者直接开口问「另一本讲什么」，师傅手里明明有 read_file、沙箱也放行，
+        # 却不知道有那本书、更不知道路径，只能答「你把路径给我」。
+        # 冷启实测 1.2ms（只读每本前 400 行，最多 8 本），命中 60s 缓存 0.002ms。
+        try:
+            shelf = library_scan.shelf_digest(
+                path,
+                [m.original_path for m in libraries.list_handbooks()],
+                # 必须是 read_file 那把闸，不是全局 handbook_allow_roots()。
+                # 后者宽：当前手册是仓库根那本时它会印出 vault 里的书，
+                # 师傅照着读就撞在「不在本手册允许的根内」上，白跑一次工具。
+                allow_roots=reading_roots(path, libraries.extra_roots_for(sess.handbook_id)),
+                with_paths=True,
+            )
+        except Exception:
+            shelf = ""  # 登记表烂了不能把正常对话带崩
         try:
             packet, anchor = build_user_packet(
                 idx,
@@ -597,6 +614,7 @@ def chat(body: ChatBody, lang: str = Depends(req_lang)) -> StreamingResponse:
                 user_text=body.user_text,
                 asked=[str(c.get("text") or "") for c in sess.last_chips],
                 intent_extra=intent_extra,
+                shelf=shelf,
             )
         except ValueError as exc:
             raise HTTPException(400, localized(exc, lang)) from exc

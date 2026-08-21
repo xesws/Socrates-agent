@@ -485,23 +485,42 @@ def _create(cfg: LLMConfig, messages: list[dict[str, str]]) -> str:
     return (resp.choices[0].message.content or "").strip()
 
 
-def _shelf_paths() -> dict[str, Path]:
+def _reading_roots(job: ProbeJob) -> list[Path]:
+    """probe 读正文时实际认的根。和 anchor_source / _read_excerpts 里那个
+    `job.extra_roots or [config.REPO_ROOT]` 是同一个表达式——书架的可见性
+    必须跟它一致，列出一本读不到的书等于让模型对着空气搭桥。"""
+    from pen.sandbox import reading_roots
+
+    return reading_roots(job.original_path, job.extra_roots or [config.REPO_ROOT])
+
+
+def _shelf_paths(current_path: Path | None = None, roots: list[Path] | None = None) -> dict[str, Path]:
     """书名 → 路径。只收**已登记且落在允许根内**的，跟 shelf_digest 同一道闸——
-    登记表里躺着指向 /private/var/folders 的 pytest 夹具。"""
+    登记表里躺着指向 /private/var/folders 的 pytest 夹具。
+
+    顺序必须和 shelf_digest 一致（同一棵目录树优先、再按 mtime）：同一本书在仓库根
+    和 vault 各有一份、标题一模一样，`setdefault` 是先到先得。书架上列的是 vault
+    那份，反查却给仓库根那份旧副本，模型读到的和它以为在读的不是同一个文件。
+    """
     from pen import libraries
     from pen.config import handbook_allow_roots
-    from pen.library_scan import _digest, _within_allowed
+    from pen.library_scan import _digest, _prefer_nearby, _within_allowed
 
-    roots = handbook_allow_roots()
+    if roots is None:
+        roots = handbook_allow_roots()
+    metas = {m.original_path: m for m in libraries.list_handbooks()}
+    order = _prefer_nearby(list(metas), current_path, roots)
     out: dict[str, Path] = {}
-    for meta in libraries.list_handbooks():
-        p = Path(meta.original_path)
+    for raw in order:
+        p = Path(raw)
         if not p.is_file() or not _within_allowed(p, roots):
             continue
         d = _digest(p)
         if d:
             out.setdefault(str(d["title"]), p)
-        out.setdefault(meta.title, p)
+        meta = metas.get(raw)
+        if meta is not None:
+            out.setdefault(meta.title, p)
     return out
 
 
@@ -526,7 +545,7 @@ def _read_excerpts(job: ProbeJob, reads: Sequence[dict[str, Any]]) -> str:
         if want:
             if shelf is None:
                 try:
-                    shelf = _shelf_paths()
+                    shelf = _shelf_paths(job.original_path, _reading_roots(job))
                 except Exception:
                     shelf = {}
             hit = shelf.get(want) or next(
@@ -671,6 +690,9 @@ def run_probe(job: ProbeJob, probe_id: str) -> None:
                 job.shelf = library_scan.shelf_digest(
                     job.original_path,
                     [m.original_path for m in libraries.list_handbooks()],
+                    # 和 _read_excerpts 实际读取用的根保持一致，否则书架上列着
+                    # 一本 _read_excerpts 读不到的书，模型点名去读就静默落空。
+                    allow_roots=_reading_roots(job),
                 )
             except Exception:
                 job.shelf = ""

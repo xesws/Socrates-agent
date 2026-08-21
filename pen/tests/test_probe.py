@@ -23,6 +23,11 @@ def idx(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config, "PEN_DIR", tmp_path / ".pen")
     monkeypatch.setattr(config, "LIBRARIES_DIR", tmp_path / ".pen" / "libraries")
+    # libraries.LIBRARIES_DIR 是模块 import 时绑定的另一个名字，只 patch config
+    # 那份等于没 patch——register 照样往真 .pen/libraries 写。实测：真实登记表
+    # 里的 probe-fx / other-book / shelf-in / shelf-out 全是 pytest 留下的死记录，
+    # 每次实时对话扫书架都要把它们遍历一遍。
+    monkeypatch.setattr(libraries, "LIBRARIES_DIR", tmp_path / ".pen" / "libraries")
     lines = ["# 封面", "", "# Level 0 — 终端", "", "## 第三拍 · 出身：Bash", ""]
     lines += ["Level 0 正文，含 is_allowed 这个名字。"] * 20
     lines += ["", "# Level 6 — 双模式", "", "## 第三拍 · 出身：Claude Code 的四档权限", ""]
@@ -463,6 +468,7 @@ def test_shelf_paths_excludes_registrations_outside_allowed_roots(tmp_path, monk
     """登记表里躺着指向 /private/var/folders 的 pytest 夹具，不能让模型读到。"""
     from pen import libraries
 
+    monkeypatch.setattr(libraries, "LIBRARIES_DIR", tmp_path / ".pen" / "libraries")
     inside = tmp_path / "vault"
     inside.mkdir()
     (inside / "ok.md").write_text("# 允许根内的书\n", encoding="utf-8")
@@ -519,3 +525,76 @@ def test_read_excerpts_honours_end_line(idx, tmp_path, monkeypatch) -> None:
     # 仍受 PROBE_READ_LINES 封顶
     long = probe._read_excerpts(job, [{"start_line": 1, "end_line": 9999}])
     assert len(long.strip().splitlines()) <= config.PROBE_READ_LINES
+
+
+def test_shelf_paths_and_digest_point_at_the_same_copy(tmp_path, monkeypatch) -> None:
+    """同一本书在仓库根和 vault 各有一份、标题一模一样。书架列的是 vault 那份，
+    反查（setdefault 先到先得）却给仓库根那份旧副本——模型读到的和它以为在读的
+    不是同一个文件，而且它读的那份还是过期的。"""
+    from pen import libraries, library_scan
+
+    lib = tmp_path / ".pen" / "libraries"
+    lib.mkdir(parents=True)
+    monkeypatch.setattr(libraries, "LIBRARIES_DIR", lib)
+    library_scan._CACHE.clear()
+
+    repo = tmp_path / "repo"
+    vault = tmp_path / "vault"
+    repo.mkdir()
+    vault.mkdir()
+    body = "# 通关手册\n\n## 开篇\n"
+    stale = repo / "handbook.md"
+    fresh = vault / "handbook.md"
+    stale.write_text(body, encoding="utf-8")
+    fresh.write_text(body, encoding="utf-8")
+    import os
+
+    os.utime(stale, (1_700_000_000, 1_700_000_000))
+    os.utime(fresh, (1_800_000_000, 1_800_000_000))
+    cur = vault / "cur.md"
+    cur.write_text("# 当前这本\n", encoding="utf-8")
+    libraries.register(str(stale), "copy-stale", extra_roots=[tmp_path])
+    libraries.register(str(fresh), "copy-fresh", extra_roots=[tmp_path])
+    monkeypatch.setattr("pen.config.handbook_allow_roots", lambda *a, **k: [tmp_path])
+
+    digest = library_scan.shelf_digest(
+        cur, [str(stale), str(fresh)], allow_roots=[tmp_path], with_paths=True
+    )
+    got = probe._shelf_paths(cur)["通关手册"]
+    assert str(fresh) in digest, f"书架列的不是 vault 那份：{digest}"
+    assert got == fresh, f"反查给的是另一个副本：{got} ≠ {fresh}"
+
+
+def test_probe_shelf_matches_what_read_excerpts_can_actually_read(tmp_path, monkeypatch) -> None:
+    """probe 那条线同一个病：书架用全局闸列书，_read_excerpts 用
+    `job.extra_roots or [REPO_ROOT]` 去读。列了一本读不到的，模型点名去读就
+    静默落空——它以为引了别的教材，实际什么都没读到，还照着书名编。"""
+    from pen import config, libraries, library_scan, probe
+
+    lib = tmp_path / ".pen" / "libraries"
+    lib.mkdir(parents=True)
+    monkeypatch.setattr(libraries, "LIBRARIES_DIR", lib)
+    library_scan._CACHE.clear()
+
+    repo = tmp_path / "repo"
+    vault = tmp_path / "vault"
+    repo.mkdir()
+    vault.mkdir()
+    cur = repo / "handbook.md"
+    cur.write_text("# 手上这本\n", encoding="utf-8")
+    far = vault / "other.md"
+    far.write_text("# 够不着的那本\n\n## 第一章\n", encoding="utf-8")
+    libraries.register(str(far), "far-book", extra_roots=[tmp_path])
+    monkeypatch.setattr(config, "REPO_ROOT", repo)
+
+    job = probe.ProbeJob(
+        session_id="s", handbook_id="h", original_path=cur, anchor={}, atom="a",
+        chip="free", user_text="", reply="", born_round=1, lang="zh",
+        cfg=config.LLMConfig(base_url="", api_key="", model="m", key_source="t"),
+        extra_roots=[],
+    )
+    roots = probe._reading_roots(job)
+    assert roots == [repo.resolve()], roots
+    digest = library_scan.shelf_digest(cur, [str(far)], allow_roots=roots)
+    assert digest == "", f"书架列了读不到的书：{digest}"
+    assert "够不着的那本" not in probe._shelf_paths(cur, roots)

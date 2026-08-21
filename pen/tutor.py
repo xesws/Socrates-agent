@@ -21,6 +21,11 @@ MAX_TOOL_ROUNDS = 50
 # 全书目录注进 packet 的字符预算。实测那本 13083 行的手册全量 87 条只要 3647 字符。
 TOC_CHARS = 4500
 ASKED_CHARS = 700
+# 书架：MAX_FILES=8 本，with_paths 是**两行一组**（书名+path / 大纲）。
+# 1500 是按旧的单行格式估的，双行下 8 本长标题 + iCloud 那种深路径就会被
+# 静默砍掉最后几本——读者的书架上凭空少两本书，还看不出为什么。
+# 按 8 本 × 2 行 × 200 字符的最坏情况给足。
+SHELF_CHARS = 3200
 FORCE_ANSWER = (
     "工具次数用完了。根据邻域和你已经读到的内容，直接用自然语言回答读者。"
     "不要再调用任何工具。"
@@ -59,6 +64,7 @@ def build_user_packet(
     user_text: str,
     asked: Sequence[str] = (),
     intent_extra: str = "",
+    shelf: str = "",
 ) -> tuple[str, dict[str, Any]]:
     section = idx.locate(start_line)
     nb = neighborhood(original_path, section, (start_line, end_line))
@@ -71,6 +77,20 @@ def build_user_packet(
     # 按字符预算截，不按条数。以前是 toc_lines[:80]，而这本手册有 87 条——
     # 被砍掉的正好是尾部的 Capstone 和附录，跨关的问题就是这么问不出来的。
     toc = _budget_lines(toc_lines, TOC_CHARS)
+    # 只有一本书时 shelf 是空串，整段消失——不写「（无）」。
+    # 写「（无）」会让模型以为我们替它确认过没有别的书；整段不在时，
+    # 它答「另一本我没读到」是对的，那本来就是实情。
+    # 预算截完可能一行不剩（首行就超预算）。段头还在、条目却是空的，等于向模型
+    # 断言「有别的教材」然后一本都不给——它只能凭空编。宁可整段不出现。
+    shelf_rows = _budget_lines(shelf.splitlines(), SHELF_CHARS).strip()
+    shelf_block = (
+        "[工作目录里的其他教材]\n"
+        "（下面只是每本前 400 行扒出来的标题，不是正文。要说它讲了什么，\n"
+        "  先用 read_file 按 path 读，读了再说。）\n"
+        f"{shelf_rows}\n\n"
+        if shelf_rows
+        else ""
+    )
     packet = f"""[来源]
 handbook_path: {original_path}
 level: {section.level}
@@ -79,7 +99,7 @@ q_title: {section.q_title or "—"}
 kind: {section.kind}
 lines: {start_line}-{end_line}
 
-[全书目录（不要整本背诵）]
+{shelf_block}[全书目录（不要整本背诵）]
 {toc}
 
 [框选]

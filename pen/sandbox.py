@@ -101,6 +101,23 @@ def assert_write_target(original_path: Path, target: str | Path) -> Path:
     return got
 
 
+def reading_roots(
+    original_path: Path,
+    extra_roots: list[Path] | None = None,
+) -> list[Path]:
+    """read_file 实际认的根。**书架的可见性必须用这个**，不能用全局的
+    handbook_allow_roots()——那一套宽得多。
+
+    印一条师傅读不到的路径比不印更糟：它会照着去读，撞在「不在本手册允许的根内」
+    上，读者看到的是一次白跑的工具调用加一句道歉。实测过：当前手册是仓库根那本
+    swe-agent-v2（allow_root 为 None）时，全局根含 PEN_ALLOW_ROOTS 里的 vault，
+    书架就会印出 vault 里那本，而它的沙箱根只有仓库根。
+    """
+    if extra_roots is not None:
+        return [Path(r) for r in extra_roots]
+    return [original_path.expanduser().resolve().parent]
+
+
 def assert_readable(
     original_path: Path,
     target: str | Path,
@@ -117,8 +134,8 @@ def assert_readable(
         raise SandboxError(f"拒绝读取受保护路径：{got}")
     if got == allowed_file:
         return got
-    roots = extra_roots if extra_roots is not None else [allowed_file.parent]
-    for root in roots:
+    # 和 reading_roots 同源，别在这里另写一遍——两套根漂移正是上面那个 bug。
+    for root in reading_roots(original_path, extra_roots):
         root_r = root.expanduser().resolve()
         if got == root_r or root_r in got.parents:
             return got

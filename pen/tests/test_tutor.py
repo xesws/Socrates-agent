@@ -253,3 +253,60 @@ def test_build_user_packet_keeps_whole_toc_and_lists_asked() -> None:
     assert len([l for l in toc_seg.strip().splitlines() if l.strip()]) == len(idx.toc)
     assert "附录" in toc_seg
     assert "上一轮抛过的那个问题？" in packet
+
+
+def test_packet_omits_the_shelf_block_when_there_is_only_one_book() -> None:
+    """写「（无）」会让模型以为我们替它确认过没有别的书。整段不在时，
+    它答「另一本我没读到」是对的——那本来就是实情。"""
+    from pathlib import Path
+
+    from pen import libraries
+    from pen.tutor import build_user_packet
+
+    idx = libraries.load_index("swe-agent-v2")
+    packet, _ = build_user_packet(
+        idx, Path(idx.original_path), selected_text="x",
+        start_line=544, end_line=545, chip="free", user_text="",
+    )
+    assert "[工作目录里的其他教材]" not in packet
+
+
+def test_packet_carries_the_shelf_with_paths_so_the_tutor_can_read_file() -> None:
+    """v0.8.1 把跨教材整个挂在 probe 上，实时这条线一个字都没有。
+    师傅手里有 read_file、沙箱也放行，却不知道有那本书、更不知道路径。"""
+    from pathlib import Path
+
+    from pen import libraries
+    from pen.tutor import build_user_packet
+
+    idx = libraries.load_index("swe-agent-v2")
+    shelf = "- 《另一本》  path: /tmp/vault/other.md\n  大纲：开篇 / 第一章"
+    packet, _ = build_user_packet(
+        idx, Path(idx.original_path), selected_text="x",
+        start_line=544, end_line=545, chip="free",
+        user_text="另一本讲什么", shelf=shelf,
+    )
+    assert "[工作目录里的其他教材]" in packet
+    assert "/tmp/vault/other.md" in packet, "光给书名，师傅只会去猜文件名"
+    assert "read_file" in packet, "得明说怎么读，否则它照着大纲吹"
+    # 书架排在目录之前：先说手上这本、库里还有哪些，再展开当前这本的目录。
+    # 插在目录和框选之间会污染 test_build_user_packet_keeps_whole_toc 的切片。
+    assert packet.index("[工作目录里的其他教材]") < packet.index("[全书目录（不要整本背诵）]")
+
+
+def test_packet_drops_the_shelf_block_when_the_budget_eats_every_row() -> None:
+    """预算截完一行不剩时，段头还在、条目是空的——等于向模型断言「有别的教材」
+    然后一本都不给，它只能凭空编。宁可整段不出现。"""
+    from pathlib import Path
+
+    from pen import libraries, tutor
+    from pen.tutor import build_user_packet
+
+    idx = libraries.load_index("swe-agent-v2")
+    huge = "- 《" + "长" * 4000 + "》  path: /x.md"
+    packet, _ = build_user_packet(
+        idx, Path(idx.original_path), selected_text="x",
+        start_line=544, end_line=545, chip="free", user_text="", shelf=huge,
+    )
+    assert len(huge) > tutor.SHELF_CHARS
+    assert "[工作目录里的其他教材]" not in packet
