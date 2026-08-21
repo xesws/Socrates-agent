@@ -45,6 +45,7 @@ type Els = {
   panel: HTMLElement;
   quote: HTMLElement;
   chips: HTMLElement;
+  bar: HTMLElement;
   status: HTMLElement;
   input: HTMLInputElement;
   ask: HTMLButtonElement;
@@ -257,6 +258,11 @@ export class PenView extends ItemView {
     const dock = root.createDiv({ cls: "sp-dock" });
     const quote = dock.createDiv({ cls: "sp-quote is-off" });
     const chips = dock.createDiv({ cls: "sp-chips" });
+    // 忙的时候横在状态行上面的一条进度条。**不确定型**——我们不知道模型
+    // 还要写多久，假装知道就是在骗人。它只回答一件事：还在动。
+    // 真实的进度数字在下面那行状态行里（推理字数是真从流里数出来的）。
+    const bar = dock.createDiv({ cls: "sp-bar is-off" });
+    bar.createDiv({ cls: "sp-bar-fill" });
     const status = dock.createDiv({ cls: "sp-status is-off" });
     const form = dock.createDiv({ cls: "sp-form" });
     const pick = form.createEl("button", { cls: "sp-pick", text: t().btnUseSelection });
@@ -265,7 +271,7 @@ export class PenView extends ItemView {
 
     this.els = {
       dot, brandSub, alert, log, panel,
-      quote, chips, status, input, ask, pick, fresh, undo, redo,
+      quote, chips, bar, status, input, ask, pick, fresh, undo, redo,
     };
 
     // 事件只绑一次。pick 用 bindKeepFocus：pointerdown 阶段就取选区，
@@ -440,6 +446,9 @@ export class PenView extends ItemView {
     const e = this.els;
     if (!e) return;
     const blocked = this.busy || Boolean(this.pending);
+    // 忙就亮。以前那十几秒里读者唯一能看到的是底栏一行 10px 小字，
+    // 等于没有——这条横在整条底座上，扫一眼就知道它还在动。
+    e.bar.classList.toggle("is-off", !this.busy);
     e.input.disabled = blocked;
     e.ask.disabled = blocked;
     e.pick.disabled = this.busy;

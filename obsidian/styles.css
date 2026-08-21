@@ -700,7 +700,42 @@
   animation: sp-line-in 320ms ease-out 800ms forwards;
 }
 
+/* 忙的时候横在状态行上面的进度条。**不确定型**：我们不知道模型还要写多久，
+   画一条会走到头的假进度就是在骗人。它只回答一件事——还在动。
+   真实的数字在下面那行状态行里（推理字数是真从流里数出来的）。 */
+.socrates-pen .sp-bar {
+  height: 2px;
+  margin: var(--size-2-1) 0;
+  border-radius: 1px;
+  background: var(--background-modifier-border);
+  overflow: hidden;
+}
+
+.socrates-pen .sp-bar-fill {
+  width: 34%;
+  height: 100%;
+  border-radius: 1px;
+  background: var(--interactive-accent);
+  animation: sp-bar-shuttle 1.4s ease-in-out infinite;
+}
+
+@keyframes sp-bar-shuttle {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  /* 关掉穿梭，但**保留这条**：它是「还在动」唯一的视觉信号，
+     整条填满比一片空白诚实。 */
+  .socrates-pen .sp-bar-fill {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
   .socrates-pen .sp-chips button.is-deep {
     animation: none;
   }

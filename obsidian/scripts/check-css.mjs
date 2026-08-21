@@ -55,6 +55,19 @@ check(
   uncovered.join(" "),
 );
 
+// v0.12.2 忙碌进度条：它是那十几秒里读者唯一看得见的东西
+// 只查 reduced-motion **之前**那段：整块删掉之后，reduce 里那条关动画的规则
+// 还会留着，光用 includes 查全文就是个空转看门狗（第一版就是，当场被抓）。
+const beforeReduce = css.slice(0, css.indexOf("@media (prefers-reduced-motion: reduce)"));
+check("进度条的主规则还在", /\.sp-bar-fill\s*\{[^}]*animation:[^}]*sp-bar-shuttle/.test(beforeReduce));
+check("进度条的槽还在", /\.sp-bar\s*\{/.test(beforeReduce));
+check(
+  "减少动态效果时不许把它整条藏掉（整条填满比一片空白诚实）",
+  /\.sp-bar-fill\s*\{[^}]*animation:\s*none[^}]*width:\s*100%/.test(
+    css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)")),
+  ),
+);
+
 let bad = 0;
 for (const [name, pass, extra] of checks) {
   if (!pass) bad++;
