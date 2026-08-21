@@ -377,6 +377,20 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
         "propose_persists_and_returns",
     ),
     (
+        "v0.11.1 边说边做的正文不许被吞",
+        "pen/tutor.py",
+        '                yield {"type": "token", "text": said[i : i + 48]}',
+        "                pass",
+        "narration_alongside",
+    ),
+    (
+        "v0.11.1 同批 read+edit 仍然要拦（那时还没看到原文）",
+        "pen/agent/permissions.py",
+        "    if got not in allowed:\n        return READ_FIRST_MSG",
+        "    if False:\n        return READ_FIRST_MSG",
+        "same_batch_read_and_edit",
+    ),
+    (
         "书架的闸与 read_file 的闸同源",
         "pen/tutor.py",
         "    return [REPO_ROOT, *(extra_roots or [])]",

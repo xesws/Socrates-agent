@@ -1089,3 +1089,129 @@ def test_the_loop_top_check_only_bites_on_a_resumed_turn(monkeypatch, tmp_path: 
     )
     assert seen, "但仍要打收口那一枪，给读者一个答案"
     assert "tools" not in seen[-1]
+
+
+# ── v0.11.1 写回那条线的三处 ────────────────────────────────────
+
+
+def test_narration_alongside_a_tool_call_reaches_the_reader(monkeypatch, tmp_path: Path) -> None:
+    """模型常常边说边动手：一条消息里既有正文又有 tool_calls。
+
+    以前这里只看 tool_calls，那段正文一个字都到不了读者眼前——实测落盘会话
+    里 25 条带工具调用的回复有 14 条同时带正文，包括「收到，批准了，这轮直接
+    动手」这种。读者于是只看到审批弹窗凭空冒出来，觉得前后顺序错乱。
+    """
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n唯一段。\n", encoding="utf-8")
+    _patch_script(
+        monkeypatch,
+        [
+            _Msg(
+                content="我先读一下文件，看准行号再动手。",
+                tool_calls=[_Tc("c1", "read_file", {"path": str(book), "offset": 1, "limit": 20})],
+            ),
+            _Msg(content="读完了，就这样。" * 20),
+        ],
+    )
+    sess = PenSession(session_id="n" * 32, handbook_id="demo")
+    events = list(
+        stream_chat(sess, book, "packet", llm=_cfg(), extra_roots=[tmp_path],
+                    allow_env_fallback=False)
+    )
+    said = "".join(str(e.get("text") or "") for e in events if e["type"] == "token")
+    assert "我先读一下文件" in said, "边说边做的那段话不能被吞掉"
+    assert "读完了" in said, "收尾那段也要在"
+    # 但它不能污染 last_assistant——那是写回和深挖的输入
+    assert "我先读一下文件" not in (sess.last_assistant or ""), (
+        "中途那句不能进 last_assistant，否则写回会拿它当解答"
+    )
+
+
+def test_midturn_narration_never_leaks_the_chips_block(monkeypatch, tmp_path: Path) -> None:
+    """芯片块是收尾才该出现的东西，中途漏出来就是一段生注释。"""
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n唯一段。\n", encoding="utf-8")
+    _patch_script(
+        monkeypatch,
+        [
+            _Msg(
+                content="先读文件。\n<!--pen:chips\n- 漏出来的追问？\n-->",
+                tool_calls=[_Tc("c1", "read_file", {"path": str(book), "offset": 1, "limit": 20})],
+            ),
+            _Msg(content="读完了，就这样。" * 20),
+        ],
+    )
+    sess = PenSession(session_id="c" * 32, handbook_id="demo")
+    events = list(
+        stream_chat(sess, book, "packet", llm=_cfg(), extra_roots=[tmp_path],
+                    allow_env_fallback=False)
+    )
+    said = "".join(str(e.get("text") or "") for e in events if e["type"] == "token")
+    assert "先读文件。" in said
+    assert "pen:chips" not in said and "漏出来的追问" not in said
+
+
+def test_read_then_edit_in_one_turn_is_allowed(monkeypatch, tmp_path: Path) -> None:
+    """要求从来只是「先 read_file，拿到返回再 edit」——不是「下一轮再单独调用」。
+
+    读完之后**同一轮**接着 edit 必须走得通，否则读者要多说一句话、多花一轮钱。
+    """
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n第二段。\n", encoding="utf-8")
+    _patch_script(
+        monkeypatch,
+        [
+            _Msg(tool_calls=[_Tc("r1", "read_file", {"path": str(book), "offset": 1, "limit": 20})]),
+            _Msg(tool_calls=[_Tc("e1", "edit_file", {"path": str(book),
+                                                     "old_string": "第二段。",
+                                                     "new_string": "改过。"})]),
+        ],
+    )
+    sess = PenSession(session_id="o" * 32, handbook_id="demo")
+    events = list(
+        stream_chat(sess, book, "packet", llm=_cfg(), extra_roots=[tmp_path],
+                    allow_env_fallback=False)
+    )
+    assert any(e["type"] == "approval" for e in events), (
+        "同一轮里读完接着改，应该直接弹审批，而不是停下来等读者"
+    )
+    reads = [e for e in events if e["type"] == "tool" and e["name"] == "read_file"]
+    assert reads and reads[0]["ok"], "读那一步要成功"
+
+
+def test_the_prompts_no_longer_say_next_round() -> None:
+    """「下一轮再单独 edit_file」是我们自己写进去的一句错话——约束只是
+    「拿到 read 的返回之后再改」。模型逐字照做，回「下一轮我就动手」就停了。"""
+    from pen.agent.registry import schemas
+    from pen.session import SYSTEM_PROMPT
+
+    assert "下一轮" not in SYSTEM_PROMPT
+    edit = next(t for t in schemas() if t["function"]["name"] == "edit_file")
+    assert "下一轮" not in edit["function"]["description"]
+    # 但「不能同批」这条得留着：同批发出时模型还没看到原文，old_string 只能靠猜
+    assert "同一批" in edit["function"]["description"]
+
+
+def test_same_batch_read_and_edit_is_still_blocked(monkeypatch, tmp_path: Path) -> None:
+    """放宽的是「不用等下一轮」，不是「可以同批」。同批发出时模型还没看到
+    原文，old_string 只能靠猜。"""
+    book = tmp_path / "note.md"
+    book.write_text("# 题\n\n第二段。\n", encoding="utf-8")
+    _patch_script(
+        monkeypatch,
+        [
+            _Msg(tool_calls=[
+                _Tc("r1", "read_file", {"path": str(book), "offset": 1, "limit": 20}),
+                _Tc("e1", "edit_file", {"path": str(book), "old_string": "第二段。",
+                                        "new_string": "改过。"}),
+            ]),
+            _Msg(content="那我分两步来。" * 20),
+        ],
+    )
+    sess = PenSession(session_id="b" * 32, handbook_id="demo")
+    events = list(
+        stream_chat(sess, book, "packet", llm=_cfg(), extra_roots=[tmp_path],
+                    allow_env_fallback=False)
+    )
+    assert not any(e["type"] == "approval" for e in events), "同批里的 edit 该被挡下"
+    assert "第二段。" in book.read_text(encoding="utf-8"), "原文不能被动"

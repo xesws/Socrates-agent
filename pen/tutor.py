@@ -436,6 +436,21 @@ def _agent_loop(
                 )
             capped = True
             break
+        # 模型常常边说边动手：一条消息里既有正文又有 tool_calls。以前这里
+        # 只看 tool_calls，那段正文**一个字都不会到读者眼前**——实测落盘会话里
+        # 25 条带工具调用的回复有 14 条同时带正文，包括「收到，批准了，这轮直接
+        # 动手」这种。读者于是只看到审批弹窗凭空冒出来，觉得前后顺序错乱。
+        said = (reply.content or "").strip()
+        if said:
+            # 芯片块是收尾时才该出现的东西，中途漏出来就是一段生注释。
+            said = said.split("<!--pen:chips", 1)[0].strip()
+        if said:
+            # 只吐字，不走 _finish_text：那里会解析追问芯片、还会覆盖
+            # last_assistant，而 last_assistant 是写回和深挖的输入，
+            # 中途改掉它就等于拿一句「我先读一下文件」当解答去写回。
+            yield {"type": "status", "phase": "writing", "text": "在写…"}
+            for i in range(0, len(said), 48):
+                yield {"type": "token", "text": said[i : i + 48]}
         yield {"type": "status", "phase": "reading", "text": "在翻手册…"}
         # 跨书那第三道闸要看「这一轮已经烧了多少」，每轮刷新一次。
         ctx["turn_tokens"] = metermod.total(session.turn_spend)
