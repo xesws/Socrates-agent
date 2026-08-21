@@ -8,7 +8,12 @@ import type { DeepInbox, DynChip } from "./types";
  * 而且这时 busy 早已是 false，界面不受影响，所以宁可等久一点。
  */
 export const DEEP_POLL_MS = 3000;
-export const DEEP_POLL_BUDGET_MS = 300_000;
+// 跨书探索要两轮调用 + 读一段别的书的正文，实测一次 351 秒——超过 300 秒的话
+// 读者当轮就看不到结果了（题不会丢，会在下一轮对话搭便车下发，但「实时抛出」
+// 那半条设计就白搭了）。轮询本身是本地 HTTP、busy 早已 false，界面不受影响；
+// 而白跑一次真金白银的 LLM 调用却看不见，才是真浪费。
+// 正常情况下 running 一空就停，跑不满这个预算。
+export const DEEP_POLL_BUDGET_MS = 480_000;
 export const DEEP_POLL_MAX_FAILS = 3;
 
 export type PollDeps = {

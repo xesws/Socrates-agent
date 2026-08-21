@@ -246,7 +246,12 @@ def resolve_anchor(
         sec = idx.locate(start)
     except ValueError:
         return None
-    claimed = str(a.get("level") or "").strip()
+    # 模型常把 level 写成「封面 / 概念对比：一类 vs 实现」——它抄的是 prompt 里
+    # 「位置：封面 / — / —」那个格式（level / beat / q_title）。合法 level 只是
+    # 第一段。真跑撞到过：一条完全正确的跨书 bridge 题，就因为本册那个锚多写了
+    # beat 被整条毙掉，链路白走一趟 351 秒。
+    # level 的作用是交叉验证行号，不是考格式。取第一段来比。
+    claimed = str(a.get("level") or "").split("/")[0].strip()
     if claimed and claimed != sec.level:
         return None
     return Anchored(book="", section=sec, start=start, end=end)
@@ -487,6 +492,43 @@ class ProbeJob:
     history: list[dict[str, str]] = field(default_factory=list)
 
 
+_CJK_WORD = re.compile(r"[\u3400-\u9fff]")
+_TITLE_SPLIT = re.compile(r"[\s·:：/、,，(（)）\[\]【】《》~—\-—]+")
+
+
+def books_mentioned(shelf: str, *texts: str) -> list[str]:
+    """读者或师傅刚才有没有点名书架上的某本书。
+
+    prompt 里泛泛地说「可以读别的教材」没用——两次真跑模型都回 `need_read: []`，
+    照着书架大纲就出题了。这个项目一贯的做法是**确定性信号优先于模型自觉**：
+    读者真提到了那本书，就直接把这件事摆到它面前，别指望它自己想起来。
+
+    匹配从书名里切出的**长词**（中文 ≥4 字 / 拉丁 ≥6 字）。短词会误报——
+    「教材」「开篇」「Agent」这种谁都沾边，一误报就是白花一次跨书读取。
+    """
+    hay = "\n".join(t for t in texts if t)
+    if not hay or not shelf:
+        return []
+    out: list[str] = []
+    for line in shelf.splitlines():
+        line = line.strip()
+        if not line.startswith("- 《"):
+            continue
+        title = line[3:].split("》", 1)[0]
+        if not title:
+            continue
+        for w in _TITLE_SPLIT.split(title):
+            w = w.strip()
+            if not w:
+                continue
+            cjk = len(_CJK_WORD.findall(w))
+            long_enough = (len(w) >= 4) if cjk else (len(w) >= 6)
+            if long_enough and w in hay:
+                out.append(title)
+                break
+    return out
+
+
 def build_user_message(job: ProbeJob, excerpt: str = "") -> str:
     a = job.anchor
     parts = [
@@ -513,6 +555,15 @@ def build_user_message(job: ProbeJob, excerpt: str = "") -> str:
     if job.shelf:
         parts += ["", "[工作目录里还有这些教材]",
                   "（只给标题和大纲。想引用就明说是哪一本，别假装读过正文）", job.shelf]
+        hits = books_mentioned(job.shelf, job.user_text, job.reply)
+        if hits and not excerpt:
+            parts += [
+                "",
+                "[注意：刚才的对话点到了书架上的书]",
+                "、".join(f"《{h}》" for h in hits[:3]),
+                "读者已经在拿它跟手上这本比了。要拿它出题就**先 need_read 去读那几行**，",
+                "光看标题和大纲下笔等于替读者猜——猜错了他当场就能翻出来对质。",
+            ]
     if job.asked:
         parts += ["", "[已经问过的，别撞车]"] + [f"- {x}" for x in job.asked[:20]]
     if excerpt:

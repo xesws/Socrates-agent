@@ -155,6 +155,27 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
         "readers_own_tree",
     ),
     (
+        "书名匹配要克制：短词会误报",
+        "pen/probe.py",
+        "            long_enough = (len(w) >= 4) if cjk else (len(w) >= 6)",
+        "            long_enough = True",
+        "only_fires_when",
+    ),
+    (
+        "读者点名了书架上的书就直接告诉模型",
+        "pen/probe.py",
+        "        hits = books_mentioned(job.shelf, job.user_text, job.reply)",
+        "        hits = []",
+        "shelf_hint",
+    ),
+    (
+        "level 只比第一段（模型会把 beat 也写进去）",
+        "pen/probe.py",
+        '''    claimed = str(a.get("level") or "").split("/")[0].strip()''',
+        '''    claimed = str(a.get("level") or "").strip()''',
+        "beat_appended",
+    ),
+    (
         "书架的闸与 read_file 的闸同源",
         "pen/tutor.py",
         "    return [REPO_ROOT, *(extra_roots or [])]",

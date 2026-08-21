@@ -965,3 +965,66 @@ def test_an_anchor_without_book_cannot_borrow_the_other_books_source(tmp_path, m
     item2["anchors"] = [{"level": "Level 0", "start_line": 3, "end_line": 5},
                         {"book": book, "start_line": 6, "end_line": 8}]
     assert probe._harvest([item2], job, idx, excerpt, spans), "老实填了 book 反而被毙"
+
+
+def test_shelf_hint_only_fires_when_the_book_is_actually_named() -> None:
+    """prompt 里泛泛地说「可以读别的教材」没用——两次真跑模型都回 need_read: []，
+    照着书架大纲就出题了。确定性信号优先于模型自觉：读者真点了名就直接说。
+
+    但匹配必须克制：「教材」「开篇」「Agent」这种短词谁都沾边，一误报就是白花
+    一次跨书读取（读者选的是每小时 40 次的预算，不是无限）。"""
+    from pen import probe
+
+    shelf = (
+        "- 《手搓 SWE Agent 通关手册 v2 · 教材级（全册：开篇 + Level 0~6 + Capstone）》"
+        "（共 13083 行）：手搓 SWE Agent 通关手册 v2 / 开篇：你即将带一个实习生"
+    )
+    assert probe.books_mentioned(shelf, "这本跟那本《通关手册》什么关系？")
+    assert probe.books_mentioned(shelf, "", "Capstone 那一关要交什么？")
+    for noise in ("shell 和 Bash 有什么区别", "这教材写得挺好", "开篇讲了什么",
+                  "Agent 是怎么跑起来的", ""):
+        assert not probe.books_mentioned(shelf, noise), f"误报了：{noise!r}"
+    assert not probe.books_mentioned("", "《通关手册》"), "没有书架就不该提示"
+
+
+def test_shelf_hint_is_dropped_once_the_excerpt_is_in_hand() -> None:
+    """第二轮已经把正文读回来了，再喊「快去读」就是噪音。"""
+    from pathlib import Path
+
+    from pen import config, probe
+
+    job = probe.ProbeJob(
+        session_id="s", handbook_id="h", original_path=Path("/x.md"),
+        anchor={"level": "封面", "start_line": 1, "end_line": 2}, atom="a", chip="free",
+        user_text="那本《通关手册》怎么讲的？", reply="", born_round=1, lang="zh",
+        cfg=config.LLMConfig(base_url="", api_key="", model="m", key_source="t"),
+        shelf="- 《手搓 SWE Agent 通关手册 v2 · 教材级》（共 13083 行）：开篇",
+    )
+    assert "点到了书架上的书" in probe.build_user_message(job)
+    assert "点到了书架上的书" not in probe.build_user_message(job, excerpt="205\t正文")
+
+
+def test_level_with_beat_appended_is_still_a_valid_anchor(tmp_path, monkeypatch) -> None:
+    """模型常把 level 写成「封面 / 概念对比：一类 vs 实现」——它抄的是 prompt 里
+    「位置：level / beat / q_title」那个格式。真跑撞到过：一条模型自己产出的、
+    完全正确的跨书 bridge 题，就因为本册那个锚多写了 beat 被整条毙掉，
+    351 秒的探索白走一趟。level 是用来交叉验证行号的，不是考格式。"""
+    from pen import probe
+
+    job, idx, shelf, book = _cross_fixture(tmp_path, monkeypatch)
+    _, spans = probe._read_excerpts(job, [{"book": book, "start_line": 4, "end_line": 20}])
+    sec = idx.locate(3)
+    for lv in (sec.level, f"{sec.level} / 第三拍 · 出身：真实框架里的 Bash", f"{sec.level}/随便什么"):
+        got = probe.validate_slots(
+            {"axis": "altitude", "grounding": "book",
+             "anchors": [{"level": lv, "start_line": 3, "end_line": 5}]},
+            idx, shelf=shelf, current=job.original_path, read_spans=spans,
+        )
+        assert got == (True, ""), f"level={lv!r} 被毙了：{got}"
+    # 但真写错关号还是要拒——宽容的是格式，不是内容
+    bad = probe.validate_slots(
+        {"axis": "altitude", "grounding": "book",
+         "anchors": [{"level": "Level 9 / 不存在", "start_line": 3, "end_line": 5}]},
+        idx, shelf=shelf, current=job.original_path, read_spans=spans,
+    )
+    assert bad == (False, "anchor-invalid"), bad
