@@ -50,7 +50,10 @@ const LIMIT_TEXT_EN: Record<string, [string, string]> = {
     "Raise it and a dig may outlast the turn you're on; questions aren't lost, they ride along on the next round.",
   ],
   probe_min_reply_chars: ["Minimum reply length to dig", "Short replies are usually a single counter-question — nothing to dig into."],
-  probe_concurrency: ["Concurrent digs", "This is per sidecar, not per book."],
+  probe_concurrency: [
+    "Concurrent digs",
+    "Per sidecar, not per book. **With several vaults open the knob points the wrong way**: the test is «digs in flight globally < your number», so turning it down makes it easier for another vault to crowd you out. To spend less, use the hourly count or the token caps above.",
+  ],
 };
 
 export const en: Dict = {

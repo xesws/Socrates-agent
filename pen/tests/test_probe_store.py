@@ -374,8 +374,11 @@ def test_a_ledger_without_the_snapshot_falls_back_to_the_constant() -> None:
     assert probe_store.orphan_window(0.0) == probe_store.ORPHAN_AFTER_SECONDS
     assert probe_store.orphan_window() == probe_store.ORPHAN_AFTER_SECONDS
     led = probe_store.SessionLedger.from_dict({"session_id": "old", "running": []})
-    assert led.running_timeout == 0.0
-    assert (led.max_per_session, led.max_per_window) == (0, 0)
+    # 哨兵是 -1 不是 0：0 是合法配额（「本场不探」），拿 0 当「没有快照」
+    # 会让报表永远报不出它。
+    assert led.running_timeout == -1.0
+    assert (led.max_per_session, led.max_per_window) == (-1, -1)
+    assert probe_store.orphan_window(led.running_timeout) == probe_store.ORPHAN_AFTER_SECONDS
 
 
 def test_try_claim_snapshots_the_limits_it_actually_used() -> None:
@@ -420,3 +423,62 @@ def test_round_zero_round_trips_and_is_not_read_back_as_never() -> None:
     assert led.last_probe_round == -99, "真的没有这个键时才回落 -99"
     led2 = probe_store.SessionLedger.from_dict({"session_id": "x", "last_probe_round": "垃圾"})
     assert led2.last_probe_round == -99, "脏数据也回落"
+
+
+def test_a_quota_of_zero_is_reported_as_zero_not_as_the_default() -> None:
+    """夹紧表明文允许把配额设成 0（「本场不探」/「本小时不探」）。
+    `led.max or config.X` 会把合法的 0 吃掉——报表于是永远报不出它，
+    读者调完只看到「深题突然不来了」，零解释。
+
+    **这正是那几行注释想根治的病，v0.10.2 却在自己身上犯了一次。**
+    """
+    from dataclasses import replace
+
+    from pen.config import default_limits
+
+    lim = replace(default_limits(), probe_max_per_session=0, probe_max_per_window=0)
+    pid = probe_store.try_claim("zeroq", "h", 0, lim)
+    assert pid is None, "窗口配额 0 就该抢不到"
+    # 手工写一份快照（真实场景下是上一次用非零配额探过之后读者改成了 0）
+    led = probe_store.load("zeroq", "h")
+    led.max_per_session = 0
+    led.max_per_window = 0
+    probe_store.save(led)
+    rep = probe_store.budget("zeroq")
+    assert (rep["max"], rep["window_max"]) == (0, 0), f"0 必须报成 0，实际 {rep}"
+
+
+def test_refund_rolls_back_the_cooldown_too() -> None:
+    """refund 的语义是「这次不算数」。只退次数不退冷却的话，一次连 LLM 都
+    没打的失败照样冻住后面 N 轮——间隔拉到 20 时就是白冻 20 轮。"""
+    pid1 = probe_store.try_claim("cool2", "h", 3)
+    probe_store.release("cool2", pid1)
+    assert probe_store.load("cool2").last_probe_round == 3
+
+    pid2 = probe_store.try_claim("cool2", "h", 9)
+    assert probe_store.load("cool2").last_probe_round == 9
+    probe_store.release("cool2", pid2, refund=True)
+    led = probe_store.load("cool2")
+    assert led.last_probe_round == 3, "白失败的那次要把冷却退回上一次真探的轮号"
+    assert led.probe_calls == 1, "次数也只该剩真探过的那一次"
+
+
+def test_orphan_window_leaves_a_real_margin() -> None:
+    """余量固定 30 秒太紧：那 900 秒里还要塞书架扫盘、正文摘录、相似度计算，
+    而且 timeout 传给 httpx 是 per-read 的——慢吐字节的中转能让单次尝试
+    远超它。撞破窗口就是 v0.10.2 要修的那件事本身。"""
+    for timeout in (30.0, 90.0, 150.0, 300.0):
+        window = probe_store.orphan_window(timeout)
+        worst = timeout * 3 * 2
+        assert window >= worst * 1.4, f"超时 {timeout} 时窗口 {window} 余量不足（最坏 {worst}）"
+
+
+def test_quota_status_reports_the_configured_max() -> None:
+    """它以前读模块常量——正是同文件 budget() 的注释点名批评的那个错。"""
+    from dataclasses import replace
+
+    from pen.config import default_limits
+
+    lim = replace(default_limits(), probe_max_per_window=7)
+    assert probe_store.quota_status("qs1", lim)["max"] == 7
+    assert probe_store.quota_status("qs1")["max"] == config.PROBE_MAX_PER_WINDOW

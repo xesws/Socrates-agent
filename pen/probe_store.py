@@ -118,9 +118,16 @@ class SessionLedger:
     #   running_timeout → 孤儿窗口该多大（见 orphan_window）
     #   max_*           → GET /deep 该报多少（那个端点没有请求体，读不到设置）
     # 老账本没有这三个字段（=0）→ 全部退回 config 现值 → 行为与 v0.10.1 一致。
-    running_timeout: float = 0.0
-    max_per_session: int = 0
-    max_per_window: int = 0
+    # **哨兵是 -1 不是 0**：夹紧表明文允许把配额设成 0（「本场不探」/
+    # 「本小时不探」），而 `x or 默认值` 会把合法的 0 吃掉——报表于是永远
+    # 报不出 0，读者调完只看到「深题突然不来了」，零解释。
+    # 上限恒 ≥ 0，所以 -1 是干净的「还没探过」。
+    # try_claim 覆盖 last_probe_round 之前的旧值。refund 要退冷却就得知道
+    # 「改之前是多少」——只有账本记得住。
+    prev_probe_round: int = -99
+    running_timeout: float = -1.0
+    max_per_session: int = -1
+    max_per_window: int = -1
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -134,6 +141,7 @@ class SessionLedger:
             "running_since": self.running_since,
             "asked_qkeys": list(self.asked_qkeys)[-60:],
             "spend": dict(self.spend),
+            "prev_probe_round": self.prev_probe_round,
             "running_timeout": self.running_timeout,
             "max_per_session": self.max_per_session,
             "max_per_window": self.max_per_window,
@@ -166,9 +174,14 @@ class SessionLedger:
             ),
             pool=pool,
             spend=meter.coerce(raw.get("spend")),
-            running_timeout=_num(raw.get("running_timeout")),
-            max_per_session=int(_num(raw.get("max_per_session"))),
-            max_per_window=int(_num(raw.get("max_per_window"))),
+            prev_probe_round=(
+                int(raw["prev_probe_round"])
+                if isinstance(raw.get("prev_probe_round"), (int, float))
+                else -99
+            ),
+            running_timeout=_snap(raw.get("running_timeout")),
+            max_per_session=int(_snap(raw.get("max_per_session"))),
+            max_per_window=int(_snap(raw.get("max_per_window"))),
             running=[str(x) for x in raw.get("running") or []],
             running_since=str(raw.get("running_since") or ""),
             asked_qkeys=[str(x) for x in raw.get("asked_qkeys") or []],
@@ -206,9 +219,19 @@ def _num(v: Any) -> float:
     """盘上读回来的数字。脏数据退化成 0，不让一份坏 JSON 顶掉整个账本。"""
     try:
         n = float(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0.0
     return n if n > 0 and n == n and n != float("inf") else 0.0
+
+
+def _snap(v: Any) -> float:
+    """上限快照。**0 是合法值**（「本场不探」），所以缺失的哨兵是 -1。
+    脏数据、负数、NaN、inf 一律退回 -1 = 还没探过。"""
+    try:
+        n = float(v)
+    except (TypeError, ValueError, OverflowError):
+        return -1.0
+    return n if n >= 0 and n == n and n != float("inf") else -1.0
 
 
 def orphan_window(timeout_s: float = 0.0) -> float:
@@ -223,7 +246,13 @@ def orphan_window(timeout_s: float = 0.0) -> float:
     """
     if timeout_s <= 0:
         return ORPHAN_AFTER_SECONDS
-    return max(ORPHAN_AFTER_SECONDS, timeout_s * 3 * 2 + 30.0)
+    # 余量取「最坏耗时的一半」，不是固定 30 秒。900 秒里还要塞书架扫盘
+    # （登记表 + 逐本读 400 行）、正文摘录、相似度计算；更要紧的是那个
+    # timeout 传给 httpx 是 **per-read** 的——一个慢吐字节的中转能让单次
+    # 尝试远超它。撞破窗口 = 真线程还活着就清空 running = 同一场对话两份
+    # 深挖并行，也就是 v0.10.2 要修的那件事本身。
+    worst = timeout_s * 3 * 2
+    return max(ORPHAN_AFTER_SECONDS, worst * 1.5)
 
 
 def _reap_orphan(led: SessionLedger) -> None:
@@ -294,11 +323,19 @@ def _bump_quota(handbook_id: str) -> None:
     _write_quota(handbook_id, quota_count(handbook_id) + 1)
 
 
-def quota_status(handbook_id: str) -> dict[str, Any]:
-    """给设置页看的：本小时用了多少。读者以前只能看到「深题突然不来了」。"""
+def quota_status(
+    handbook_id: str, limits: config.RuntimeLimits | None = None
+) -> dict[str, Any]:
+    """给设置页看的：本小时用了多少。读者以前只能看到「深题突然不来了」。
+
+    以前它读模块常量——正是同文件 budget() 的注释点名批评的那个错，
+    而且一直没有生产调用方（写的时候设置页还没有统计块）。v0.10.10 的
+    设置页统计要用它，所以修对而不是删掉。
+    """
+    lim = limits or config.default_limits()
     return {
         "used": quota_count(handbook_id),
-        "max": config.PROBE_MAX_PER_WINDOW,
+        "max": lim.probe_max_per_window,
         "window": "hour",
     }
 
@@ -326,6 +363,7 @@ def try_claim(
         led.max_per_session = int(lim.probe_max_per_session)
         led.max_per_window = int(lim.probe_max_per_window)
         led.probe_calls += 1
+        led.prev_probe_round = led.last_probe_round
         led.last_probe_round = now_round
         save(led)
         if handbook_id:
@@ -355,10 +393,15 @@ def release(
         led.running = [x for x in led.running if x != probe_id]
         if not led.running:
             led.running_since = ""
-        if refund and led.probe_calls > 0:
-            led.probe_calls -= 1
-            if led.handbook_id:
-                _write_quota(led.handbook_id, quota_count(led.handbook_id) - 1)
+        if refund:
+            # refund 的语义是「这次不算数」，那就退干净。只退次数不退冷却的话，
+            # 一次连 LLM 都没打的失败照样冻住后面 N 轮——probe_every_n_rounds
+            # 拉到 20 时就是冻 20 轮。
+            led.last_probe_round = led.prev_probe_round
+            if led.probe_calls > 0:
+                led.probe_calls -= 1
+                if led.handbook_id:
+                    _write_quota(led.handbook_id, quota_count(led.handbook_id) - 1)
         save(led)
 
 
@@ -403,9 +446,10 @@ def budget(session_id: str) -> dict[str, int]:
         "used": led.probe_calls,
         # 报的必须是**执行时用的那个数**。读模块常量的话，设置页把每小时配额
         # 调成 7 之后，界面会一直显示 40——两个来源，正是本仓踩过三次的形状。
-        "max": led.max_per_session or config.PROBE_MAX_PER_SESSION,
+        # 用 `>= 0` 判而不是 `or`：0 是合法配额，`or` 会把它吃掉。
+        "max": led.max_per_session if led.max_per_session >= 0 else config.PROBE_MAX_PER_SESSION,
         "window_used": quota_count(led.handbook_id) if led.handbook_id else 0,
-        "window_max": led.max_per_window or config.PROBE_MAX_PER_WINDOW,
+        "window_max": led.max_per_window if led.max_per_window >= 0 else config.PROBE_MAX_PER_WINDOW,
     }
 
 
@@ -496,12 +540,21 @@ def inbox(
             "spend": dict(led.spend),
             "budget": {
                 "used": led.probe_calls,
-                # 和 budget() 一样，报执行时用的那个数，不是模块常量。
-                "max": led.max_per_session or config.PROBE_MAX_PER_SESSION,
+                # 和 budget() 一样，报执行时用的那个数，不是模块常量；
+                # 也一样用 `>= 0` 判，0 是合法配额。
+                "max": (
+                    led.max_per_session
+                    if led.max_per_session >= 0
+                    else config.PROBE_MAX_PER_SESSION
+                ),
                 # 窗口配额是跨会话的那道闸。不报出去的话，读者只会看到
                 # 「深题突然不来了」，没有任何解释。
                 "window_used": quota_count(led.handbook_id) if led.handbook_id else 0,
-                "window_max": led.max_per_window or config.PROBE_MAX_PER_WINDOW,
+                "window_max": (
+                    led.max_per_window
+                    if led.max_per_window >= 0
+                    else config.PROBE_MAX_PER_WINDOW
+                ),
             },
         }
 

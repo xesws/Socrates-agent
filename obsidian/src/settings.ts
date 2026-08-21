@@ -70,14 +70,22 @@ export const ADVANCED_LIMITS: LimitKey[] = (
 ).filter((k) => !COMMON_LIMITS.includes(k));
 
 export function clampLimit(k: LimitKey, v: unknown): number {
-  const spec = LIMIT_SPEC[k];
+  const spec: LimitSpec = LIMIT_SPEC[k];
   // 空串必须走默认。`Number("")` 是 0 且 isFinite，直接判会把「清空输入框」
   // 变成「把上限设成 0」——而跨书那两项设成 0 就是彻底不翻别的书了。
-  const raw = typeof v === "number" ? String(v) : String(v ?? "").trim();
-  if (raw === "") return spec.def;
+  //
+  // **只认 number 和 string，别的一律走默认。** `String([5])` 是 "5"、
+  // `Number("0x10")` 是 16——不挡的话数组和十六进制在这边能过，在后端
+  // 却走默认值，同一个输入两边给出不同答案。scripts/check-limits.mjs
+  // 逐个输入比对这件事。
+  if (typeof v !== "number" && typeof v !== "string") return spec.def;
+  const raw = typeof v === "number" ? String(v) : v.trim();
+  if (raw === "" || /^0[xXbBoO]/.test(raw)) return spec.def;
   const num = Number(raw);
   if (!Number.isFinite(num)) return spec.def;
-  return Math.min(Math.max(Math.round(num), spec.min), spec.max);
+  // **截断，不是四舍五入**：后端是先夹后 int()，2.6 在那边是 2。
+  // 两边算法不一样的话，这两张表就只防了一半的漂。
+  return Math.trunc(Math.min(Math.max(num, spec.min), spec.max));
 }
 
 export function coerceLimits(raw: unknown): PenLimits {

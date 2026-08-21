@@ -11,6 +11,7 @@
  */
 import { build } from "esbuild";
 import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -138,6 +139,27 @@ for (const k of tsKeys) {
 check("说清了主对话那个不是硬上限", /不受限/.test(zh.limitDesc("max_tokens_chat")));
 check("说清了深挖存多了也只放一条", /只放出 1 条/.test(zh.limitDesc("probe_keep_per_run")));
 check("说清了超时调大会看不见当轮结果", /下一轮/.test(zh.limitDesc("probe_timeout_s")));
+
+// ── 夹紧算法本身也得一致，不只是那三个数 ──
+// 前端 Math.round 后夹 vs 后端先夹后 int() 截断，同一个畸形输入两边会给出
+// 不同答案。从插件走不到（limitsPayload 发出去的永远是范围内整数），但两张表
+// 就是为了防漂而存在的，只比数不比算法等于只防了一半。
+const CLAMP_CASES = [
+  ["", 0], [" ", 0], [null, 0], [undefined, 0], [true, 0], [false, 0],
+  ["abc", 0], ["一百", 0], [[5], 0], [{}, 0], ["0x10", 0], ["1e999", 0],
+  ["NaN", 0], [Infinity, 0], [-Infinity, 0],
+  [2.6, 0], [-2.6, 0], [0, 0], [-1, 0], [7, 0], [999999, 0], ["7", 0], [" 7 ", 0],
+];
+const pyOut = JSON.parse(
+  execFileSync("python3", [join(here, "check-limits-py.py")], { cwd: repo, encoding: "utf8" }),
+);
+for (const [raw] of CLAMP_CASES) {
+  for (const k of ["max_tool_rounds", "probe_timeout_s", "cross_book_reads"]) {
+    const ts = S.clampLimit(k, raw);
+    const py = pyOut[`${k}|${JSON.stringify(raw ?? null)}`];
+    check(`夹紧一致 ${k}(${JSON.stringify(raw ?? null)}) → ${ts}`, ts === py);
+  }
+}
 
 // 全默认时请求体里连 limits 这个键都不该出现
 check(

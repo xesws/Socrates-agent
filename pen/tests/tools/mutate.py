@@ -213,18 +213,14 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
     (
         "v0.10.2 孤儿窗口必须盖得住一次探索（短了会双份花钱）",
         "pen/probe_store.py",
-        "    return max(ORPHAN_AFTER_SECONDS, timeout_s * 3 * 2 + 30.0)",
+        "    return max(ORPHAN_AFTER_SECONDS, worst * 1.5)",
         "    return ORPHAN_AFTER_SECONDS",
-        "outlasts_the_worst_case",
+        "outlasts_the_worst_case or leaves_a_real_margin",
     ),
     (
         "v0.10.2 配额报表报的是执行时用的那个数",
         "pen/probe_store.py",
-        '        "max": led.max_per_session or config.PROBE_MAX_PER_SESSION,\n'
-        '        "window_used": quota_count(led.handbook_id) if led.handbook_id else 0,\n'
-        '        "window_max": led.max_per_window or config.PROBE_MAX_PER_WINDOW,',
-        '        "max": config.PROBE_MAX_PER_SESSION,\n'
-        '        "window_used": quota_count(led.handbook_id) if led.handbook_id else 0,\n'
+        '        "window_max": led.max_per_window if led.max_per_window >= 0 else config.PROBE_MAX_PER_WINDOW,',
         '        "window_max": config.PROBE_MAX_PER_WINDOW,',
         "snapshots_the_limits_it_actually_used",
     ),
@@ -358,6 +354,27 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
         "        if metermod.over(metermod.total(session.turn_spend), limits_of(ctx).max_tokens_chat):",
         "        if False:",
         "loop_top_check_only_bites",
+    ),
+    (
+        "v0.10.9 合法的 0 配额不许被 or 吃掉",
+        "pen/probe_store.py",
+        '        "max": led.max_per_session if led.max_per_session >= 0 else config.PROBE_MAX_PER_SESSION,',
+        '        "max": led.max_per_session or config.PROBE_MAX_PER_SESSION,',
+        "quota_of_zero_is_reported_as_zero",
+    ),
+    (
+        "v0.10.9 refund 要把冷却一起退掉",
+        "pen/probe_store.py",
+        "            led.last_probe_round = led.prev_probe_round",
+        "            pass",
+        "refund_rolls_back_the_cooldown",
+    ),
+    (
+        "v0.10.9 写回那一格的账要落盘",
+        "pen/app.py",
+        "    _save_and_unlock(sess, lock)\n    return out",
+        "    lock.release()\n    return out",
+        "propose_persists_and_returns",
     ),
     (
         "书架的闸与 read_file 的闸同源",

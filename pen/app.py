@@ -369,6 +369,17 @@ def locate(handbook_id: str, line: int, lang: str = Depends(req_lang)) -> dict[s
     return sec.__dict__
 
 
+def _save_and_unlock(sess, lock) -> None:
+    """账算了就得落盘。propose 以前一次 save 都没有，读者写回完关掉 Obsidian
+    （或者 sidecar 重启）那笔账就永久丢——而「花了钱看不见」正是要解决的
+    问题本身。落盘失败不能盖掉正在往外抛的那个异常。"""
+    try:
+        STORE.save(sess)
+    except Exception:
+        pass
+    lock.release()
+
+
 def _merged_spend(sess) -> dict[str, Any]:
     """本会话累计 = 主对话 + 写回（在 PenSession 上）+ 深挖（在账本上）。
 
@@ -790,7 +801,11 @@ def chat_approve(body: ApproveBody, lang: str = Depends(req_lang)) -> StreamingR
                 # 后半轮变成一场没有上限的对话。
                 limits=body.merged_limits(),
             ):
-                if ev.get("type") == "error":
+                if ev.get("type") == "done":
+                    # chat 那条带了这个，approve 这条以前没带。文档把 done 称作
+                    # 「唯一的自愈通道」——一轮以审批结尾时那条通道是断的。
+                    ev = {**ev, "spend": _merged_spend(sess)}
+                elif ev.get("type") == "error":
                     ok = False
                 yield _sse(ev)
         except ProviderError as exc:
@@ -825,6 +840,10 @@ def propose(body: ProposeBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
     meta = _meta_or_404(sess.handbook_id, lang)
     idx = libraries.load_index(sess.handbook_id)
     path = Path(meta.original_path)
+    # 这个端点会写 session.spend（写回那一格的账），所以必须持会话锁——
+    # propose_fold_md 的注释写着「请求线程独占」，不持锁那个前提就不成立，
+    # 而这里曾经是全仓唯一不持锁却写 session 的路径。
+    lock = _try_lock_session(sess.session_id, lang)
     try:
         fold = propose_fold_md(
             sess,
@@ -833,7 +852,11 @@ def propose(body: ProposeBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
             lang=lang,
         )
     except RuntimeError as exc:
+        _save_and_unlock(sess, lock)
         raise HTTPException(400, localized(exc, lang)) from exc
+    except BaseException:
+        _save_and_unlock(sess, lock)
+        raise
     try:
         plan = insertmod.plan_insert(
             idx,
@@ -843,7 +866,11 @@ def propose(body: ProposeBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
             summary_hint=body.summary_hint,
         )
     except insertmod.InsertError as exc:
+        _save_and_unlock(sess, lock)
         raise HTTPException(400, localized(exc, lang)) from exc
+    except BaseException:
+        _save_and_unlock(sess, lock)
+        raise
     old = path.read_text(encoding="utf-8")
     new = insertmod.render_new_text(old, plan)
     diff = insertmod.unified_diff(old, new, path.name)
@@ -859,7 +886,12 @@ def propose(body: ProposeBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
             "content_fp": _content_fp(path),
         },
     )
-    return _public_proposal(pid, path, plan, diff)
+    out = _public_proposal(pid, path, plan, diff)
+    # 带上花销：不带的话前端第三格在写回之后纹丝不动，要等下一轮对话的 done
+    # 才补——而这个端点恰恰是读者主动花钱的那一刻。
+    out["spend"] = _merged_spend(sess)
+    _save_and_unlock(sess, lock)
+    return out
 
 
 @app.get("/v1/handbooks/{handbook_id}/outline")

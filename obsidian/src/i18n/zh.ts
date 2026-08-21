@@ -68,7 +68,10 @@ const LIMIT_TEXT_ZH: Record<string, [string, string]> = {
     "调大之后深挖可能跑到你当轮看不见结果；题不会丢，会在下一轮搭便车抛出来。",
   ],
   probe_min_reply_chars: ["回复至少多少字才值得深挖", "太短的多半是一句反问，从那儿挖不出好问题。"],
-  probe_concurrency: ["同时最多几个深挖在跑", "这是整台 sidecar 的数，不是每本书的。"],
+  probe_concurrency: [
+    "同时最多几个深挖在跑",
+    "这是整台 sidecar 的数，不是每本书的。**同时开着多个库时方向是反的**：判据是「全局在飞数 < 你填的数」，所以把它调小反而更容易被另一个库的深挖占满位子。想省钱请调上面的每小时次数或 token 上限。",
+  ],
 };
 
 export const zh = {

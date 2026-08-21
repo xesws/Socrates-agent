@@ -1169,9 +1169,10 @@ def test_cooldown_is_wired_from_the_ledger_to_the_gate(monkeypatch, tmp_path) ->
 
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
-        # 假装刚刚探过（账本上留下 last_probe_round）
+        # 假装刚刚**真探过**一次（不能用 refund：v0.10.9 起 refund 会把
+        # 冷却一起退掉——那次探索根本没打过 LLM，不该冻住后面几轮）
         pid = probe_store.try_claim(sid, "swe-agent-v2", 0)
-        probe_store.release(sid, pid, refund=True)
+        probe_store.release(sid, pid)
         assert probe_store.load(sid).last_probe_round == 0
 
         body = _chat_body(sid, _q1_line(), api_key="sk-x",
@@ -1184,3 +1185,62 @@ def test_cooldown_is_wired_from_the_ledger_to_the_gate(monkeypatch, tmp_path) ->
         body2 = _chat_body(sid, _q1_line(), api_key="sk-x")  # 不设冷却
         client.post("/v1/chat", json=body2)
     assert "job" in seen, "不设冷却时照常探——证明拦住上一次的是冷却，不是别的"
+
+
+# ── v0.10.9 账目与配额的边角 ────────────────────────────────────
+
+
+def test_propose_persists_and_returns_the_fold_spend(monkeypatch, tmp_path) -> None:
+    """写回那一格的账以前只在内存里：读者写回完关掉 Obsidian、或者 sidecar
+    重启，那笔账就永久丢——而「花了钱看不见」正是这一版要解决的问题本身。"""
+    from pen import session as sessmod
+    from pen.meter import KIND_FOLD
+
+    _isolate_pen(tmp_path, monkeypatch)
+
+    def fake_fold(sess, llm=None, allow_env_fallback=True, lang="zh"):
+        sess.spend[KIND_FOLD] = {"calls": 1, "in_tokens": 7777, "out_tokens": 333,
+                                 "cached_tokens": 0, "reasoning_tokens": 0}
+        return FOLD
+
+    monkeypatch.setattr("pen.app.propose_fold_md", fake_fold)
+    text = DEFAULT_HANDBOOK.read_text(encoding="utf-8").splitlines()
+    line = next(i for i, ln in enumerate(text, 1) if ln.startswith("**Q1. shell 和 Bash"))
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        sess = STORE.get(sid)
+        sess.last_assistant = "讲了一大段。" * 30
+        sess.last_anchor = {"start_line": line, "end_line": line, "level": "Level 0"}
+        got = client.post("/v1/writeback/propose", json={"session_id": sid})
+        assert got.status_code == 200, got.text
+        assert got.json()["spend"]["fold"]["in_tokens"] == 7777, "回包要带上刚花的钱"
+        # 落盘了吗——把内存里的缓存丢掉再从盘上读
+        on_disk = sessmod.load_session(sid)
+    assert on_disk is not None
+    assert on_disk.spend["fold"]["in_tokens"] == 7777, "propose 必须落盘，否则重启就丢账"
+
+
+def test_approve_done_also_carries_spend(monkeypatch, tmp_path) -> None:
+    """done 是「唯一的自愈通道」，一轮以审批结尾时这条通道以前是断的。"""
+    _isolate_pen(tmp_path, monkeypatch)
+
+    def fake_resume(sess, path, *, allow, pending_id, llm=None, extra_roots=None,
+                    allow_env_fallback=True, lang="zh", **_kw):
+        yield {"type": "done", "usage": {"context_tokens": 1, "completion_tokens": 1,
+                                         "prompt_tokens": 1},
+               "dynamic_chips": [], "has_substantive": False}
+
+    monkeypatch.setattr("pen.app.resume_chat", fake_resume)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        sess = STORE.get(sid)
+        sess.pending = {"id": "p1", "name": "edit_file", "args": {},
+                        "original_path": str(DEFAULT_HANDBOOK)}
+        resp = client.post("/v1/chat/approve",
+                           json={"session_id": sid, "pending_id": "p1", "allow": False})
+        done = next(
+            json.loads(ln[6:]) for ln in resp.text.splitlines()
+            if ln.startswith("data: ") and json.loads(ln[6:]).get("type") == "done"
+        )
+    assert "spend" in done, "approve 的 done 也要带账"
+    assert set(done["spend"]) == {"chat", "probe", "fold"}
