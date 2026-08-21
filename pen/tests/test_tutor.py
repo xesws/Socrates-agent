@@ -239,6 +239,9 @@ def test_build_user_packet_keeps_whole_toc_and_lists_asked() -> None:
     from pen import libraries
     from pen.tutor import build_user_packet
 
+    # 自己把默认手册建进本测试的临时 .pen。此前这四条是靠「别的测试先跑过
+    # 一遍 lifespan，把 swe-agent-v2 写进真实 .pen」才绿的——干净 checkout 上会红。
+    libraries.ensure_default()
     idx = libraries.load_index("swe-agent-v2")
     packet, _anchor = build_user_packet(
         idx,
@@ -264,6 +267,9 @@ def test_packet_omits_the_shelf_block_when_there_is_only_one_book() -> None:
     from pen import libraries
     from pen.tutor import build_user_packet
 
+    # 自己把默认手册建进本测试的临时 .pen。此前这四条是靠「别的测试先跑过
+    # 一遍 lifespan，把 swe-agent-v2 写进真实 .pen」才绿的——干净 checkout 上会红。
+    libraries.ensure_default()
     idx = libraries.load_index("swe-agent-v2")
     packet, _ = build_user_packet(
         idx, Path(idx.original_path), selected_text="x",
@@ -280,6 +286,9 @@ def test_packet_carries_the_shelf_with_paths_so_the_tutor_can_read_file() -> Non
     from pen import libraries
     from pen.tutor import build_user_packet
 
+    # 自己把默认手册建进本测试的临时 .pen。此前这四条是靠「别的测试先跑过
+    # 一遍 lifespan，把 swe-agent-v2 写进真实 .pen」才绿的——干净 checkout 上会红。
+    libraries.ensure_default()
     idx = libraries.load_index("swe-agent-v2")
     shelf = "- 《另一本》  path: /tmp/vault/other.md\n  大纲：开篇 / 第一章"
     packet, _ = build_user_packet(
@@ -303,6 +312,9 @@ def test_packet_drops_the_shelf_block_when_the_budget_eats_every_row() -> None:
     from pen import libraries, tutor
     from pen.tutor import build_user_packet
 
+    # 自己把默认手册建进本测试的临时 .pen。此前这四条是靠「别的测试先跑过
+    # 一遍 lifespan，把 swe-agent-v2 写进真实 .pen」才绿的——干净 checkout 上会红。
+    libraries.ensure_default()
     idx = libraries.load_index("swe-agent-v2")
     huge = "- 《" + "长" * 4000 + "》  path: /x.md"
     packet, _ = build_user_packet(

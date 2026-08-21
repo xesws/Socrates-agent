@@ -246,3 +246,33 @@ def test_merge_limits_survives_an_arbitrary_precision_integer() -> None:
     assert config.merge_limits({"max_tool_rounds": 10**400}) == base
     assert config.merge_limits({"cross_book_chars": -(10**400)}) == base
     assert config.merge_limits({"probe_timeout_s": 10**309}) == base
+
+
+# ── v0.12.3：测试不许写读者真实的 .pen ─────────────────────────────
+
+
+def test_tests_never_write_the_real_pen_dir() -> None:
+    """conftest 那个 autouse 隔离掉了就红。
+
+    此前跑一次 pytest 会往真实 `.pen/sessions/` 里塞 16 个文件，和读者自己的
+    会话混在一起。这条守着「四个名字」全都指向临时目录——少 patch 一个，
+    对应那条断言就会指回 REPO_ROOT/.pen。
+    """
+    from pen import config, libraries, snapshots
+
+    real = (config.REPO_ROOT / ".pen").resolve()
+    assert config.PEN_DIR.resolve() != real
+    assert config.LIBRARIES_DIR.resolve() != (real / "libraries")
+    # libraries / snapshots 是 import 时冻结的副本，要单独盯。
+    assert libraries.LIBRARIES_DIR.resolve() == config.LIBRARIES_DIR.resolve()
+    assert snapshots.LIBRARIES_DIR.resolve() == config.LIBRARIES_DIR.resolve()
+    # 真实手册还得能读到——patch 掉 REPO_ROOT 的话沙箱会把默认手册也关在门外。
+    assert config.DEFAULT_HANDBOOK.is_file()
+
+
+def test_isolated_pen_dir_is_not_pre_created() -> None:
+    """autouse 里一旦手滑 mkdir，约 35 处裸 `lib.mkdir()`（无 exist_ok）会集体炸。"""
+    from pen import config
+
+    assert not config.PEN_DIR.exists()
+    assert not config.LIBRARIES_DIR.exists()

@@ -442,6 +442,27 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
         "clicked_question_never_comes_back",
     ),
     (
+        "v0.12.3 测试不许写读者真实的 .pen",
+        "pen/tests/conftest.py",
+        'monkeypatch.setattr(config, "PEN_DIR", pen_dir)',
+        "pass",
+        "never_write_the_real_pen_dir",
+    ),
+    (
+        "v0.12.3 import 时冻结的那两个副本也要跟着搬",
+        "pen/tests/conftest.py",
+        'monkeypatch.setattr(libraries, "LIBRARIES_DIR", lib_dir)',
+        "pass",
+        "never_write_the_real_pen_dir",
+    ),
+    (
+        "v0.12.3 隔离目录不许被抢先建出来",
+        "pen/tests/conftest.py",
+        "    monkeypatch.setattr(snapshots, \"LIBRARIES_DIR\", lib_dir)\n    yield",
+        "    monkeypatch.setattr(snapshots, \"LIBRARIES_DIR\", lib_dir)\n    lib_dir.mkdir(parents=True)\n    yield",
+        "isolated_pen_dir_is_not_pre_created",
+    ),
+    (
         "书架的闸与 read_file 的闸同源",
         "pen/tutor.py",
         "    return [REPO_ROOT, *(extra_roots or [])]",
