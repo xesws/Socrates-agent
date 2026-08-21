@@ -254,6 +254,27 @@ MUTATIONS: list[tuple[str, str, str, str, str]] = [
         "round_zero or cooldown_is_wired",
     ),
     (
+        "v0.10.5 入池上限跟着旋钮走",
+        "pen/probe.py",
+        "        if len(kept) >= job.limits.probe_keep_per_run:",
+        "        if len(kept) >= 2:",
+        "keep_per_run_caps",
+    ),
+    (
+        "v0.10.5 prompt 里的数字也要跟着旋钮变（不然模型不知情）",
+        "pen/probe.py",
+        '.replace("«PARSE»", str(lim.probe_parse_cap))',
+        '.replace("«PARSE»", "3")',
+        "prompt_follows_the_knobs",
+    ),
+    (
+        "v0.10.5 漏斗不许被自己掐死（解析上限 > 入池上限）",
+        "pen/config.py",
+        '        clean["probe_parse_cap"] = int(min(LIMIT_RANGE["probe_parse_cap"][1], keep + 1))',
+        "        pass",
+        "parse_cap_always_exceeds_keep",
+    ),
+    (
         "书架的闸与 read_file 的闸同源",
         "pen/tutor.py",
         "    return [REPO_ROOT, *(extra_roots or [])]",

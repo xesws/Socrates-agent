@@ -131,11 +131,11 @@ PROBE_SYSTEM = """你是这本手册的助教，坐在师傅背后。师傅刚�
 每条题至少要有一条锚落在当前这本手册上——读者手里拿的是这本。
 
 需要手册以外的知识才答得了的题，grounding 填 "open"，anchors 留空。
-我们没有联网，不许假装查过、不许编版本号和函数名。这种题每次最多一条，
+我们没有联网，不许假装查过、不许编版本号和函数名。这种题每次最多«OPEN»条，
 能改写成有出处的就改写成有出处的——书架上那几本你是真读得到的，优先走那条路。
 
 材料不够时：
-如果你觉得非得看一眼某段正文才敢下笔，就在 need_read 里写行区间，最多两段。
+如果你觉得非得看一眼某段正文才敢下笔，就在 need_read 里写行区间，最多«READS»段。
 系统会把那几段读给你，再问你一次。
 当前这本手册的正文，目录和 Q 清单多数时候已经够用，不确定就别读。
 但**别的教材不一样**：你手上只有它的标题和大纲，正文一个字都没有。
@@ -148,7 +148,7 @@ later = 题是好的，但现在问会把人从当前这格拽走。这时在 ta
 名字从全书目录里原样抄（例如 "Level 6"）。
 拿不准就写 later。早抛一个读者接不住的问题，比晚抛更伤。
 
-只输出一个 JSON 对象，别写解释，别写前言。最多 3 条，宁缺毋滥，一条都想不出就交空数组。
+只输出一个 JSON 对象，别写解释，别写前言。最多 «PARSE» 条，宁缺毋滥，一条都想不出就交空数组。
 {
   "need_read": [{"book": "只在要读别的教材时才写：书名", "start_line": 0, "end_line": 0}],
   "questions": [
@@ -184,8 +184,34 @@ _FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
 _TICKED = re.compile(r"`([^`\n]{1,40})`|「([^」\n]{1,40})」")
 
 
-def probe_system(lang: str = "zh") -> str:
-    return PROBE_SYSTEM + (PROBE_ENGLISH if lang == "en" else "")
+# 中文数词。「最多两段」比「最多 2 段」自然，而 prompt 的措辞是调过的。
+_CN_NUM = {1: "一", 2: "两", 3: "三", 4: "四", 5: "五", 6: "六", 7: "七", 8: "八"}
+
+
+def probe_system(lang: str = "zh", limits: config.RuntimeLimits | None = None) -> str:
+    """渲染探索 prompt。
+
+    **用 str.replace 不用 str.format**：正文里那段 JSON 模板全是字面 `{` `}`，
+    format 会当场炸。
+
+    为什么非得把这几个数注进 prompt：它们**同时**写死在代码和 prompt 里。
+    只改代码 = 代码读了、模型没被告知，读者把「每次产出」调到 4，模型仍然
+    只吐 3 条。那正是 config.py 里那条禁令（「摆一个常量而代码不读它」）
+    的镜像版。
+
+    默认档下渲染出的字符串与 v0.10.4 **逐字节相同**，有测试钉着。
+    前缀缓存也不会失效：同一份设置下 system 仍然逐字节稳定，
+    只是不同设置的读者各占一份缓存。
+    """
+    lim = limits or config.default_limits()
+    body = (
+        PROBE_SYSTEM.replace(
+            "«READS»", _CN_NUM.get(lim.probe_max_reads, str(lim.probe_max_reads))
+        )
+        .replace("«OPEN»", _CN_NUM.get(lim.probe_open_per_run, str(lim.probe_open_per_run)))
+        .replace("«PARSE»", str(lim.probe_parse_cap))
+    )
+    return body + (PROBE_ENGLISH if lang == "en" else "")
 
 
 def third_beat_sections(idx: HandbookIndex) -> list[Any]:
@@ -227,7 +253,9 @@ def parse_probe_json(raw: str, limits: config.RuntimeLimits | None = None) -> di
         "need_read": [r for r in (reads or []) if isinstance(r, dict)][
             : (limits or config.default_limits()).probe_max_reads
         ],
-        "questions": [q for q in (qs or []) if isinstance(q, dict)][:3],
+        "questions": [q for q in (qs or []) if isinstance(q, dict)][
+            : (limits or config.default_limits()).probe_parse_cap
+        ],
     }
 
 
@@ -498,14 +526,16 @@ def _compact_questions(idx: HandbookIndex) -> str:
     return _thin_by_level(rows, config.PROBE_Q_CHARS)
 
 
-def build_system(idx: HandbookIndex, lang: str = "zh") -> str:
+def build_system(
+    idx: HandbookIndex, lang: str = "zh", limits: config.RuntimeLimits | None = None
+) -> str:
     """固定家底放 system 尾部——它对同一本书永远一样，
     自动前缀缓存能把重复探索的边际成本压掉一个数量级。变量部分全放 user。"""
     thirds = "\n".join(
         f"{t.level} | L{t.start_line} | {t.beat}" for t in third_beat_sections(idx)
     )
     return (
-        probe_system(lang)
+        probe_system(lang, limits)
         + "\n\n────────────────────────────\n以下是这本书的固定家底，每次都一样，拿它当地图。\n\n"
         + f"【全书目录】\n{_compact_toc(idx)}\n\n"
         + f"【全书的问题清单】\n这些是手册自带的题，不是让你重复的题——把它们当跳板：\n"
@@ -870,7 +900,7 @@ def explore(
 ) -> tuple[list[DeepQuestion], str]:
     """跑一次探索。返回 (问题, 原因)。最多两次调用，最多两段读取。"""
     m = meter if meter is not None else Meter(kind=KIND_PROBE)
-    system = build_system(idx, job.lang)
+    system = build_system(idx, job.lang, job.limits)
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": build_user_message(job)},
@@ -941,7 +971,7 @@ def _harvest(
             continue
         grounding = str(raw.get("grounding") or "book")
         if grounding == "open":
-            if open_used >= 1:
+            if open_used >= job.limits.probe_open_per_run:
                 continue
             open_used += 1
         # 复用实时层那套硬过滤：占位符、导航、复读、撞车、长度带
@@ -983,7 +1013,7 @@ def _harvest(
                 born_round=job.born_round,
             )
         )
-        if len(kept) >= 2:
+        if len(kept) >= job.limits.probe_keep_per_run:
             break
     return kept
 

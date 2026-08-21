@@ -88,6 +88,18 @@ PROBE_PENDING_CAP = 3
 # 两次深挖之间至少隔几轮。**0 = 每轮实质回复都探**，就是读者当初选的行为。
 # 默认 0，所以不改设置的读者一点感觉都没有。
 PROBE_EVERY_N_ROUNDS = 0
+# 一次深挖最多**入池**几条（过完全部校验之后）。
+PROBE_KEEP_PER_RUN = 2
+# 解析层最多**收**几条候选。和上面那个不是一回事：中间隔着一个损耗极大的
+# 漏斗（depth<4 丢、validate_slots 丢、clean_candidates 丢、相似度 0.72 丢）。
+# **不上设置页**，由 keep 推导 max(3, keep+1)：调大它只会让模型多吐几条废题，
+# 多花输出 token 而入池数不变，纯亏。
+PROBE_PARSE_CAP = 3
+# 一次里最多几条 open 题（手册里没出处、凭模型记忆答、答时要在开头挑明）。
+# **不上设置页**：它不是预算，是诚实策略。默认 keep=2 时若允许 2 条 open，
+# 整整一轮的深挖可以全是无出处的——这条产品承诺不该做成旋钮让读者自己调没。
+# 给它一个名字只是为了让它不再是一个匿名的 1。
+PROBE_OPEN_PER_RUN = 1
 
 
 def probe_enabled(env_file: Path | None = None) -> bool:
@@ -141,6 +153,12 @@ class RuntimeLimits:
     probe_concurrency: int
     # 两次深挖之间至少隔几轮。0 = 每轮都探（今天的行为）。
     probe_every_n_rounds: int
+    # 一次深挖最多入池几条
+    probe_keep_per_run: int
+    # 解析层最多收几条候选。由 keep 推导，不上设置页。
+    probe_parse_cap: int
+    # 一次里最多几条 open 题。诚实策略，不上设置页。
+    probe_open_per_run: int
 
 
 def default_limits() -> RuntimeLimits:
@@ -164,6 +182,9 @@ def default_limits() -> RuntimeLimits:
         probe_min_reply_chars=PROBE_MIN_REPLY_CHARS,
         probe_concurrency=PROBE_CONCURRENCY,
         probe_every_n_rounds=PROBE_EVERY_N_ROUNDS,
+        probe_keep_per_run=PROBE_KEEP_PER_RUN,
+        probe_parse_cap=PROBE_PARSE_CAP,
+        probe_open_per_run=PROBE_OPEN_PER_RUN,
     )
 
 
@@ -183,6 +204,9 @@ LIMIT_RANGE: dict[str, tuple[float, float]] = {
     "probe_min_reply_chars": (0, 2000),
     "probe_concurrency": (1, 8),  # 0 = 永不探，同 pending_cap 的理由
     "probe_every_n_rounds": (0, 20),  # 0 = 每轮都探 = 今天
+    "probe_keep_per_run": (1, 5),
+    "probe_parse_cap": (1, 10),
+    "probe_open_per_run": (0, 3),
 }
 
 
@@ -215,6 +239,17 @@ def merge_limits(raw: Mapping[str, Any] | None) -> RuntimeLimits:
         val = min(max(val, lo), hi)
         cur = getattr(base, f.name)
         clean[f.name] = float(val) if isinstance(cur, float) else int(val)
+
+    # 漏斗不能被自己掐死：解析上限必须**大于**入池上限。读者把「每次产出」
+    # 调到 4，而模型只被允许提 3 条，那个 4 就是个谎。
+    # 默认档 keep=2 / parse=3 时 3 < 3 为假，一个字节都不动。
+    keep = clean.get("probe_keep_per_run", base.probe_keep_per_run)
+    parse = clean.get("probe_parse_cap", base.probe_parse_cap)
+    if parse < keep + 1:
+        clean["probe_parse_cap"] = int(min(LIMIT_RANGE["probe_parse_cap"][1], keep + 1))
+    # open 题不能多过入池总数，否则「最多一条无出处」这条承诺就没意义了。
+    if clean.get("probe_open_per_run", base.probe_open_per_run) > keep:
+        clean["probe_open_per_run"] = int(keep)
     return replace(base, **clean)
 
 

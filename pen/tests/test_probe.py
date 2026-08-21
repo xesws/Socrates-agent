@@ -1303,3 +1303,114 @@ def test_last_probe_round_is_no_longer_a_dead_field(idx) -> None:
     pid = probe_store.try_claim(sid, "probe-fx", 7)
     assert pid
     assert probe_store.load(sid).last_probe_round == 7
+
+
+# ── v0.10.5 产出条数与 prompt 模板化 ───────────────────────────
+
+
+def test_default_prompt_renders_byte_identical_to_v0_10_4() -> None:
+    """模板化不许改变默认档下模型看到的一个字。
+
+    prompt 的措辞是调过的（「最多两段」而不是「最多 2 段」），
+    渲染漂一个字都可能改变产出。
+    """
+    got = probe.probe_system("zh")
+    assert "最多两段" in got, "中文数词，不是阿拉伯数字"
+    assert "这种题每次最多一条" in got
+    assert "最多 3 条，宁缺毋滥" in got
+    assert "«" not in got and "»" not in got, "占位符不能漏渲染到模型眼前"
+
+
+def test_prompt_follows_the_knobs() -> None:
+    """只改代码不改 prompt = 代码读了、模型没被告知。读者把「每次产出」
+    调到 4，模型仍然只吐 3 条——那正是本仓那条禁令的镜像版。"""
+    from pen.config import merge_limits
+
+    got = probe.probe_system("zh", merge_limits({"probe_keep_per_run": 4, "probe_max_reads": 1}))
+    assert "最多一段" in got, "读取段数要跟着变，且仍是中文数词"
+    assert "最多 5 条" in got, "解析上限由 keep 推导（max(3, keep+1)）"
+    assert "«" not in got
+
+
+def test_prompt_uses_replace_not_format() -> None:
+    """正文里那段 JSON 模板全是字面大括号，str.format 会当场炸。
+    这条把「为什么不用 format」钉住。"""
+    assert "{" in probe.PROBE_SYSTEM and "}" in probe.PROBE_SYSTEM
+    with pytest.raises((KeyError, IndexError, ValueError)):
+        probe.PROBE_SYSTEM.format(READS=2)
+
+
+def test_parse_cap_follows_the_limits() -> None:
+    from pen.config import merge_limits
+
+    raw = json.dumps({"need_read": [], "questions": [{"text": f"第 {i} 问？"} for i in range(9)]})
+    assert len(parse_probe_json(raw)["questions"]) == 3, "默认还是 3"
+    got = parse_probe_json(raw, limits=merge_limits({"probe_keep_per_run": 4}))
+    assert len(got["questions"]) == 5, "keep=4 时解析上限推到 5"
+
+
+def test_keep_per_run_caps_what_lands_in_the_pool(idx, tmp_path, monkeypatch) -> None:
+    """入池上限跟着旋钮走。解析上限和入池上限中间隔着一个损耗极大的漏斗，
+    两个数必须都在。"""
+    from dataclasses import replace
+
+    from pen.config import default_limits
+
+    third = _third(idx, "Level 0")
+    # 题面必须**彼此不像**：批内去重的相似度阈值是 0.72，
+    # 拿「第 N 个问题」这种模板造五条，会被去重吃到只剩一条，
+    # 于是 keep=1 和 keep=3 得到同样的结果，这条测试就成了空转。
+    texts = [
+        "白名单排在危险检测前面，危险命令会被静默放行吗？",
+        "为什么参考实现偏偏是 mini-swe-agent，而不是 LangChain？",
+        "七块积木里 messages 为什么不算文件？",
+        "沙箱和权限分级这两套东西，真到执行那一步谁说了算？",
+        "读者自己敲命令的时候，这套分类学还派得上用场吗？",
+    ]
+    items = [
+        {
+            "text": t,
+            "axis": "altitude", "grounding": "book", "depth": 5,
+            "anchors": [{"level": "Level 0", "start_line": third.start_line + i,
+                         "end_line": third.start_line + i}],
+            "timing": "now",
+        }
+        for i, t in enumerate(texts)
+    ]
+    job = _meter_job(tmp_path, limits=replace(default_limits(), probe_keep_per_run=1))
+    kept = probe._harvest(items, job, idx)
+    assert len(kept) <= 1, f"入池上限设成 1，却存了 {len(kept)} 条"
+
+    job3 = _meter_job(tmp_path, limits=replace(default_limits(), probe_keep_per_run=3))
+    kept3 = probe._harvest(items, job3, idx)
+    assert len(kept3) > len(kept), "调大之后确实能多存——证明拦住上一次的是这个旋钮"
+
+
+def test_open_questions_stay_capped_by_default(idx, tmp_path) -> None:
+    """open 题 = 手册里没出处、凭记忆答。默认每次最多一条，
+    而且这一条不上设置页——它是诚实策略，不是预算。"""
+    items = [
+        {"text": f"它的沙箱是怎么实现的？第 {i} 问", "axis": "failure",
+         "grounding": "open", "trigger": "并发时", "depth": 5, "timing": "now"}
+        for i in range(3)
+    ]
+    kept = probe._harvest(items, _meter_job(tmp_path), idx)
+    opens = [q for q in kept if q.grounding == "open"]
+    assert len(opens) <= 1, f"默认该最多一条 open，实际 {len(opens)}"
+
+
+def test_open_cap_never_exceeds_keep() -> None:
+    """整整一轮的深挖都是无出处的题，那条产品承诺就没意义了。"""
+    from pen.config import merge_limits
+
+    got = merge_limits({"probe_keep_per_run": 1, "probe_open_per_run": 3})
+    assert got.probe_open_per_run <= got.probe_keep_per_run
+
+
+def test_parse_cap_always_exceeds_keep() -> None:
+    """漏斗不能被自己掐死：模型只被允许提 3 条而读者要 4 条入池，那个 4 是谎。"""
+    from pen.config import merge_limits
+
+    for keep in (1, 2, 3, 4, 5):
+        got = merge_limits({"probe_keep_per_run": keep})
+        assert got.probe_parse_cap > got.probe_keep_per_run, f"keep={keep} 时漏斗被掐死了"
