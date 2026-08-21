@@ -189,6 +189,16 @@ export const en: Dict = {
   setDeepName: "Dig deeper in the background",
   setDeepDesc: "After each answer, spend one more call looking for a question that reaches across chapters. It only appears if one turns up. Turn this off to keep just the two instant ones.",
   tipDeepPrefix: "\u25c6 ",
+  setSecUsage: "Spend",
+  setUsageLoading: "Reading the ledger…",
+  setUsageDown: "Can't reach the sidecar, no ledger to read.",
+  setUsageNote:
+    "Counted from v0.10.0 onward. The number in the status bar is «this session»; this one is «all of it». Tokens only — not converted to money.",
+  setUsageTotal: (tok, sessions) => `${n(tok)} tokens across ${n(sessions)} conversations`,
+  setUsageBreak: (chat, probe, fold) =>
+    `tutor ${n(chat)} · deep dig ${n(probe)} · write-back ${n(fold)}`,
+  setUsageCached: (tok) => `${n(tok)} of that was cache hits (much cheaper)`,
+  setUsageEmpty: "Nothing on the ledger yet. Counting starts with conversations after the v0.10.0 upgrade.",
   setSecCommon: "Basics",
   setSecAdvanced: "Advanced (cost and speed gates — leave them alone if unsure)",
   setAdvancedNote:

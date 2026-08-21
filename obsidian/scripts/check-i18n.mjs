@@ -116,6 +116,15 @@ check("默认值提示带得上数字", zhSec.setDefaultHint(40).includes("40") 
 check("不认识的旋钮名回落成键本身而不是崩", zhSec.limitName("没这个键") === "没这个键");
 check("不认识的旋钮说明回落成空串", zhSec.limitDesc("没这个键") === "");
 
+// v0.10.10 设置页那块累计统计
+for (const k of ["setSecUsage", "setUsageLoading", "setUsageDown", "setUsageNote", "setUsageEmpty"]) {
+  check(`${k} 两边都在且确实翻过`, Boolean(zhSec[k]) && Boolean(enSec[k]) && zhSec[k] !== enSec[k]);
+}
+check("累计总数带得上两个数", zhSec.setUsageTotal(12345, 7).includes("7"));
+check("分项三格都在", zhSec.setUsageBreak(1, 2, 3).includes("3"));
+check("说清了这是「一共」不是「这一场」", /一共/.test(zhSec.setUsageNote));
+check("统计里也不出现货币符号", !/[¥$€£]/.test(zhSec.setUsageTotal(12345, 7) + enSec.setUsageTotal(12345, 7)));
+
 // 模块加载时的 arity 自检不该报警（报了说明英文表漏用了占位符）
 check("中英表函数形参个数一致（无 arity 警告）", warnings.length === 0);
 if (warnings.length) warnings.forEach((w) => console.error("   " + w));

@@ -1030,6 +1030,72 @@ def redo(body: RollbackBody, lang: str = Depends(req_lang)) -> dict[str, Any]:
     }
 
 
+@app.get("/v1/usage")
+def usage_total(handbook_id: str | None = None) -> dict[str, Any]:
+    """跨会话的累计用量，给设置页那块统计看的。
+
+    状态行第三格答的是「**这一场**烧了多少」，这里答的是「**一共**烧了多少」。
+    两个口径，别混。
+
+    三条规矩：
+    · **绝不取 STORE.lock_for()**——那把锁在 /v1/chat 整个请求期间持有，
+      抢它会把读者下一次提问顶成 409。这里只读文件。
+    · **diagnose.narrate 那格不进累计**（它按 handbook 索引，没有会话可挂，
+      只在自己的响应体里）。算进来的话数会对不上，v0.10.0 就写明过。
+    · 读坏一个文件不能让整个统计挂掉。同时把「数了几个会话」报出去，
+      读者才知道这个数覆盖了多少。
+
+    实测 2925 个会话文件（12 MB）全读一遍 0.37 秒，设置页按需打开够用。
+    """
+    book = metermod.blank_book()
+    counted = 0
+    skipped = 0
+
+    def _want(raw: dict[str, Any]) -> bool:
+        return not handbook_id or str(raw.get("handbook_id") or "") == handbook_id
+
+    try:
+        sess_dir = configmod.PEN_DIR / "sessions"
+        for f in sorted(sess_dir.glob("*.json")) if sess_dir.is_dir() else []:
+            try:
+                raw = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                skipped += 1
+                continue
+            if not isinstance(raw, dict) or not _want(raw):
+                continue
+            counted += 1
+            got = raw.get("spend")
+            if isinstance(got, dict):
+                for kind in (metermod.KIND_CHAT, metermod.KIND_FOLD):
+                    book[kind] = metermod.merge(book[kind], got.get(kind))
+    except Exception:
+        pass
+
+    try:
+        for f in sorted(probe_store.probes_dir().glob("*.json")):
+            try:
+                raw = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                skipped += 1
+                continue
+            if not isinstance(raw, dict) or not _want(raw):
+                continue
+            book[metermod.KIND_PROBE] = metermod.merge(
+                book[metermod.KIND_PROBE], raw.get("spend")
+            )
+    except Exception:
+        pass
+
+    return {
+        "spend": book,
+        "total": metermod.total_book(book),
+        "sessions": counted,
+        "skipped": skipped,
+        "handbook_id": handbook_id or "",
+    }
+
+
 @app.get("/v1/chips")
 def chips() -> dict[str, Any]:
     return {"chips": FIXED_CHIPS}

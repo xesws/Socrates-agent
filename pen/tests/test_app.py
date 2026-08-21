@@ -1244,3 +1244,89 @@ def test_approve_done_also_carries_spend(monkeypatch, tmp_path) -> None:
         )
     assert "spend" in done, "approve 的 done 也要带账"
     assert set(done["spend"]) == {"chat", "probe", "fold"}
+
+
+def test_usage_endpoint_aggregates_across_sessions(monkeypatch, tmp_path) -> None:
+    """设置页那块统计：状态行第三格答「这一场」，这里答「一共」。
+    读者在那道多选题里两项都勾了，v0.10.0 只做了前者。"""
+    from pen import probe_store, session as sessmod
+    from pen.meter import Meter
+
+    _isolate_pen(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        empty = client.get("/v1/usage").json()
+        assert empty["total"] == 0 and empty["sessions"] == 0
+
+        # 两场对话，各记一笔主对话的账
+        for i, n in enumerate((1000, 2000)):
+            sid = client.post("/v1/sessions",
+                              json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+            sess = STORE.get(sid)
+            sess.spend["chat"] = {"calls": 1, "in_tokens": n, "out_tokens": 100,
+                                  "cached_tokens": n // 2, "reasoning_tokens": 0}
+            sessmod.save_session(sess)
+            if i == 0:
+                # 顺带给其中一场记一笔深挖的账（它落在另一个目录里）
+                pid = probe_store.try_claim(sid, "swe-agent-v2", 0)
+                m = Meter()
+                m.add({"prompt_tokens": 500, "completion_tokens": 50})
+                probe_store.release(sid, pid, spend=m.to_dict())
+
+        got = client.get("/v1/usage").json()
+    assert got["sessions"] == 2
+    assert got["spend"]["chat"]["in_tokens"] == 3000, "两场的主对话要加起来"
+    assert got["spend"]["probe"]["in_tokens"] == 500, "深挖那格从另一个目录合进来"
+    assert got["spend"]["chat"]["cached_tokens"] == 1500, "缓存命中也要累计"
+    assert got["total"] == 3000 + 100 + 100 + 500 + 50
+    assert got["skipped"] == 0
+
+
+def test_usage_endpoint_survives_a_corrupt_file(monkeypatch, tmp_path) -> None:
+    """几千个会话文件里坏一个，不能让整块统计挂掉。"""
+    _isolate_pen(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions",
+                          json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        sess = STORE.get(sid)
+        sess.spend["chat"] = {"calls": 1, "in_tokens": 42, "out_tokens": 8,
+                              "cached_tokens": 0, "reasoning_tokens": 0}
+        from pen import session as sessmod
+
+        sessmod.save_session(sess)
+        (config.PEN_DIR / "sessions" / "broken.json").write_text("{不是 JSON", encoding="utf-8")
+        got = client.get("/v1/usage").json()
+    assert got["total"] == 50, "好的那份照样算得出"
+    assert got["skipped"] == 1, "坏的那份要报出来，别装作没有"
+
+
+def test_usage_endpoint_can_filter_by_handbook(monkeypatch, tmp_path) -> None:
+    _isolate_pen(tmp_path, monkeypatch)
+    from pen import session as sessmod
+
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions",
+                          json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        sess = STORE.get(sid)
+        sess.spend["chat"] = {"calls": 1, "in_tokens": 90, "out_tokens": 10,
+                              "cached_tokens": 0, "reasoning_tokens": 0}
+        sessmod.save_session(sess)
+        mine = client.get("/v1/usage?handbook_id=swe-agent-v2").json()
+        other = client.get("/v1/usage?handbook_id=别的书").json()
+    assert mine["total"] == 100 and mine["sessions"] == 1
+    assert other["total"] == 0 and other["sessions"] == 0
+
+
+def test_usage_endpoint_never_takes_the_session_lock(monkeypatch, tmp_path) -> None:
+    """老规矩：那把锁在 /v1/chat 整个请求期间持有，抢它会把读者下一次提问
+    顶成 409。"""
+    _isolate_pen(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions",
+                          json={"handbook_id": "swe-agent-v2"}).json()["session_id"]
+        lock = STORE.lock_for(sid)
+        assert lock.acquire(blocking=False)
+        try:
+            got = client.get("/v1/usage")
+        finally:
+            lock.release()
+    assert got.status_code == 200

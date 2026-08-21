@@ -83,6 +83,15 @@ export type TokenRow = {
 /** 本会话的三格账。probe 那格由后端从账本合进来。 */
 export type SpendBook = { chat?: TokenRow; probe?: TokenRow; fold?: TokenRow };
 
+/** 跨会话累计。和 SpendBook 是两个口径：那个是「这一场」，这个是「一共」。 */
+export type UsageTotal = {
+  spend: SpendBook;
+  total: number;
+  sessions: number;
+  skipped: number;
+  handbook_id: string;
+};
+
 export type DeepInbox = {
   session_id: string;
   items: DynChip[];

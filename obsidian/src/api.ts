@@ -7,6 +7,7 @@ import type {
   LlmStatus,
   SessionView,
   SnapshotStatus,
+  UsageTotal,
 } from "./types";
 
 function joinUrl(base: string, path: string): string {
@@ -35,6 +36,11 @@ async function j<T>(base: string, path: string, init?: RequestInit): Promise<T> 
     throw new Error(detail);
   }
   return res.json() as Promise<T>;
+}
+
+/** 跨会话累计。设置页那块统计用它——不走 makeApi 是因为设置页拿不到 view。 */
+export async function usageTotal(baseUrl: string): Promise<UsageTotal> {
+  return j<UsageTotal>(baseUrl, "/v1/usage");
 }
 
 export function makeApi(baseUrl: string) {

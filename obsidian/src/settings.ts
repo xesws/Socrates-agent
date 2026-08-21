@@ -1,4 +1,5 @@
 import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { usageTotal } from "./api";
 import { coerceLangPref, t, type LangPref } from "./i18n";
 
 export type ThinkingLevel = "off" | "low" | "medium" | "high";
@@ -309,6 +310,45 @@ export class PenSettingTab extends PluginSettingTab {
     adv.createEl("p", { cls: "setting-item-description", text: s.setAdvancedNote });
     for (const k of ADVANCED_LIMITS) {
       this.num(adv, k, s.limitName(k), s.limitDesc(k));
+    }
+
+    // ── 花销：跨会话累计 ──
+    // display() 是同步的，所以先把 DOM 建出来占位，再异步填。
+    // **不能同步阻塞 display()**：sidecar 没起来的时候设置页就打不开了。
+    new Setting(containerEl).setName(s.setSecUsage).setHeading();
+    const box = containerEl.createDiv({ cls: "sp-set-usage" });
+    box.createEl("p", { cls: "setting-item-description", text: s.setUsageNote });
+    const line1 = box.createEl("p", { text: s.setUsageLoading });
+    const line2 = box.createEl("p", { cls: "setting-item-description" });
+    const line3 = box.createEl("p", { cls: "setting-item-description" });
+    void this.fillUsage(line1, line2, line3);
+  }
+
+  /** 拉一次累计账填进去。拉不到就说清楚，别留一片空白让读者以为是零。 */
+  private async fillUsage(
+    line1: HTMLElement,
+    line2: HTMLElement,
+    line3: HTMLElement,
+  ): Promise<void> {
+    const s = t();
+    try {
+      const got = await usageTotal(this.plugin.settings.sidecarUrl);
+      const b = got.spend || {};
+      const row = (r?: { in_tokens?: number; out_tokens?: number }): number =>
+        (r?.in_tokens ?? 0) + (r?.out_tokens ?? 0);
+      if (!got.total) {
+        line1.setText(s.setUsageEmpty);
+        return;
+      }
+      line1.setText(s.setUsageTotal(got.total, got.sessions));
+      line2.setText(s.setUsageBreak(row(b.chat), row(b.probe), row(b.fold)));
+      const cached =
+        (b.chat?.cached_tokens ?? 0) +
+        (b.probe?.cached_tokens ?? 0) +
+        (b.fold?.cached_tokens ?? 0);
+      if (cached > 0) line3.setText(s.setUsageCached(cached));
+    } catch {
+      line1.setText(s.setUsageDown);
     }
   }
 }

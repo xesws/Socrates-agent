@@ -218,6 +218,16 @@ export const zh = {
   setDeepDesc: "师傅答完之后，后台再花一次调用去想一个跨关的问题，想到了才冒出来。关掉就只留即时的那两条。",
   tipDeepPrefix: "◆ ",
   // ── 设置页分区与旋钮（v0.10.7）──
+  setSecUsage: "花销",
+  setUsageLoading: "正在读账…",
+  setUsageDown: "连不上 sidecar，读不到账。",
+  setUsageNote: "从 v0.10.0 起算。状态行上那个数是「这一场」，这里是「一共」。只数 token，不折算成钱。",
+  setUsageTotal: (tok: number, sessions: number): string =>
+    `一共 ${n(tok)} token，来自 ${n(sessions)} 场对话`,
+  setUsageBreak: (chat: number, probe: number, fold: number): string =>
+    `主对话 ${n(chat)} · 深挖 ${n(probe)} · 写回 ${n(fold)}`,
+  setUsageCached: (tok: number): string => `其中缓存命中 ${n(tok)}（便宜很多）`,
+  setUsageEmpty: "还没有记到账。这个数从升级到 v0.10.0 之后的对话开始算。",
   setSecCommon: "常用",
   setSecAdvanced: "高级（花钱和速度的闸，不确定就别动）",
   setAdvancedNote:

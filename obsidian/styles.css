@@ -736,3 +736,12 @@
 .sp-set-advanced[open] > summary {
   color: var(--text-normal);
 }
+
+/* 设置页那块累计统计。只借主题变量。 */
+.sp-set-usage {
+  margin-bottom: var(--size-4-4);
+}
+
+.sp-set-usage > p {
+  margin: var(--size-2-1) 0;
+}
